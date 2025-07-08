@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import copy
 import math
 from thop import profile
+from .layer import SoftMaskedConv2d
 
 class MaskedNet(nn.Module):
     def __init__(self, gumbel_start_temperature=2.0, gumbel_end_temperature=0.5, num_epochs=200):
