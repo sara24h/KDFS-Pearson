@@ -353,7 +353,7 @@ class TrainDDP:
         for epoch in range(self.start_epoch + 1, self.num_epochs + 1):
             self.train_loader.sampler.set_epoch(epoch)
             self.student.train()
-            self.student.module.ticket = True
+            self.student.module.ticket = False
             if self.rank == 0:
                 meter_oriloss.reset()
                 meter_kdloss.reset()
@@ -368,6 +368,14 @@ class TrainDDP:
                 )
 
             self.student.module.update_gumbel_temperature(epoch)
+
+            if self.rank == 0:
+                masks = [round(m.mask.mean().item(), 2) for m in self.student.module.mask_modules]
+                self.logger.info(f"[Train mask avg] Epoch {epoch} : {masks}")
+                avg_mask = sum(masks) / len(masks) if masks else 0.0
+                self.logger.info(f"[Train avg mask across layers] Epoch {epoch} : {avg_mask:.2f}")
+                self.writer.add_scalar("train/mask_avg", avg_mask, global_step=epoch)    
+            
             with tqdm(total=len(self.train_loader), ncols=100, disable=self.rank != 0) as _tqdm:
                 if self.rank == 0:
                     _tqdm.set_description("epoch: {}/{}".format(epoch, self.num_epochs))
