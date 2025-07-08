@@ -27,6 +27,13 @@ class RCLoss(nn.Module):
     def forward(self, x, y):
         return (self.rc(x) - self.rc(y)).pow(2).mean()
 
+class MaskLoss(nn.Module):
+    def __init__(self):
+        super(MaskLoss, self).__init__()
+
+    def forward(self, filters, mask):
+        correlation, active_indices = compute_active_filters_correlation(filters, mask)
+        return correlation, active_indices
 
 def compute_active_filters_correlation(filters, m):
     if torch.isnan(filters).any():
@@ -92,16 +99,8 @@ def compute_active_filters_correlation(filters, m):
     sum_of_squares = torch.sum(torch.pow(upper_tri, 2))
 
     num_active_filters = len(valid_indices)
-    normalized_correlation = sum_of_squares / num_active_filters
+    normalized_correlation = sum_of_squares 
     return normalized_correlation, active_indices
-
-class MaskLoss(nn.Module):
-    def __init__(self):
-        super(MaskLoss, self).__init__()
-
-    def forward(self, filters, mask):
-        correlation, active_indices = compute_active_filters_correlation(filters, mask)
-        return correlation, active_indices
 
 
 class CrossEntropyLabelSmooth(nn.Module):
