@@ -407,13 +407,13 @@ class TrainDDP:
                                 found = False
                                 adjusted_name = name.replace("module.", "")
                                 for mask_module in self.student.module.mask_modules:
-                                    if mask_module.mask.shape[0] == filters.shape[0] and mask_module.layer_name == adjusted_name:
-                                        m = mask_module.mask
-                                        correlation, active_indices = self.mask_loss(filters, m)
-                                        mask_loss += correlation
-                                        found = True
-                                        matched_layers += 1
-                                        break
+                                    
+                                    m = mask_module.mask
+                                    correlation, active_indices = self.mask_loss(filters, m)
+                                    mask_loss += correlation
+                                    found = True
+                                    matched_layers += 1
+                                    break
                                 if not found and self.rank == 0:
                                     self.logger.warning(f"No mask found for layer {name} (adjusted: {adjusted_name})")
 
