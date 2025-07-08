@@ -3,7 +3,7 @@
 arch=ResNet_50
 dataset_dir=/kaggle/input/hardfakevsrealfaces
 dataset_mode=hardfake
-ckpt_path=/kaggle/working/results/run_resnet50_imagenet_prune1/student_model/finetune_ResNet_50_sparse_best.pt
+ckpt_path=/kaggle/input/kdfs-3-khordad-fixed-temp/results/run_resnet50_imagenet_prune1/student_model/finetune_ResNet_50_sparse_best.pt
 device=0
 
 
