@@ -16,14 +16,13 @@ from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, ResNet_
 from utils import utils, loss, meter, scheduler
 from thop import profile
 from model.teacher.ResNet import ResNet_50_hardfakevsreal
-from torch import amp
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 Flops_baselines = {
     "ResNet_50": {
         "hardfakevsrealfaces": 7700.0,
-        "rvf10k": 5000,
+        "rvf10k": 5390.0,
         "140k": 5390.0,
     }
 }
@@ -65,7 +64,7 @@ class TrainDDP:
 
         if self.dataset_mode == "hardfake":
             self.args.dataset_type = "hardfakevsrealfaces"
-            self.num_classes = 1  # Changed to 1 for binary classification
+            self.num_classes = 1
             self.image_size = 300
         elif self.dataset_mode == "rvf10k":
             self.args.dataset_type = "rvf10k"
@@ -234,7 +233,7 @@ class TrainDDP:
             )
         self.student.dataset_type = self.args.dataset_type
         num_ftrs = self.student.fc.in_features
-        self.student.fc = nn.Linear(num_ftrs, 1)  # Ensure output is 1 for binary classification
+        self.student.fc = nn.Linear(num_ftrs, 1)
         self.student = self.student.cuda()
         self.student = DDP(self.student, device_ids=[self.local_rank])
 
@@ -338,7 +337,7 @@ class TrainDDP:
 
         torch.cuda.empty_cache()
         self.teacher.eval()
-        scaler = amp.GradScaler('cuda')
+        scaler = GradScaler()
 
         if self.resume:
             self.resume_student_ckpt()
@@ -350,6 +349,7 @@ class TrainDDP:
             meter_maskloss = meter.AverageMeter("MaskLoss", ":.6e")
             meter_loss = meter.AverageMeter("Loss", ":.4e")
             meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
+            meter_val_loss = meter.AverageMeter("ValLoss", ":.4e")  # Added validation loss meter
 
         for epoch in range(self.start_epoch + 1, self.num_epochs + 1):
             self.train_loader.sampler.set_epoch(epoch)
@@ -378,12 +378,7 @@ class TrainDDP:
                     images = images.cuda()
                     targets = targets.cuda().float()
 
-                    if torch.isnan(images).any() or torch.isinf(images).any() or torch.isnan(targets).any() or torch.isinf(targets).any():
-                        if self.rank == 0:
-                            self.logger.warning("Invalid input detected (NaN or Inf)")
-                        continue
-
-                    with amp.autocast('cuda', enabled=True):
+                    with autocast():
                         logits_student, feature_list_student = self.student(images)
                         logits_student = logits_student.squeeze(1)
                         with torch.no_grad():
@@ -391,53 +386,23 @@ class TrainDDP:
                             logits_teacher = logits_teacher.squeeze(1)
 
                         ori_loss = self.ori_loss(logits_student, targets)
-
                         kd_loss = (self.target_temperature**2) * self.kd_loss(
                             logits_teacher,
                             logits_student,
                             self.target_temperature
                         )
 
-                        rc_loss = torch.tensor(0.0, device=images.device, dtype=torch.float32)
+                        rc_loss = torch.tensor(0, device=images.device)
                         for i in range(len(feature_list_student)):
                             rc_loss = rc_loss + self.rc_loss(
                                 feature_list_student[i], feature_list_teacher[i]
                             )
 
-                        from model.student.ResNet_sparse import SoftMaskedConv2d
-
-                        mask_loss = torch.tensor(0.0, device=images.device, dtype=torch.float32)
-                        matched_layers = 0
-                        #if self.rank == 0:
-                           # self.logger.info(f"Total mask modules: {len(self.student.module.mask_modules)}")
-
-                        for name, module in self.student.module.named_modules():
-                            if isinstance(module, SoftMaskedConv2d):
-                                filters = module.weight
-                                found = False
-                                adjusted_name = name.replace("module.", "") 
-                                for mask_module in self.student.module.mask_modules:
-                                    if mask_module.mask.shape[0] == filters.shape[0] and mask_module.layer_name == adjusted_name:
-                                        m = mask_module.mask
-                                        correlation, active_indices = self.mask_loss(filters, m)
-                                        #if self.rank == 0:
-                                        #    self.logger.info(f"Layer {name}: {len(active_indices)} active filters, indices={active_indices.tolist()}, correlation={correlation.item()}")
-                                        mask_loss += correlation
-                                        found = True
-                                        matched_layers += 1
-                                        break
-                                if not found and self.rank == 0:
-                                    self.logger.warning(f"No mask found for layer {name} (adjusted: {adjusted_name})")
-
-                        if matched_layers > 0:
-                            mask_loss = mask_loss / matched_layers
-                        else:
-                            if self.rank == 0:
-                                self.logger.warning("No layers matched for mask loss calculation.")
-
-                        if self.rank == 0:
-                            total_conv_layers = sum(1 for _, m in self.student.module.named_modules() if isinstance(m, (nn.Conv2d, SoftMaskedConv2d)))
-                            #self.logger.info(f"Total Conv2d and SoftMaskedConv2d layers: {total_conv_layers}, Matched layers: {matched_layers}")
+                        Flops_baseline = Flops_baselines[self.arch][self.args.dataset_type]
+                        Flops = self.student.module.get_flops()
+                        mask_loss = self.mask_loss(
+                            Flops, Flops_baseline * (10**6), self.compress_rate
+                        )
 
                         total_loss = (
                             ori_loss
@@ -447,7 +412,6 @@ class TrainDDP:
                         )
 
                     scaler.scale(total_loss).backward()
-                   # torch.nn.utils.clip_grad_norm_(self.student.parameters(), max_norm=1.0)
                     scaler.step(self.optim_weight)
                     scaler.step(self.optim_mask)
                     scaler.update()
@@ -531,38 +495,26 @@ class TrainDDP:
                     + str(Flops.item() / (10**6))
                     + "M"
                 )
-                
-                filter_avgs = []
-                for name, module in self.student.module.named_modules():
-                    if isinstance(module, SoftMaskedConv2d):
-                        filters = module.weight  # Shape: [out_channels, in_channels, height, width]
-                    # Compute the mean of each filter (across in_channels, height, and width)
-                        filter_mean = filters.view(filters.size(0), -1).mean(dim=1)  # Mean per filter
-              
-                        layer_avg = round(filter_mean.mean().item(), 7)
-                        filter_avgs.append(layer_avg)
-                self.logger.info("[Train filter avg] Epoch {0} : ".format(epoch) + str(filter_avgs))
 
-        
             # Validation
             if self.rank == 0:
                 self.student.eval()
-                self.student.module.ticket = True  # Enable binary mask
-                meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
-
+                self.student.module.ticket = True
+                meter_top1.reset()
+                meter_val_loss.reset()  # Reset validation loss meter
                 with torch.no_grad():
                     with tqdm(total=len(self.val_loader), ncols=100) as _tqdm:
                         _tqdm.set_description("Validation epoch: {}/{}".format(epoch, self.num_epochs))
                         for images, targets in self.val_loader:
                             images = images.cuda()
                             targets = targets.cuda().float()
-
-                            if torch.isnan(images).any() or torch.isinf(images).any() or torch.isnan(targets).any() or torch.isinf(targets).any():
-                                self.logger.warning("Invalid input detected in validation (NaN or Inf)")
-                                continue
-
                             logits_student, _ = self.student(images)
                             logits_student = logits_student.squeeze(1)
+
+                            # Compute validation loss
+                            val_loss = self.ori_loss(logits_student, targets)
+                            meter_val_loss.update(val_loss.item(), images.size(0))
+
                             preds = (torch.sigmoid(logits_student) > 0.5).float()
                             correct = (preds == targets).sum().item()
                             prec1 = 100. * correct / images.size(0)
@@ -571,20 +523,23 @@ class TrainDDP:
 
                             _tqdm.set_postfix(
                                 val_acc="{:.4f}".format(meter_top1.avg),
+                                val_loss="{:.4f}".format(meter_val_loss.avg)
                             )
                             _tqdm.update(1)
                             time.sleep(0.01)
 
                 Flops = self.student.module.get_flops()
                 self.writer.add_scalar("val/acc/top1", meter_top1.avg, global_step=epoch)
+                self.writer.add_scalar("val/loss/ori_loss", meter_val_loss.avg, global_step=epoch)  # Log validation loss
                 self.writer.add_scalar("val/Flops", Flops, global_step=epoch)
 
                 self.logger.info(
                     "[Val] "
                     "Epoch {0} : "
-                    "Val_Acc {val_acc:.2f}".format(
+                    "Val_Acc {val_acc:.2f}, Val_Loss {val_loss:.4f}".format(
                         epoch,
                         val_acc=meter_top1.avg,
+                        val_loss=meter_val_loss.avg
                     )
                 )
 
