@@ -99,7 +99,7 @@ def compute_active_filters_correlation(filters, m):
     sum_of_squares = torch.sum(torch.pow(upper_tri, 2))
 
     num_active_filters = len(valid_indices)
-    normalized_correlation = sum_of_squares 
+    normalized_correlation = sum_of_squares/ num_active_filters
     return normalized_correlation, active_indices
 
 
