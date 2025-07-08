@@ -2,7 +2,6 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 import warnings
 import math
 
-
 class CosineAnnealingLRWarmup(CosineAnnealingLR):
     def __init__(
         self,
@@ -10,7 +9,6 @@ class CosineAnnealingLRWarmup(CosineAnnealingLR):
         T_max,
         eta_min=1.0e-5,
         last_epoch=-1,
-        verbose=False,
         warmup_steps=2,
         warmup_start_lr=1.0e-5,
     ):
@@ -19,7 +17,6 @@ class CosineAnnealingLRWarmup(CosineAnnealingLR):
             T_max=T_max,
             eta_min=eta_min,
             last_epoch=last_epoch,
-            verbose=verbose,
         )
         self.warmup_steps = warmup_steps
         self.warmup_start_lr = warmup_start_lr
