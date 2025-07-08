@@ -22,7 +22,6 @@ gumbel_end_temperature=${GUMBEL_END_TEMPERATURE:-0.1}
 coef_kdloss=${COEF_KDLOSS:-0.5}
 coef_rcloss=${COEF_RCLOSS:-1.0}
 coef_maskloss=${COEF_MASKLOSS:-1.0}
-compress_rate=${COMPRESS_RATE:-0.3}
 finetune_num_epochs=${FINETUNE_NUM_EPOCHS:-15}
 finetune_lr=${FINETUNE_LR:-4e-06}
 finetune_warmup_steps=${FINETUNE_WARMUP_STEPS:-5}
@@ -91,7 +90,6 @@ while [[ $# -gt 0 ]]; do
         --coef_kdloss) coef_kdloss="$2"; shift 2 ;;
         --coef_rcloss) coef_rcloss="$2"; shift 2 ;;
         --coef_maskloss) coef_maskloss="$2"; shift 2 ;;
-        --compress_rate) compress_rate="$2"; shift 2 ;;
         --finetune_num_epochs) finetune_num_epochs="$2"; shift 2 ;;
         --finetune_lr) finetune_lr="$2"; shift 2 ;;
         --finetune_warmup_steps) finetune_warmup_steps="$2"; shift 2 ;;
@@ -157,7 +155,6 @@ if [ "$PHASE" = "train" ]; then
         --coef_kdloss $coef_kdloss \
         --coef_rcloss $coef_rcloss \
         --coef_maskloss $coef_maskloss \
-        --compress_rate $compress_rate \
         --dataset_mode $dataset_mode \
         --dataset_dir $dataset_dir \
         $( [ -n "$resume" ] && echo "--resume $resume" ) \
@@ -189,7 +186,6 @@ if [ "$PHASE" = "train" ]; then
         --coef_kdloss "$coef_kdloss" \
         --coef_rcloss "$coef_rcloss" \
         --coef_maskloss "$coef_maskloss" \
-        --compress_rate "$compress_rate" \
         --dataset_mode "$dataset_mode" \
         --dataset_dir "$dataset_dir" \
         $( [ -n "$resume" ] && echo "--resume $resume" ) \
