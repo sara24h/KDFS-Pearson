@@ -53,7 +53,6 @@ class TrainDDP:
         self.coef_kdloss = args.coef_kdloss
         self.coef_rcloss = args.coef_rcloss
         self.coef_maskloss = args.coef_maskloss
-        self.compress_rate = args.compress_rate
         self.resume = args.resume
 
         self.start_epoch = 0
@@ -398,11 +397,31 @@ class TrainDDP:
                                 feature_list_student[i], feature_list_teacher[i]
                             )
 
-                        Flops_baseline = Flops_baselines[self.arch][self.args.dataset_type]
-                        Flops = self.student.module.get_flops()
-                        mask_loss = self.mask_loss(
-                            Flops, Flops_baseline * (10**6), self.compress_rate
-                        )
+                        from model.student.layer import SoftMaskedConv2d
+
+                        mask_loss = torch.tensor(0.0, device=images.device, dtype=torch.float32)
+                        matched_layers = 0
+                        for name, module in self.student.module.named_modules():
+                            if isinstance(module, SoftMaskedConv2d):
+                                filters = module.weight
+                                found = False
+                                adjusted_name = name.replace("module.", "")
+                                for mask_module in self.student.module.mask_modules:
+                                    if mask_module.mask.shape[0] == filters.shape[0] and mask_module.layer_name == adjusted_name:
+                                        m = mask_module.mask
+                                        correlation, active_indices = self.mask_loss(filters, m)
+                                        mask_loss += correlation
+                                        found = True
+                                        matched_layers += 1
+                                        break
+                                if not found and self.rank == 0:
+                                    self.logger.warning(f"No mask found for layer {name} (adjusted: {adjusted_name})")
+
+                        if matched_layers > 0:
+                            mask_loss = mask_loss / matched_layers
+                        else:
+                            if self.rank == 0:
+                                self.logger.warning("No layers matched for mask loss calculation.")
 
                         total_loss = (
                             ori_loss
