@@ -32,66 +32,63 @@ import warnings
 def compute_active_filters_correlation(filters, m, rank=0):
     device = filters.device
 
-    # Check for NaN or Inf in filters
     if torch.isnan(filters).any() or torch.isinf(filters).any():
         if rank == 0:
             warnings.warn("Filters contain NaN or Inf.")
+        return torch.tensor(0.0, device=device), torch.tensor([], device=device)
 
-    # Check for NaN or Inf in mask
     if torch.isnan(m).any() or torch.isinf(m).any():
         if rank == 0:
             warnings.warn("Mask contains NaN or Inf.")
+        return torch.tensor(0.0, device=device), torch.tensor([], device=device)
 
-    # Find indices of active filters (where mask is 1)
     active_indices = torch.where(m.squeeze() == 1)[0]
     if len(active_indices) < 2:
         if rank == 0:
             warnings.warn(f"Fewer than 2 active filters found: {len(active_indices)}")
+        return torch.tensor(0.0, device=device), active_indices
 
-    # Select active filters
     active_filters = filters[active_indices]
     active_filters_flat = active_filters.view(len(active_indices), -1)
 
-    # Check for NaN or Inf in active filters
     if torch.isnan(active_filters_flat).any() or torch.isinf(active_filters_flat).any():
         if rank == 0:
             warnings.warn("Active filters contain NaN or Inf.")
+        return torch.tensor(0.0, device=device), active_indices
 
-    # Compute variance for each filter
-    variance = torch.var(active_filters_flat, dim=1, unbiased=True) + 1e-8  # Add epsilon for stability
-    valid_indices = torch.where(variance > 1e-8)[0]
+    variance = torch.var(active_filters_flat, dim=1, unbiased=True) + 1e-6
+    valid_indices = torch.where(variance > 1e-6)[0]
     if len(valid_indices) < 2:
         if rank == 0:
             warnings.warn(f"Fewer than 2 filters with non-zero variance: {len(valid_indices)}")
+        return torch.tensor(0.0, device=device), active_indices
 
-    # Filter out filters with non-zero variance
     active_filters_flat = active_filters_flat[valid_indices]
     mean = torch.mean(active_filters_flat, dim=1, keepdim=True)
     centered = active_filters_flat - mean
     std = torch.sqrt(variance[valid_indices])
 
-    # Compute covariance matrix
-    cov_matrix = torch.matmul(centered, centered.t()) / (active_filters_flat.size(1) - 1 + 1e-8)
+    cov_matrix = torch.matmul(centered, centered.t()) / (active_filters_flat.size(1) - 1 + 1e-6)
     std_outer = std.unsqueeze(1) * std.unsqueeze(0)
-    correlation_matrix = cov_matrix / (std_outer + 1e-8)  # Add epsilon to prevent division by zero
+    correlation_matrix = cov_matrix / (std_outer + 1e-6)
 
-    # Check for NaN or Inf in correlation matrix
     if torch.isnan(correlation_matrix).any() or torch.isinf(correlation_matrix).any():
         if rank == 0:
             warnings.warn("Correlation matrix contains NaN or Inf.")
+        return torch.tensor(0.0, device=device), active_indices
 
-    # Compute sum of squares of upper triangular elements
     upper_tri = torch.triu(correlation_matrix, diagonal=1)
     sum_of_squares = torch.sum(torch.pow(upper_tri, 2))
     num_valid_filters = len(valid_indices)
-    normalized_correlation = sum_of_squares / (num_valid_filters * (num_valid_filters - 1) / 2 + 1e-8)
+    normalized_correlation = sum_of_squares / (num_valid_filters * (num_valid_filters - 1) / 2 + 1e-6)
 
-    # Check for NaN or Inf in normalized correlation
     if torch.isnan(normalized_correlation) or torch.isinf(normalized_correlation):
         if rank == 0:
             warnings.warn(f"Normalized correlation is NaN or Inf: {normalized_correlation}")
+        return torch.tensor(0.0, device=device), active_indices
 
     return normalized_correlation, active_indices
+
 
 class MaskLoss(nn.Module):
     def __init__(self):
