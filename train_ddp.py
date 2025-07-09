@@ -141,7 +141,7 @@ class TrainDDP:
             realfake140k_root_dir = self.dataset_dir
 
         if self.rank == 0:
-            if self.dataset_mode == 'hardfake and not os.path.exists(hardfake_csv_file):
+            if self.dataset_mode == 'hardfake' and not os.path.exists(hardfake_csv_file):
                 raise FileNotFoundError(f"CSV file not found: {hardfake_csv_file}")
             if self.dataset_mode == 'rvf10k':
                 if not os.path.exists(rvf10k_train_csv):
