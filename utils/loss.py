@@ -47,7 +47,6 @@ def compute_active_filters_correlation(filters, m, rank=0):
     if len(active_indices) < 2:
         if rank == 0:
             warnings.warn(f"Fewer than 2 active filters found: {len(active_indices)}")
-        return torch.tensor(0.0, device=device), active_indices
 
     # انتخاب فیلترهای فعال
     active_filters = filters[active_indices]
@@ -87,7 +86,6 @@ def compute_active_filters_correlation(filters, m, rank=0):
     if torch.isnan(normalized_correlation) or torch.isinf(normalized_correlation):
         if rank == 0:
             warnings.warn(f"Normalized correlation is NaN or Inf: {normalized_correlation}")
-        return torch.tensor(0.0, device=device), active_indices
 
     return normalized_correlation, active_indices
 
