@@ -44,8 +44,10 @@ def compute_active_filters_correlation(filters, m, rank=0):
             warnings.warn("Mask contains NaN or Inf.")
         return torch.tensor(0.0, device=device), torch.tensor([], device=device)
 
-    # یافتن ایندکس‌های فیلترهای فعال
-    active_indices = torch.where(m.squeeze() == 1)[0]
+
+    #active_indices = torch.where(m.squeeze() == 1)[0]
+    active_indices = torch.where(m.squeeze() > 0.5)[0]
+    
     if len(active_indices) < 2:
         if rank == 0:
             warnings.warn(f"Fewer than 2 active filters found: {len(active_indices)}")
