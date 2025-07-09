@@ -52,6 +52,7 @@ class SoftMaskedConv2d(nn.Module):
         nn.init.constant_(self.mask_weight[:, 0, :, :], -1.0)  
 
     def compute_mask(self, ticket, gumbel_temperature):
+        print(f"mask_weight: {self.mask_weight.data}")
         if ticket:
             mask = torch.argmax(self.mask_weight, dim=1).unsqueeze(1).float()
         else:
