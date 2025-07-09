@@ -561,7 +561,7 @@ class TrainDDP:
 
                 masks = []
                 for _, m in enumerate(self.student.module.mask_modules):
-                    masks.append(round(m.maskzzles.append(round(m.mask.mean().item(), 2))
+                    masks.append(round(m.mask.mean().item(), 2))
                 self.logger.info("[Val mask avg] Epoch {0} : ".format(epoch) + str(masks))
 
                 self.logger.info(
