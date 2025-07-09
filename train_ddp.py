@@ -336,6 +336,7 @@ class TrainDDP:
 
         torch.cuda.empty_cache()
         self.teacher.eval()
+        scaler = GradScaler()
 
         if self.resume:
             self.resume_student_ckpt()
@@ -374,7 +375,7 @@ class TrainDDP:
                 avg_mask = sum(masks) / len(masks) if masks else 0.0
                 self.logger.info(f"[Train avg mask across layers] Epoch {epoch} : {avg_mask:.2f}")
                 self.writer.add_scalar("train/mask_avg", avg_mask, global_step=epoch)    
-        
+            
             with tqdm(total=len(self.train_loader), ncols=100, disable=self.rank != 0) as _tqdm:
                 if self.rank == 0:
                     _tqdm.set_description("epoch: {}/{}".format(epoch, self.num_epochs))
@@ -384,61 +385,71 @@ class TrainDDP:
                     images = images.cuda()
                     targets = targets.cuda().float()
 
-                    logits_student, feature_list_student = self.student(images)
-                    logits_student = logits_student.squeeze(1)
-                    with torch.no_grad():
-                        logits_teacher, feature_list_teacher = self.teacher(images)
-                        logits_teacher = logits_teacher.squeeze(1)
+                    with autocast():
+                        logits_student, feature_list_student = self.student(images)
+                        logits_student = logits_student.squeeze(1)
+                        with torch.no_grad():
+                            logits_teacher, feature_list_teacher = self.teacher(images)
+                            logits_teacher = logits_teacher.squeeze(1)
 
-                    ori_loss = self.ori_loss(logits_student, targets)
-                    kd_loss = (self.target_temperature**2) * self.kd_loss(
-                        logits_teacher,
-                        logits_student,
-                        self.target_temperature
-                    )
-
-                    rc_loss = torch.tensor(0, device=images.device)
-                    for i in range(len(feature_list_student)):
-                        rc_loss = rc_loss + self.rc_loss(
-                            feature_list_student[i], feature_list_teacher[i]
+                        ori_loss = self.ori_loss(logits_student, targets)
+                        kd_loss = (self.target_temperature**2) * self.kd_loss(
+                            logits_teacher,
+                            logits_student,
+                            self.target_temperature
                         )
 
-                    from model.student.layer import SoftMaskedConv2d
+                        rc_loss = torch.tensor(0, device=images.device)
+                        for i in range(len(feature_list_student)):
+                            rc_loss = rc_loss + self.rc_loss(
+                                feature_list_student[i], feature_list_teacher[i]
+                            )
 
-                    mask_loss = torch.tensor(0.0, device=images.device, dtype=torch.float32)
-                    matched_layers = 0
-                    for name, module in self.student.module.named_modules():
-                        if isinstance(module, SoftMaskedConv2d):
-                            filters = module.weight
-                            found = False
-                            adjusted_name = name.replace("module.", "")
-                            for mask_module in self.student.module.mask_modules:
-                                m = mask_module.mask
-                                correlation, active_indices = self.mask_loss(filters, m)
-                                mask_loss += correlation
-                                found = True
-                                matched_layers += 1
-                                break
-                            if not found and self.rank == 0:
-                                self.logger.warning(f"No mask found for layer {name} (adjusted: {adjusted_name})")
+                        from model.student.layer import SoftMaskedConv2d
 
-                    if matched_layers > 0:
-                        mask_loss = mask_loss / matched_layers
-                    else:
-                        if self.rank == 0:
-                            self.logger.warning("No layers matched for mask loss calculation.")
+                        mask_loss = torch.tensor(0.0, device=images.device, dtype=torch.float32)
+                        matched_layers = 0
+                        for name, module in self.student.module.named_modules():
+                            if isinstance(module, SoftMaskedConv2d):
+                                filters = module.weight
+                                found = False
+                                adjusted_name = name.replace("module.", "")
+                                for mask_module in self.student.module.mask_modules:
+                                    
+                                    m = mask_module.mask
+                                    correlation, active_indices = self.mask_loss(filters, m)
+                                    mask_loss += correlation
+                                    found = True
+                                    matched_layers += 1
+                                    break
+                                if not found and self.rank == 0:
+                                    self.logger.warning(f"No mask found for layer {name} (adjusted: {adjusted_name})")
 
-                    total_loss = (
-                        ori_loss
-                        + self.coef_kdloss * kd_loss
-                        + self.coef_rcloss * rc_loss / len(feature_list_student)
-                        + self.coef_maskloss * mask_loss
-                    )
+                        if matched_layers > 0:
+                            mask_loss = mask_loss / matched_layers
+                        else:
+                            if self.rank == 0:
+                                self.logger.warning("No layers matched for mask loss calculation.")
 
-                    total_loss.backward()
-                            
-                    self.optim_weight.step()
-                    self.optim_mask.step()
+                        total_loss = (
+                            ori_loss
+                            + self.coef_kdloss * kd_loss
+                            + self.coef_rcloss * rc_loss / len(feature_list_student)
+                            + self.coef_maskloss * mask_loss
+                        )
+
+                    scaler.scale(total_loss).backward()
+
+                    if self.rank == 0:
+                        for i, m in enumerate(self.student.module.mask_modules):
+                            if m.mask_weight.grad is not None:
+                                self.logger.info(f"[Grad] Epoch {epoch}, Mask {i} grad norm: {torch.norm(m.mask_weight.grad).item():.4e}")
+                            else:
+                                self.logger.info(f"[Grad] Epoch {epoch}, Mask {i} grad is None")
+                                
+                    scaler.step(self.optim_weight)
+                    scaler.step(self.optim_mask)
+                    scaler.update()
 
                     preds = (torch.sigmoid(logits_student) > 0.5).float()
                     correct = (preds == targets).sum().item()
