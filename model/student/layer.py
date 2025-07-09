@@ -48,8 +48,7 @@ class SoftMaskedConv2d(nn.Module):
 
     def init_mask(self):
         self.mask_weight = nn.Parameter(torch.Tensor(self.out_channels, 2, 1, 1))
-        nn.init.constant_(self.mask_weight[:, 1, :, :], 1.0)  
-        nn.init.constant_(self.mask_weight[:, 0, :, :], -1.0)  
+        nn.init.uniform_(self.mask_weight, a=-1.0, b=1.0)  
 
     def compute_mask(self, ticket, gumbel_temperature):
         if ticket:
