@@ -19,6 +19,14 @@ from model.teacher.ResNet import ResNet_50_hardfakevsreal
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
+Flops_baselines = {
+    "ResNet_50": {
+        "hardfakevsrealfaces": 7700.0,
+        "rvf10k": 5000.0,
+        "140k": 5390.0,
+    }
+}
+
 class TrainDDP:
     def __init__(self, args):
         self.args = args
@@ -45,6 +53,7 @@ class TrainDDP:
         self.coef_kdloss = args.coef_kdloss
         self.coef_rcloss = args.coef_rcloss
         self.coef_maskloss = args.coef_maskloss
+        self.compress_rate = args.compress_rate
         self.resume = args.resume
 
         self.start_epoch = 0
@@ -182,7 +191,7 @@ class TrainDDP:
 
     def build_model(self):
         if self.rank == 0:
-            self.logger.info("=> Building model..")
+            self.logger.info("==> Building model..")
             self.logger.info("Loading teacher model")
 
         resnet = ResNet_50_hardfakevsreal()
@@ -194,20 +203,19 @@ class TrainDDP:
         if self.rank == 0:
             self.logger.info("Testing teacher model on validation batch...")
             with torch.no_grad():
-                with autocast():  # Use autocast for teacher model inference
-                    correct = 0
-                    total = 0
-                    for images, targets in self.val_loader:
-                        images = images.cuda()
-                        targets = targets.cuda().float()
-                        logits, _ = self.teacher(images)
-                        logits = logits.squeeze(1)
-                        preds = (torch.sigmoid(logits) > 0.5).float()
-                        correct += (preds == targets).sum().item()
-                        total += images.size(0)
-                        break
-                    accuracy = 100. * correct / total
-                    self.logger.info(f"Teacher accuracy on validation batch: {accuracy:.2f}%")
+                correct = 0
+                total = 0
+                for images, targets in self.val_loader:
+                    images = images.cuda()
+                    targets = targets.cuda().float()
+                    logits, _ = self.teacher(images)
+                    logits = logits.squeeze(1)
+                    preds = (torch.sigmoid(logits) > 0.5).float()
+                    correct += (preds == targets).sum().item()
+                    total += images.size(0)
+                    break
+                accuracy = 100. * correct / total
+                self.logger.info(f"Teacher accuracy on validation batch: {accuracy:.2f}%")
 
         if self.rank == 0:
             self.logger.info("Building student model")
@@ -329,7 +337,7 @@ class TrainDDP:
 
         torch.cuda.empty_cache()
         self.teacher.eval()
-        scaler = GradScaler()  # Initialize GradScaler for mixed precision
+        scaler = GradScaler()
 
         if self.resume:
             self.resume_student_ckpt()
@@ -341,7 +349,7 @@ class TrainDDP:
             meter_maskloss = meter.AverageMeter("MaskLoss", ":.6e")
             meter_loss = meter.AverageMeter("Loss", ":.4e")
             meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
-            meter_val_loss = meter.AverageMeter("ValLoss", ":.4e")
+            meter_val_loss = meter.AverageMeter("ValLoss", ":.4e")  # Added validation loss meter
 
         for epoch in range(self.start_epoch + 1, self.num_epochs + 1):
             self.train_loader.sampler.set_epoch(epoch)
@@ -361,7 +369,6 @@ class TrainDDP:
                 )
 
             self.student.module.update_gumbel_temperature(epoch)
-
             with tqdm(total=len(self.train_loader), ncols=100, disable=self.rank != 0) as _tqdm:
                 if self.rank == 0:
                     _tqdm.set_description("epoch: {}/{}".format(epoch, self.num_epochs))
@@ -371,7 +378,6 @@ class TrainDDP:
                     images = images.cuda()
                     targets = targets.cuda().float()
 
-                    # Mixed precision forward pass
                     with autocast():
                         logits_student, feature_list_student = self.student(images)
                         logits_student = logits_student.squeeze(1)
@@ -386,36 +392,13 @@ class TrainDDP:
                             self.target_temperature
                         )
 
-                        rc_loss = torch.tensor(0, device=images.device, dtype=torch.float32)
+                        rc_loss = torch.tensor(0, device=images.device)
                         for i in range(len(feature_list_student)):
                             rc_loss = rc_loss + self.rc_loss(
                                 feature_list_student[i], feature_list_teacher[i]
                             )
 
-                        from model.student.layer import SoftMaskedConv2d
-
-                        mask_loss = torch.tensor(0.0, device=images.device, dtype=torch.float32)
-                        matched_layers = 0
-                        for name, module in self.student.module.named_modules():
-                            if isinstance(module, SoftMaskedConv2d):
-                                filters = module.weight
-                                found = False
-                                adjusted_name = name.replace("module.", "")
-                                for mask_module in self.student.module.mask_modules:
-                                    m = mask_module.mask
-                                    correlation, active_indices = self.mask_loss(filters, m)
-                                    mask_loss += correlation
-                                    found = True
-                                    matched_layers += 1
-                                    break
-                                if not found and self.rank == 0:
-                                    self.logger.warning(f"No mask found for layer {name} (adjusted: {adjusted_name})")
-
-                        if matched_layers > 0:
-                            mask_loss = mask_loss / matched_layers
-                        else:
-                            if self.rank == 0:
-                                self.logger.warning("No layers matched for mask loss calculation.")
+                        mask_loss = self.mask_loss(self.student.module)
 
                         total_loss = (
                             ori_loss
@@ -424,10 +407,7 @@ class TrainDDP:
                             + self.coef_maskloss * mask_loss
                         )
 
-                    # Scale the loss and perform backward pass
                     scaler.scale(total_loss).backward()
-
-                    # Step optimizers with gradient scaling
                     scaler.step(self.optim_weight)
                     scaler.step(self.optim_mask)
                     scaler.update()
@@ -517,19 +497,19 @@ class TrainDDP:
                 self.student.eval()
                 self.student.module.ticket = True
                 meter_top1.reset()
-                meter_val_loss.reset()
+                meter_val_loss.reset()  # Reset validation loss meter
                 with torch.no_grad():
                     with tqdm(total=len(self.val_loader), ncols=100) as _tqdm:
                         _tqdm.set_description("Validation epoch: {}/{}".format(epoch, self.num_epochs))
                         for images, targets in self.val_loader:
                             images = images.cuda()
                             targets = targets.cuda().float()
-                            # Use autocast for validation forward pass
-                            with autocast():
-                                logits_student, _ = self.student(images)
-                                logits_student = logits_student.squeeze(1)
-                                val_loss = self.ori_loss(logits_student, targets)
-                                meter_val_loss.update(val_loss.item(), images.size(0))
+                            logits_student, _ = self.student(images)
+                            logits_student = logits_student.squeeze(1)
+
+                            # Compute validation loss
+                            val_loss = self.ori_loss(logits_student, targets)
+                            meter_val_loss.update(val_loss.item(), images.size(0))
 
                             preds = (torch.sigmoid(logits_student) > 0.5).float()
                             correct = (preds == targets).sum().item()
@@ -546,7 +526,7 @@ class TrainDDP:
 
                 Flops = self.student.module.get_flops()
                 self.writer.add_scalar("val/acc/top1", meter_top1.avg, global_step=epoch)
-                self.writer.add_scalar("val/loss/ori_loss", meter_val_loss.avg, global_step=epoch)
+                self.writer.add_scalar("val/loss/ori_loss", meter_val_loss.avg, global_step=epoch)  # Log validation loss
                 self.writer.add_scalar("val/Flops", Flops, global_step=epoch)
 
                 self.logger.info(
