@@ -46,18 +46,19 @@ class SoftMaskedConv2d(nn.Module):
                 bound = 1 / math.sqrt(fan_in)
                 nn.init.uniform_(self.bias, -bound, bound)
 
-    # در ResNet_sparse.py، در کلاس SoftMaskedConv2d
     def init_mask(self):
-        self.mask_weight = nn.Parameter(torch.ones(self.out_channels, 2, 1, 1) * 0.5)  # یا torch.rand
+        self.mask_weight = nn.Parameter(torch.Tensor(self.out_channels, 2, 1, 1))
+        nn.init.kaiming_normal_(self.mask_weight)
 
     def compute_mask(self, ticket, gumbel_temperature):
+        print(f"[Compute mask] ticket={ticket}, gumbel_temperature={gumbel_temperature}")
         if ticket:
             mask = torch.argmax(self.mask_weight, dim=1).unsqueeze(1).float()
         else:
             mask = F.gumbel_softmax(
                 logits=self.mask_weight, tau=gumbel_temperature, hard=True, dim=1
             )[:, 1, :, :].unsqueeze(1)
-        return mask  # shape = [C, 1, 1, 1]
+        return mask
 
     def update_gumbel_temperature(self, gumbel_temperature):
         self.gumbel_temperature = gumbel_temperature
