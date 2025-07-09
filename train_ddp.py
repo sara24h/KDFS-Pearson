@@ -6,6 +6,7 @@ from datetime import datetime
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
@@ -26,6 +27,88 @@ Flops_baselines = {
         "140k": 5390.0,
     }
 }
+
+class SoftMaskedConv2d(nn.Module):
+    def __init__(
+        self, in_channels, out_channels, kernel_size, stride=1, padding=0, bias=True
+    ):
+        super().__init__()
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+        self.bias = None
+
+        self.weight = nn.Parameter(
+            torch.Tensor(out_channels, in_channels, kernel_size, kernel_size)
+        )
+        if bias:
+            self.bias = nn.Parameter(torch.Tensor(out_channels))
+        self.init_weight()
+
+        self.init_mask()
+
+        self.mask = torch.ones([self.out_channels, 1, 1, 1])
+        self.gumbel_temperature = 1.0  # Match train.py config
+
+        self.feature_map_h = 0
+        self.feature_map_w = 0
+
+    def init_weight(self):
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        if self.bias is not None:
+            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
+            if fan_in != 0:
+                bound = 1 / math.sqrt(fan_in)
+                nn.init.uniform_(self.bias, -bound, bound)
+
+    def init_mask(self):
+        self.mask_weight = nn.Parameter(torch.ones(self.out_channels, 2, 1, 1) * 0.5)  # یا torch.rand
+
+    def compute_mask(self, ticket, gumbel_temperature):
+        print(f"[Compute mask] ticket={ticket}, gumbel_temperature={gumbel_temperature}")  # لاگ با print
+        if ticket:
+            mask = torch.argmax(self.mask_weight, dim=1).unsqueeze(1).float()
+        else:
+            mask = F.gumbel_softmax(
+                logits=self.mask_weight, tau=gumbel_temperature, hard=True, dim=1
+            )[:, 1, :, :].unsqueeze(1)
+        return mask  # shape = [C, 1, 1, 1]
+
+    def update_gumbel_temperature(self, gumbel_temperature):
+        self.gumbel_temperature = gumbel_temperature
+
+    def forward(self, x, ticket=False, gumbel_temperature=None):
+        gumbel_temp = gumbel_temperature if gumbel_temperature is not None else self.gumbel_temperature
+        self.mask = self.compute_mask(ticket, gumbel_temp)
+        masked_weight = self.weight * self.mask
+        out = F.conv2d(
+            x,
+            weight=masked_weight,
+            bias=self.bias,
+            stride=self.stride,
+            padding=self.padding,
+        )
+        self.feature_map_h, self.feature_map_w = out.shape[2], out.shape[3]
+        return out
+
+    def checkpoint(self):
+        self.checkpoint_state = self.state_dict()
+
+    def rewind_weights(self):
+        if hasattr(self, 'checkpoint_state'):
+            self.load_state_dict(self.checkpoint_state)
+
+    def extra_repr(self):
+        return "{}, {}, kernel_size={}, stride={}, padding={}".format(
+            self.in_channels,
+            self.out_channels,
+            self.kernel_size,
+            self.stride,
+            self.padding,
+        )
 
 class TrainDDP:
     def __init__(self, args):
@@ -354,17 +437,7 @@ class TrainDDP:
             self.student.train()
             self.student.module.ticket = False
             if self.rank == 0:
-                meter_oriloss.reset()
-                meter_kdloss.reset()
-                meter_rcloss.reset()
-                meter_maskloss.reset()
-                meter_loss.reset()
-                meter_top1.reset()
-                lr = (
-                    self.optim_weight.state_dict()["param_groups"][0]["lr"]
-                    if epoch > 1
-                    else self.warmup_start_lr
-                )
+                self.logger.info(f"[Ticket status] Epoch {epoch}, ticket={self.student.module.ticket}")
 
             self.student.module.update_gumbel_temperature(epoch)
 
@@ -384,7 +457,6 @@ class TrainDDP:
                     images = images.cuda()
                     targets = targets.cuda().float()
 
-                # حذف autocast و استفاده از فوروارد پاس استاندارد
                     logits_student, feature_list_student = self.student(images)
                     logits_student = logits_student.squeeze(1)
                     with torch.no_grad():
@@ -436,7 +508,6 @@ class TrainDDP:
                         + self.coef_maskloss * mask_loss
                     )
 
-                # حذف scaler و استفاده از بک‌وارد استاندارد
                     total_loss.backward()
 
                     if self.rank == 0:
@@ -445,10 +516,18 @@ class TrainDDP:
                                 self.logger.info(f"[Grad] Epoch {epoch}, Mask {i} grad norm: {torch.norm(m.mask_weight.grad).item():.4e}")
                             else:
                                 self.logger.info(f"[Grad] Epoch {epoch}, Mask {i} grad is None")
-                            
-                # حذف scaler.step و استفاده از step استاندارد
+                        
+                        # لاگ ماسک‌ها قبل از به‌روزرسانی
+                        masks_before = [round(m.mask.mean().item(), 2) for m in self.student.module.mask_modules]
+                        self.logger.info(f"[Train mask avg before update] Epoch {epoch} : {masks_before}")
+
                     self.optim_weight.step()
                     self.optim_mask.step()
+
+                    if self.rank == 0:
+                        # لاگ ماسک‌ها بعد از به‌روزرسانی
+                        masks_after = [round(m.mask.mean().item(), 2) for m in self.student.module.mask_modules]
+                        self.logger.info(f"[Train mask avg after update] Epoch {epoch} : {masks_after}")
 
                     preds = (torch.sigmoid(logits_student) > 0.5).float()
                     correct = (preds == targets).sum().item()
