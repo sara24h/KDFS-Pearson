@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from .layer import SoftMaskedConv2d
+from model.student.layer import SoftMaskedConv2d
 
 class KDLoss(nn.Module):
     def __init__(self):
