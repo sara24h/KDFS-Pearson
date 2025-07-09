@@ -6,7 +6,6 @@ from datetime import datetime
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
@@ -19,6 +18,14 @@ from thop import profile
 from model.teacher.ResNet import ResNet_50_hardfakevsreal
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+Flops_baselines = {
+    "ResNet_50": {
+        "hardfakevsrealfaces": 7700.0,
+        "rvf10k": 5390.0,
+        "140k": 5390.0,
+    }
+}
 
 class TrainDDP:
     def __init__(self, args):
@@ -347,7 +354,17 @@ class TrainDDP:
             self.student.train()
             self.student.module.ticket = False
             if self.rank == 0:
-                self.logger.info(f"[Ticket status] Epoch {epoch}, ticket={self.student.module.ticket}")
+                meter_oriloss.reset()
+                meter_kdloss.reset()
+                meter_rcloss.reset()
+                meter_maskloss.reset()
+                meter_loss.reset()
+                meter_top1.reset()
+                lr = (
+                    self.optim_weight.state_dict()["param_groups"][0]["lr"]
+                    if epoch > 1
+                    else self.warmup_start_lr
+                )
 
             self.student.module.update_gumbel_temperature(epoch)
 
@@ -367,6 +384,7 @@ class TrainDDP:
                     images = images.cuda()
                     targets = targets.cuda().float()
 
+                # حذف autocast و استفاده از فوروارد پاس استاندارد
                     logits_student, feature_list_student = self.student(images)
                     logits_student = logits_student.squeeze(1)
                     with torch.no_grad():
@@ -418,7 +436,17 @@ class TrainDDP:
                         + self.coef_maskloss * mask_loss
                     )
 
+                # حذف scaler و استفاده از بک‌وارد استاندارد
                     total_loss.backward()
+
+                    if self.rank == 0:
+                        for i, m in enumerate(self.student.module.mask_modules):
+                            if m.mask_weight.grad is not None:
+                                self.logger.info(f"[Grad] Epoch {epoch}, Mask {i} grad norm: {torch.norm(m.mask_weight.grad).item():.4e}")
+                            else:
+                                self.logger.info(f"[Grad] Epoch {epoch}, Mask {i} grad is None")
+                            
+                # حذف scaler.step و استفاده از step استاندارد
                     self.optim_weight.step()
                     self.optim_mask.step()
 
