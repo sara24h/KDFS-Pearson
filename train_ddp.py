@@ -192,22 +192,22 @@ class TrainDDP:
         self.teacher = resnet.cuda()
 
         if self.rank == 0:
-        self.logger.info("Testing teacher model on validation batch...")
-        with torch.no_grad():
-            with autocast():  # Use autocast for teacher model inference
-                correct = 0
-                total = 0
-                for images, targets in self.val_loader:
-                    images = images.cuda()
-                    targets = targets.cuda().float()
-                    logits, _ = self.teacher(images)
-                    logits = logits.squeeze(1)
-                    preds = (torch.sigmoid(logits) > 0.5).float()
-                    correct += (preds == targets).sum().item()
-                    total += images.size(0)
-                    break
-                accuracy = 100. * correct / total
-                self.logger.info(f"Teacher accuracy on validation batch: {accuracy:.2f}%")
+            self.logger.info("Testing teacher model on validation batch...")
+            with torch.no_grad():
+                with autocast():  # Use autocast for teacher model inference
+                    correct = 0
+                    total = 0
+                    for images, targets in self.val_loader:
+                        images = images.cuda()
+                        targets = targets.cuda().float()
+                        logits, _ = self.teacher(images)
+                        logits = logits.squeeze(1)
+                        preds = (torch.sigmoid(logits) > 0.5).float()
+                        correct += (preds == targets).sum().item()
+                        total += images.size(0)
+                        break
+                    accuracy = 100. * correct / total
+                    self.logger.info(f"Teacher accuracy on validation batch: {accuracy:.2f}%")
 
         if self.rank == 0:
             self.logger.info("Building student model")
