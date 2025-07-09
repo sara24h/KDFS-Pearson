@@ -384,6 +384,7 @@ class TrainDDP:
                     images = images.cuda()
                     targets = targets.cuda().float()
 
+                # حذف autocast و استفاده از فوروارد پاس استاندارد
                     logits_student, feature_list_student = self.student(images)
                     logits_student = logits_student.squeeze(1)
                     with torch.no_grad():
@@ -435,15 +436,17 @@ class TrainDDP:
                         + self.coef_maskloss * mask_loss
                     )
 
+                # حذف scaler و استفاده از بک‌وارد استاندارد
                     total_loss.backward()
 
                     if self.rank == 0:
-                    for i, m in enumerate(self.student.module.mask_modules):
-                        if m.mask_weight.grad is not None:
-                            self.logger.info(f"[Grad] Epoch {epoch}, Mask {i} grad norm: {torch.norm(m.mask_weight.grad).item():.4e}")
-                        else:
-                            self.logger.info(f"[Grad] Epoch {epoch}, Mask {i} grad is None")
+                        for i, m in enumerate(self.student.module.mask_modules):
+                            if m.mask_weight.grad is not None:
+                                self.logger.info(f"[Grad] Epoch {epoch}, Mask {i} grad norm: {torch.norm(m.mask_weight.grad).item():.4e}")
+                            else:
+                                self.logger.info(f"[Grad] Epoch {epoch}, Mask {i} grad is None")
                             
+                # حذف scaler.step و استفاده از step استاندارد
                     self.optim_weight.step()
                     self.optim_mask.step()
 
