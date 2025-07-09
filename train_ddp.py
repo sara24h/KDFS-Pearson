@@ -188,7 +188,7 @@ class TrainDDP:
         resnet = ResNet_50_hardfakevsreal()
         ckpt_teacher = torch.load(self.teacher_ckpt_path, map_location="cpu", weights_only=True)
         state_dict = ckpt_teacher.get('model_state_dict', ckpt_teacher)
-        resnet.load_state_dict(state_dict, breaks=True)
+        resnet.load_state_dict(state_dict, strict=True)
         self.teacher = resnet.cuda()
 
         if self.rank == 0:
