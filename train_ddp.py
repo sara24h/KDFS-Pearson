@@ -19,14 +19,6 @@ from model.teacher.ResNet import ResNet_50_hardfakevsreal
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
-Flops_baselines = {
-    "ResNet_50": {
-        "hardfakevsrealfaces": 7700.0,
-        "rvf10k": 5390.0,
-        "140k": 5390.0,
-    }
-}
-
 class TrainDDP:
     def __init__(self, args):
         self.args = args
@@ -367,14 +359,7 @@ class TrainDDP:
                 )
 
             self.student.module.update_gumbel_temperature(epoch)
-
-            if self.rank == 0:
-                masks = [round(m.mask.mean().item(), 2) for m in self.student.module.mask_modules]
-                self.logger.info(f"[Train mask avg] Epoch {epoch} : {masks}")
-                avg_mask = sum(masks) / len(masks) if masks else 0.0
-                self.logger.info(f"[Train avg mask across layers] Epoch {epoch} : {avg_mask:.2f}")
-                self.writer.add_scalar("train/mask_avg", avg_mask, global_step=epoch)    
-        
+                  
             with tqdm(total=len(self.train_loader), ncols=100, disable=self.rank != 0) as _tqdm:
                 if self.rank == 0:
                     _tqdm.set_description("epoch: {}/{}".format(epoch, self.num_epochs))
@@ -384,7 +369,6 @@ class TrainDDP:
                     images = images.cuda()
                     targets = targets.cuda().float()
 
-                # حذف autocast و استفاده از فوروارد پاس استاندارد
                     logits_student, feature_list_student = self.student(images)
                     logits_student = logits_student.squeeze(1)
                     with torch.no_grad():
@@ -436,7 +420,6 @@ class TrainDDP:
                         + self.coef_maskloss * mask_loss
                     )
 
-                # حذف scaler و استفاده از بک‌وارد استاندارد
                     total_loss.backward()
 
                     if self.rank == 0:
@@ -446,7 +429,6 @@ class TrainDDP:
                             else:
                                 self.logger.info(f"[Grad] Epoch {epoch}, Mask {i} grad is None")
                             
-                # حذف scaler.step و استفاده از step استاندارد
                     self.optim_weight.step()
                     self.optim_mask.step()
 
