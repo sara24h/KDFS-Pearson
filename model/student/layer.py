@@ -51,7 +51,6 @@ class SoftMaskedConv2d(nn.Module):
         nn.init.kaiming_normal_(self.mask_weight)
 
     def compute_mask(self, ticket, gumbel_temperature):
-        print(f"[Compute mask] ticket={ticket}, gumbel_temperature={gumbel_temperature}")
         if ticket:
             mask = torch.argmax(self.mask_weight, dim=1).unsqueeze(1).float()
         else:
