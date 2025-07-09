@@ -414,10 +414,10 @@ class TrainDDP:
                             self.logger.warning("No layers matched for mask loss calculation.")
 
                     total_loss = (
-                        #ori_loss
-                        #+ self.coef_kdloss * kd_loss
-                        #+ self.coef_rcloss * rc_loss / len(feature_list_student)
-                        self.coef_maskloss * mask_loss
+                        ori_loss
+                        + self.coef_kdloss * kd_loss
+                        + self.coef_rcloss * rc_loss / len(feature_list_student)
+                        + self.coef_maskloss * mask_loss
                     )
 
                     total_loss.backward()
