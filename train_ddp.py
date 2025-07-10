@@ -12,13 +12,12 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from torch.cuda.amp import autocast, GradScaler
 from data.dataset import Dataset_selector
-from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, ResNet_50_sparse_rvf10k
+from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, ResNet_50_sparse_rvf10k, SoftMaskedConv2d  # وارد کردن SoftMaskedConv2d
 from utils import utils, loss, meter, scheduler
 from thop import profile
 from model.teacher.ResNet import ResNet_50_hardfakevsreal
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
 
 class TrainDDP:
     def __init__(self, args):
@@ -142,14 +141,15 @@ class TrainDDP:
             realfake140k_root_dir = self.dataset_dir
 
         if self.rank == 0:
+            self.logger.info(f"Loading dataset: {self.dataset_mode}")
             if self.dataset_mode == 'hardfake' and not os.path.exists(hardfake_csv_file):
                 raise FileNotFoundError(f"CSV file not found: {hardfake_csv_file}")
-            if self.dataset_mode == 'rvf10k':
+            elif self.dataset_mode == 'rvf10k':
                 if not os.path.exists(rvf10k_train_csv):
                     raise FileNotFoundError(f"Train CSV file not found: {rvf10k_train_csv}")
                 if not os.path.exists(rvf10k_valid_csv):
                     raise FileNotFoundError(f"Valid CSV file not found: {rvf10k_valid_csv}")
-            if self.dataset_mode == '140k':
+            elif self.dataset_mode == '140k':
                 if not os.path.exists(realfake140k_train_csv):
                     raise FileNotFoundError(f"Train CSV file not found: {realfake140k_train_csv}")
                 if not os.path.exists(realfake140k_valid_csv):
@@ -233,7 +233,8 @@ class TrainDDP:
         self.ori_loss = nn.BCEWithLogitsLoss().cuda()
         self.kd_loss = loss.KDLoss().cuda()
         self.rc_loss = loss.RCLoss().cuda()
-        self.mask_loss = loss.MaskLoss(correlation_weight=1).cuda()
+        # تغییر: تعریف MaskLoss با correlation_weight
+        self.mask_loss = loss.MaskLoss(correlation_weight=0.1).cuda()
 
     def define_optim(self):
         weight_params = map(
@@ -341,7 +342,6 @@ class TrainDDP:
             meter_maskloss = meter.AverageMeter("MaskLoss", ":.6e")
             meter_loss = meter.AverageMeter("Loss", ":.4e")
             meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
-            meter_val_loss = meter.AverageMeter("ValLoss", ":.4e")  # Added validation loss meter
 
         for epoch in range(self.start_epoch + 1, self.num_epochs + 1):
             self.train_loader.sampler.set_epoch(epoch)
@@ -370,6 +370,11 @@ class TrainDDP:
                     images = images.cuda()
                     targets = targets.cuda().float()
 
+                    if torch.isnan(images).any() or torch.isinf(images).any() or torch.isnan(targets).any() or torch.isinf(targets).any():
+                        if self.rank == 0:
+                            self.logger.warning("Invalid input detected (NaN or Inf)")
+                        continue
+
                     with autocast():
                         logits_student, feature_list_student = self.student(images)
                         logits_student = logits_student.squeeze(1)
@@ -378,18 +383,20 @@ class TrainDDP:
                             logits_teacher = logits_teacher.squeeze(1)
 
                         ori_loss = self.ori_loss(logits_student, targets)
+
                         kd_loss = (self.target_temperature**2) * self.kd_loss(
                             logits_teacher,
                             logits_student,
                             self.target_temperature
                         )
 
-                        rc_loss = torch.tensor(0, device=images.device)
+                        rc_loss = torch.tensor(0.0, device=images.device, dtype=torch.float32)
                         for i in range(len(feature_list_student)):
                             rc_loss = rc_loss + self.rc_loss(
                                 feature_list_student[i], feature_list_teacher[i]
                             )
 
+                        # تغییر: استفاده از MaskLoss جدید که مستقیماً مدل را می‌گیرد
                         mask_loss = self.mask_loss(self.student.module)
 
                         total_loss = (
@@ -473,10 +480,21 @@ class TrainDDP:
                     )
                 )
 
+                # لاگ‌گیری میانگین ماسک‌ها
                 masks = []
                 for _, m in enumerate(self.student.module.mask_modules):
                     masks.append(round(m.mask.mean().item(), 2))
                 self.logger.info("[Train mask avg] Epoch {0} : ".format(epoch) + str(masks))
+
+                # لاگ‌گیری میانگین وزن‌های فیلترها
+                filter_avgs = []
+                for name, module in self.student.module.named_modules():
+                    if isinstance(module, SoftMaskedConv2d):
+                        filters = module.weight
+                        filter_mean = filters.view(filters.size(0), -1).mean(dim=1)
+                        layer_avg = round(filter_mean.mean().item(), 7)
+                        filter_avgs.append(layer_avg)
+                self.logger.info("[Train filter avg] Epoch {0} : ".format(epoch) + str(filter_avgs))
 
                 self.logger.info(
                     "[Train model Flops] Epoch {0} : ".format(epoch)
@@ -488,21 +506,20 @@ class TrainDDP:
             if self.rank == 0:
                 self.student.eval()
                 self.student.module.ticket = True
-                meter_top1.reset()
-                meter_val_loss.reset()  # Reset validation loss meter
+                meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
                 with torch.no_grad():
                     with tqdm(total=len(self.val_loader), ncols=100) as _tqdm:
                         _tqdm.set_description("Validation epoch: {}/{}".format(epoch, self.num_epochs))
                         for images, targets in self.val_loader:
                             images = images.cuda()
                             targets = targets.cuda().float()
+
+                            if torch.isnan(images).any() or torch.isinf(images).any() or torch.isnan(targets).any() or torch.isinf(targets).any():
+                                self.logger.warning("Invalid input detected in validation (NaN or Inf)")
+                                continue
+
                             logits_student, _ = self.student(images)
                             logits_student = logits_student.squeeze(1)
-
-                            # Compute validation loss
-                            val_loss = self.ori_loss(logits_student, targets)
-                            meter_val_loss.update(val_loss.item(), images.size(0))
-
                             preds = (torch.sigmoid(logits_student) > 0.5).float()
                             correct = (preds == targets).sum().item()
                             prec1 = 100. * correct / images.size(0)
@@ -511,23 +528,20 @@ class TrainDDP:
 
                             _tqdm.set_postfix(
                                 val_acc="{:.4f}".format(meter_top1.avg),
-                                val_loss="{:.4f}".format(meter_val_loss.avg)
                             )
                             _tqdm.update(1)
                             time.sleep(0.01)
 
                 Flops = self.student.module.get_flops()
                 self.writer.add_scalar("val/acc/top1", meter_top1.avg, global_step=epoch)
-                self.writer.add_scalar("val/loss/ori_loss", meter_val_loss.avg, global_step=epoch)  # Log validation loss
                 self.writer.add_scalar("val/Flops", Flops, global_step=epoch)
 
                 self.logger.info(
                     "[Val] "
                     "Epoch {0} : "
-                    "Val_Acc {val_acc:.2f}, Val_Loss {val_loss:.4f}".format(
+                    "Val_Acc {val_acc:.2f}".format(
                         epoch,
                         val_acc=meter_top1.avg,
-                        val_loss=meter_val_loss.avg
                     )
                 )
 
