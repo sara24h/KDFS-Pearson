@@ -36,43 +36,35 @@ class MaskLoss(nn.Module):
         total_corr_loss = 0.0
         num_layers = 0
 
-        # بررسی تمام ماژول‌های ماسک در مدل
         for m in model.mask_modules:
             if isinstance(m, SoftMaskedConv2d):
-                # استخراج فیلترهای فعال (mask = 1)
+
                 active_filters = m.weight[m.mask.squeeze() == 1]
-                if active_filters.numel() == 0:  # اگر هیچ فیلتر فعالی وجود ندارد
-                    continue
+                if active_filters.numel() == 0:  
+                    print('no active filters found')
 
                 num_active_filters = active_filters.shape[0]
-                if num_active_filters < 2:  # حداقل دو فیلتر برای محاسبه همبستگی نیاز است
-                    continue
+                if num_active_filters < 2:  
+                    print('active filteers less than 2')
 
-                # تغییر شکل فیلترها برای محاسبه همبستگی
                 active_filters = active_filters.view(num_active_filters, -1)
 
-                # محاسبه ماتریس همبستگی پیرسون
-                # نرمال‌سازی فیلترها
                 active_filters = (active_filters - active_filters.mean(dim=1, keepdim=True)) / (
                     active_filters.std(dim=1, keepdim=True) + 1e-8
                 )
-                # محاسبه همبستگی
+
                 corr_matrix = torch.matmul(active_filters, active_filters.t()) / active_filters.shape[1]
 
-                # استخراج بخش مثلثی بالایی (بدون قطر اصلی)
                 triu_indices = torch.triu_indices(row=corr_matrix.shape[0], col=corr_matrix.shape[0], offset=1)
                 corr_values = corr_matrix[triu_indices[0], triu_indices[1]]
 
-                # محاسبه Norm2 (بدون ریشه دوم)
                 norm2 = torch.sum(corr_values ** 2)
 
-                # نرمال‌سازی با تعداد فیلترهای فعال
                 normalized_loss = norm2 / num_active_filters
 
                 total_corr_loss += normalized_loss
                 num_layers += 1
 
-        # محاسبه میانگین لاس برای تمام لایه‌ها
         if num_layers == 0:
             print('err')
         return total_corr_loss / num_layers
