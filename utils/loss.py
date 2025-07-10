@@ -28,46 +28,62 @@ class RCLoss(nn.Module):
         return (self.rc(x) - self.rc(y)).pow(2).mean()
 
 class MaskLoss(nn.Module):
-    def __init__(self):
+    def __init__(self, sparsity_weight=0.1):
         super(MaskLoss, self).__init__()
+        self.sparsity_weight = sparsity_weight  # Weight for sparsity term
 
     def forward(self, model):
-    
-        total_corr_loss = 0.0
+        total_sparsity_loss = 0.0
         num_layers = 0
+        device = next(model.parameters()).device
 
         for m in model.mask_modules:
             if isinstance(m, SoftMaskedConv2d):
+                # 1. Compute correlation between filters
+                filters = m.weight  # Shape: (out_channels, in_channels, kernel_size, kernel_size)
+                num_filters = filters.shape[0]
 
-                active_filters = m.weight[m.mask.squeeze() == 1]
-                if active_filters.numel() == 0:  
-                    print('no active filters found')
+                if num_filters < 2:
+                    # If fewer than 2 filters, apply standard sparsity loss
+                    mask_probs = F.softmax(m.mask_weight, dim=1)[:, 1, :, :]  # Probability of keeping filters
+                    sparsity_loss = torch.mean(torch.abs(mask_probs))
+                else:
+                    # Normalize filters
+                    filters = filters.view(num_filters, -1)
+                    filters = (filters - filters.mean(dim=1, keepdim=True)) / (
+                        filters.std(dim=1, keepdim=True) + 1e-8
+                    )
+                    norm = torch.norm(filters, dim=1, keepdim=True)
+                    filters_normalized = filters / (norm + 1e-8)
 
-                num_active_filters = active_filters.shape[0]
-                if num_active_filters < 2:  
-                    print('active filteers less than 2')
+                    # Compute correlation matrix (Pearson correlation)
+                    corr_matrix = torch.matmul(filters_normalized, filters_normalized.t())
+                    
+                    # Compute correlation scores for each filter
+                    # Sum of absolute correlations with other filters, excluding self-correlation
+                    correlation_scores = torch.sum(torch.abs(corr_matrix), dim=1) - 1
+                    correlation_scores = correlation_scores / max(num_filters - 1, 1)
 
-                active_filters = active_filters.view(num_active_filters, -1)
+                    # 2. Sparsity loss weighted by correlation scores
+                    mask_probs = F.softmax(m.mask_weight, dim=1)[:, 1, :, :]  # Shape: (out_channels, 1, 1)
+                    mask_probs = mask_probs.squeeze(-1).squeeze(-1)  # Shape: (out_channels,)
+                    
+                    # Ensure shapes match
+                    if mask_probs.shape[0] == correlation_scores.shape[0]:
+                        sparsity_loss = torch.mean(correlation_scores * torch.abs(mask_probs))
+                    else:
+                        sparsity_loss = torch.mean(torch.abs(mask_probs))
 
-                active_filters = (active_filters - active_filters.mean(dim=1, keepdim=True)) / (
-                    active_filters.std(dim=1, keepdim=True) + 1e-8
-                )
-
-                corr_matrix = torch.matmul(active_filters, active_filters.t()) / active_filters.shape[1]
-
-                triu_indices = torch.triu_indices(row=corr_matrix.shape[0], col=corr_matrix.shape[0], offset=1)
-                corr_values = corr_matrix[triu_indices[0], triu_indices[1]]
-
-                norm2 = torch.sum(corr_values ** 2)
-
-                normalized_loss = norm2 / num_active_filters
-
-                total_corr_loss += normalized_loss
+                total_sparsity_loss += sparsity_loss
                 num_layers += 1
 
         if num_layers == 0:
-            print('err')
-        return total_corr_loss / num_layers
+            return torch.tensor(0.0, device=device, requires_grad=True)
+
+        # Total loss
+        total_loss = self.sparsity_weight * (total_sparsity_loss / num_layers)
+        return total_loss
+
 
 class CrossEntropyLabelSmooth(nn.Module):
     def __init__(self, num_classes, epsilon):
