@@ -27,13 +27,18 @@ class RCLoss(nn.Module):
     def forward(self, x, y):
         return (self.rc(x) - self.rc(y)).pow(2).mean()
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from model.student.layer import SoftMaskedConv2d
+
 class MaskLoss(nn.Module):
-    def __init__(self, sparsity_weight=0.1):
+    def __init__(self, correlation_weight=0.1):
         super(MaskLoss, self).__init__()
-        self.sparsity_weight = sparsity_weight  # Weight for sparsity term
+        self.correlation_weight = correlation_weight  # Weight for correlation-based pruning term
 
     def forward(self, model):
-        total_sparsity_loss = 0.0
+        total_pruning_loss = 0.0
         num_layers = 0
         device = next(model.parameters()).device
 
@@ -44,9 +49,8 @@ class MaskLoss(nn.Module):
                 num_filters = filters.shape[0]
 
                 if num_filters < 2:
-                    # If fewer than 2 filters, apply standard sparsity loss
-                    mask_probs = F.softmax(m.mask_weight, dim=1)[:, 1, :, :]  # Probability of keeping filters
-                    sparsity_loss = torch.mean(torch.abs(mask_probs))
+                    # If fewer than 2 filters, no pruning loss
+                    pruning_loss = torch.tensor(0.0, device=device, requires_grad=True)
                 else:
                     # Normalize filters
                     filters = filters.view(num_filters, -1)
@@ -60,28 +64,27 @@ class MaskLoss(nn.Module):
                     corr_matrix = torch.matmul(filters_normalized, filters_normalized.t())
                     
                     # Compute correlation scores for each filter
-                    # Sum of absolute correlations with other filters, excluding self-correlation
                     correlation_scores = torch.sum(torch.abs(corr_matrix), dim=1) - 1
                     correlation_scores = correlation_scores / max(num_filters - 1, 1)
 
-                    # 2. Sparsity loss weighted by correlation scores
+                    # 2. Pruning loss based on correlation scores
                     mask_probs = F.softmax(m.mask_weight, dim=1)[:, 1, :, :]  # Shape: (out_channels, 1, 1)
                     mask_probs = mask_probs.squeeze(-1).squeeze(-1)  # Shape: (out_channels,)
                     
                     # Ensure shapes match
                     if mask_probs.shape[0] == correlation_scores.shape[0]:
-                        sparsity_loss = torch.mean(correlation_scores * torch.abs(mask_probs))
+                        pruning_loss = torch.mean(correlation_scores * mask_probs)
                     else:
-                        sparsity_loss = torch.mean(torch.abs(mask_probs))
+                        pruning_loss = torch.tensor(0.0, device=device, requires_grad=True)
 
-                total_sparsity_loss += sparsity_loss
+                total_pruning_loss += pruning_loss
                 num_layers += 1
 
         if num_layers == 0:
             return torch.tensor(0.0, device=device, requires_grad=True)
 
         # Total loss
-        total_loss = self.sparsity_weight * (total_sparsity_loss / num_layers)
+        total_loss = self.correlation_weight * (total_pruning_loss / num_layers)
         return total_loss
 
 
