@@ -233,7 +233,7 @@ class TrainDDP:
         self.ori_loss = nn.BCEWithLogitsLoss().cuda()
         self.kd_loss = loss.KDLoss().cuda()
         self.rc_loss = loss.RCLoss().cuda()
-        self.mask_loss = loss.MaskLoss(correlation_weight=0.5).cuda()
+        self.mask_loss = loss.MaskLoss(correlation_weight=1).cuda()
 
     def define_optim(self):
         weight_params = map(
