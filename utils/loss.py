@@ -89,8 +89,9 @@ def compute_active_filters_correlation(filters, mask_weight):
     correlation_scores = correlation_scores / max(num_filters - 1, 1)
     
     # محاسبه‌ی احتمالات ماسک از mask_weight
-    mask_probs = F.softmax(mask_weight, dim=1)[:, 1, :, :]  # شکل: (out_channels, 1, 1)
+    mask_probs = torch.sigmoid(mask_weight[:, 1, :, :])  # اعمال سیگموید
     mask_probs = mask_probs.squeeze(-1).squeeze(-1)  # شکل: (out_channels,)
+    correlation_loss = torch.mean(correlation_scores * mask_probs)
     
     # بررسی تطابق شکل‌ها
     if mask_probs.shape[0] != correlation_scores.shape[0]:
@@ -98,7 +99,7 @@ def compute_active_filters_correlation(filters, mask_weight):
         device = filters.device
     
     # محاسبه‌ی هزینه‌ی هرس
-    correlation_loss = torch.mean(correlation_scores )
+    correlation_loss = torch.mean(correlation_scores*mask_probs )
     
     return correlation_loss
 
