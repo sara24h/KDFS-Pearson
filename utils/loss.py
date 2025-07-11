@@ -29,7 +29,6 @@ class RCLoss(nn.Module):
 
 import warnings
 
-
 def compute_active_filters_correlation(filters, module, ticket=False):
     # بررسی مقادیر نامعتبر در فیلترها
     if torch.isnan(filters).any():
@@ -46,7 +45,7 @@ def compute_active_filters_correlation(filters, module, ticket=False):
     
     if num_filters < 2:
         device = filters.device
-
+        return torch.tensor(0.0, device=device)
     
     # محاسبه ماسک باینری با استفاده از متد compute_mask
     mask = module.compute_mask(ticket).squeeze(-1).squeeze(-1)  # شکل: [out_channels]
@@ -58,7 +57,7 @@ def compute_active_filters_correlation(filters, module, ticket=False):
     
     if num_active_filters < 2:
         device = filters.device
-
+        return torch.tensor(0.0, device=device)
     
     # تغییر شکل فیلترهای فعال به بردار
     filters_flat = active_filters.view(num_active_filters, -1)
@@ -110,7 +109,6 @@ class MaskLoss(nn.Module):
         self.correlation_weight = correlation_weight
     
     def forward(self, model):
-       
         total_pruning_loss = 0.0
         num_layers = 0
         device = next(model.parameters()).device
@@ -118,17 +116,16 @@ class MaskLoss(nn.Module):
         for m in model.mask_modules:
             if isinstance(m, SoftMaskedConv2d):
                 filters = m.weight  # وزن‌های فیلتر
-                mask_weight = m.mask_weight  # وزن‌های ماسک
-                pruning_loss = compute_active_filters_correlation(filters, mask_weight)
+                pruning_loss = compute_active_filters_correlation(filters, m, ticket=False)
                 total_pruning_loss += pruning_loss
                 num_layers += 1
         
         if num_layers == 0:
             print('0 layers')
+            return torch.tensor(0.0, device=device)
         
         total_loss = self.correlation_weight * (total_pruning_loss / num_layers)
         return total_loss
-        
 
 class CrossEntropyLabelSmooth(nn.Module):
     def __init__(self, num_classes, epsilon):
