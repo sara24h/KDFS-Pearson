@@ -48,7 +48,9 @@ def compute_active_filters_correlation(filters, module, ticket=False):
         return torch.tensor(0.0, device=device)
     
     # محاسبه ماسک باینری با استفاده از متد compute_mask
-    mask = module.compute_mask(ticket).squeeze(-1).squeeze(-1)  # شکل: [out_channels]
+    mask = module.compute_mask(ticket).squeeze()  # حذف تمام ابعاد با اندازه 1
+    if mask.ndim != 1:
+        raise ValueError(f"Expected mask to be 1D, got shape {mask.shape}")
     
     # انتخاب فیلترهای فعال
     active_mask = mask > 0.5  # فیلترهایی که ماسک 1 دارند
