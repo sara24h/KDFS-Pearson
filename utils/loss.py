@@ -30,8 +30,7 @@ class RCLoss(nn.Module):
 import warnings
 
 def compute_active_filters_correlation(filters, mask_weight):
-
-    # بررسی مقادیر غیرمعتبر (NaN یا Inf)
+ 
     if torch.isnan(filters).any():
         warnings.warn("Filters contain NaN.")
     if torch.isinf(filters).any():
@@ -45,9 +44,9 @@ def compute_active_filters_correlation(filters, mask_weight):
     num_filters = filters.shape[0]
     
     if num_filters < 2:
-        # اگر تعداد فیلترها کمتر از 2 باشد، هزینه‌ی هرس صفر است
         device = filters.device
         print('less than 2')
+        return torch.tensor(0.0, device=device)
     
     # تغییر شکل فیلترها به بردار
     filters_flat = filters.view(num_filters, -1)
@@ -84,11 +83,11 @@ def compute_active_filters_correlation(filters, mask_weight):
     if torch.isinf(corr_matrix).any():
         warnings.warn("Correlation matrix contains Inf values.")
     
-    # محاسبه‌ی امتیاز همبستگی (مجموع مقادیر مطلق همبستگی‌ها، بدون قطر اصلی)
-    correlation_scores = torch.sum(torch.abs(corr_matrix), dim=1) - 1
+    # محاسبه‌ی امتیاز همبستگی فقط برای عناصر بالای قطر اصلی
+    correlation_scores = torch.sum(torch.abs(corr_matrix.triu(diagonal=1)), dim=1)
     correlation_scores = correlation_scores / max(num_filters - 1, 1)
     
-    # محاسبه‌ی احتمالات ماسک از mask_weight
+    # محاسبه‌ی احتمالات ماسک
     mask_probs = torch.sigmoid(mask_weight[:, 1, :, :])  # اعمال سیگموید
     mask_probs = mask_probs.squeeze(-1).squeeze(-1)  # شکل: (out_channels,)
     correlation_loss = torch.mean(correlation_scores * mask_probs)
@@ -97,12 +96,14 @@ def compute_active_filters_correlation(filters, mask_weight):
     if mask_probs.shape[0] != correlation_scores.shape[0]:
         warnings.warn("Shape mismatch between mask_probs and correlation_scores.")
         device = filters.device
+        return torch.tensor(0.0, device=device)
     
     # محاسبه‌ی هزینه‌ی هرس
-    correlation_loss = torch.mean(correlation_scores*mask_probs )
+    correlation_loss = torch.mean(correlation_scores * mask_probs)
     
     return correlation_loss
-
+    # محاسبه‌ی احتمالات ماسک از mask_weight
+    
 class MaskLoss(nn.Module):
     def __init__(self, correlation_weight=0.1):
         super(MaskLoss, self).__init__()
