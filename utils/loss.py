@@ -29,15 +29,15 @@ class RCLoss(nn.Module):
 
 import warnings
 
-def compute_active_filters_correlation(filters, module, ticket=False):
-    # بررسی مقادیر نامعتبر در فیلترها
+def compute_active_filters_correlation(filters, mask_weight):
+ 
     if torch.isnan(filters).any():
         warnings.warn("Filters contain NaN.")
     if torch.isinf(filters).any():
         warnings.warn("Filters contain Inf values.")
-    if torch.isnan(module.mask_weight).any():
+    if torch.isnan(mask_weight).any():
         warnings.warn("Mask weights contain NaN.")
-    if torch.isinf(module.mask_weight).any():
+    if torch.isinf(mask_weight).any():
         warnings.warn("Mask weights contain Inf values.")
     
     # تعداد فیلترها
@@ -45,24 +45,11 @@ def compute_active_filters_correlation(filters, module, ticket=False):
     
     if num_filters < 2:
         device = filters.device
-        return torch.tensor(0.0, device=device)
+        print('less than 2')
+
     
-    # محاسبه ماسک باینری با استفاده از متد compute_mask
-    mask = module.compute_mask(ticket).squeeze()  # حذف تمام ابعاد با اندازه 1
-    if mask.ndim != 1:
-        raise ValueError(f"Expected mask to be 1D, got shape {mask.shape}")
-    
-    # انتخاب فیلترهای فعال
-    active_mask = mask > 0.5  # فیلترهایی که ماسک 1 دارند
-    active_filters = filters[active_mask]
-    num_active_filters = active_filters.shape[0]
-    
-    if num_active_filters < 2:
-        device = filters.device
-        return torch.tensor(0.0, device=device)
-    
-    # تغییر شکل فیلترهای فعال به بردار
-    filters_flat = active_filters.view(num_active_filters, -1)
+    # تغییر شکل فیلترها به بردار
+    filters_flat = filters.view(num_filters, -1)
     
     # بررسی واریانس فیلترها
     variance = torch.var(filters_flat, dim=1)
@@ -96,21 +83,34 @@ def compute_active_filters_correlation(filters, module, ticket=False):
     if torch.isinf(corr_matrix).any():
         warnings.warn("Correlation matrix contains Inf values.")
     
-    # محاسبه‌ی امتیاز همبستگی فقط برای عناصر بالای قطر اصلی (نورم 2 بدون ریشه دوم)
-    correlation_scores = torch.sum(corr_matrix.triu(diagonal=1).pow(2), dim=1)
-    correlation_scores = correlation_scores / max(num_active_filters - 1, 1)
+    # محاسبه‌ی امتیاز همبستگی فقط برای عناصر بالای قطر اصلی
+    correlation_scores = torch.sum(torch.abs(corr_matrix.triu(diagonal=1)), dim=1)
+    correlation_scores = correlation_scores / max(num_filters - 1, 1)
     
-    # محاسبه ضرر همبستگی (فقط برای فیلترهای فعال)
-    correlation_loss = torch.mean(correlation_scores)
+    # محاسبه‌ی احتمالات ماسک
+    mask_probs = torch.sigmoid(mask_weight[:, 1, :, :])  # اعمال سیگموید
+    mask_probs = mask_probs.squeeze(-1).squeeze(-1)  # شکل: (out_channels,)
+    correlation_loss = torch.mean(correlation_scores * mask_probs)
+    
+    # بررسی تطابق شکل‌ها
+    if mask_probs.shape[0] != correlation_scores.shape[0]:
+        warnings.warn("Shape mismatch between mask_probs and correlation_scores.")
+        device = filters.device
+
+    
+    # محاسبه‌ی هزینه‌ی هرس
+    correlation_loss = torch.mean(correlation_scores )
     
     return correlation_loss
-
+    # محاسبه‌ی احتمالات ماسک از mask_weight
+    
 class MaskLoss(nn.Module):
     def __init__(self, correlation_weight=0.1):
         super(MaskLoss, self).__init__()
         self.correlation_weight = correlation_weight
     
     def forward(self, model):
+       
         total_pruning_loss = 0.0
         num_layers = 0
         device = next(model.parameters()).device
@@ -118,16 +118,17 @@ class MaskLoss(nn.Module):
         for m in model.mask_modules:
             if isinstance(m, SoftMaskedConv2d):
                 filters = m.weight  # وزن‌های فیلتر
-                pruning_loss = compute_active_filters_correlation(filters, m, ticket=False)
+                mask_weight = m.mask_weight  # وزن‌های ماسک
+                pruning_loss = compute_active_filters_correlation(filters, mask_weight)
                 total_pruning_loss += pruning_loss
                 num_layers += 1
         
         if num_layers == 0:
             print('0 layers')
-            return torch.tensor(0.0, device=device)
         
         total_loss = self.correlation_weight * (total_pruning_loss / num_layers)
         return total_loss
+
 
 class CrossEntropyLabelSmooth(nn.Module):
     def __init__(self, num_classes, epsilon):
