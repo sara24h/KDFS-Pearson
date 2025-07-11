@@ -98,7 +98,7 @@ def compute_active_filters_correlation(filters, mask_weight):
         device = filters.device
     
     # محاسبه‌ی هزینه‌ی هرس
-    correlation_loss = torch.mean(correlation_scores * mask_probs)
+    correlation_loss = torch.mean(correlation_scores )
     
     return correlation_loss
 
