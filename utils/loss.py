@@ -34,6 +34,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import warnings
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import warnings
+
 def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=1.0):
     if torch.isnan(filters).any():
         warnings.warn("Filters contain NaN.")
@@ -50,7 +55,6 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     if num_filters < 2:
         device = filters.device
         print('less than 2')
-        return torch.tensor(0.0, device=device)
     
     # تغییر شکل فیلترها به بردار
     filters_flat = filters.view(num_filters, -1)
@@ -87,9 +91,24 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     if torch.isinf(corr_matrix).any():
         warnings.warn("Correlation matrix contains Inf values.")
     
-    # محاسبه‌ی امتیاز همبستگی فقط برای عناصر بالای قطر اصلی
-    correlation_scores = torch.sum(torch.abs(corr_matrix.triu(diagonal=1)), dim=1)
+    # ایجاد ماسک برای انتخاب عناصر بالای قطر اصلی
+    mask = torch.triu(torch.ones(num_filters, num_filters, device=filters.device), diagonal=1).bool()
+    
+    # اعمال نرم ۲ (بدون ریشه دوم) فقط برای عناصر بالای قطر اصلی
+    correlation_scores = torch.sum((corr_matrix[mask])**2, dim=0)
+    
+    # اگر mask به درستی کار نکند، به روش جمع روی محور دوم متوسل می‌شویم
+    if correlation_scores.shape == ():
+        correlation_scores = torch.sum((corr_matrix * mask.float())**2, dim=1)
+    
+    # نرمال‌سازی امتیازهای همبستگی
     correlation_scores = correlation_scores / max(num_filters - 1, 1)
+    
+    # بررسی مقادیر غیرمعتبر در امتیازهای همبستگی
+    if torch.isnan(correlation_scores).any():
+        warnings.warn("Correlation scores contain NaN values.")
+    if torch.isinf(correlation_scores).any():
+        warnings.warn("Correlation scores contain Inf values.")
     
     # محاسبه‌ی احتمالات ماسک با gumbel_softmax
     mask_probs = F.gumbel_softmax(logits=mask_weight, tau=gumbel_temperature, hard=False, dim=1)[:, 1, :, :]
@@ -99,7 +118,7 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     if mask_probs.shape[0] != correlation_scores.shape[0]:
         warnings.warn("Shape mismatch between mask_probs and correlation_scores.")
         device = filters.device
-        return torch.tensor(0.0, device=device)
+
     
     # محاسبه‌ی هزینه همبستگی
     correlation_loss = torch.mean(correlation_scores * mask_probs)
@@ -127,7 +146,7 @@ class MaskLoss(nn.Module):
         
         if num_layers == 0:
             print('0 layers')
-            return torch.tensor(0.0, device=device)
+
         
         total_loss = self.correlation_weight * (total_pruning_loss / num_layers)
         return total_loss
