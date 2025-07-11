@@ -56,15 +56,12 @@ class SoftMaskedConv2d(nn.Module):
     def compute_mask(self, ticket):
         if ticket:
             mask = torch.argmax(self.mask_weight, dim=1).unsqueeze(1).float()
-            prob = None 
         else:
             mask = F.gumbel_softmax(
                 logits=self.mask_weight, tau=self.gumbel_temperature, hard=True, dim=1
             )[:, 1, :, :].unsqueeze(1)
-            prob = F.gumbel_softmax(
-                logits=self.mask_weight, tau=self.gumbel_temperature, hard=False, dim=1
-            )[:, 1, :, :].unsqueeze(1)
-        return mask, prob  
+
+        return mask  # shape = [C, 1, 1, 1]
 
     def update_gumbel_temperature(self, gumbel_temperature):
         self.gumbel_temperature = gumbel_temperature
