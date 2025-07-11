@@ -29,11 +29,12 @@ class RCLoss(nn.Module):
 
 import warnings
 
-def compute_active_filters_correlation(filters, mask_weight, prob=None):
-    import torch
-    import warnings
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import warnings
 
-    # بررسی مقادیر نامعتبر در فیلترها و mask_weight
+def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=1.0):
     if torch.isnan(filters).any():
         warnings.warn("Filters contain NaN.")
     if torch.isinf(filters).any():
@@ -90,8 +91,9 @@ def compute_active_filters_correlation(filters, mask_weight, prob=None):
     correlation_scores = torch.sum(torch.abs(corr_matrix.triu(diagonal=1)), dim=1)
     correlation_scores = correlation_scores / max(num_filters - 1, 1)
     
-    
-    mask_probs = prob.squeeze(-1).squeeze(-1)  # شکل: (out_channels,)
+    # محاسبه‌ی احتمالات ماسک با gumbel_softmax
+    mask_probs = F.gumbel_softmax(logits=mask_weight, tau=gumbel_temperature, hard=False, dim=1)[:, 1, :, :]
+    mask_probs = mask_probs.squeeze(-1).squeeze(-1)  # شکل: (out_channels,)
     
     # بررسی تطابق شکل‌ها
     if mask_probs.shape[0] != correlation_scores.shape[0]:
@@ -99,7 +101,7 @@ def compute_active_filters_correlation(filters, mask_weight, prob=None):
         device = filters.device
         return torch.tensor(0.0, device=device)
     
-    # محاسبه‌ی هزینه‌ی هرس
+    # محاسبه‌ی هزینه همبستگی
     correlation_loss = torch.mean(correlation_scores * mask_probs)
     
     return correlation_loss
@@ -109,7 +111,7 @@ class MaskLoss(nn.Module):
         super(MaskLoss, self).__init__()
         self.correlation_weight = correlation_weight
     
-    def forward(self, model, ticket=False):
+    def forward(self, model):
         total_pruning_loss = 0.0
         num_layers = 0
         device = next(model.parameters()).device
@@ -118,8 +120,8 @@ class MaskLoss(nn.Module):
             if isinstance(m, SoftMaskedConv2d):
                 filters = m.weight  # وزن‌های فیلتر
                 mask_weight = m.mask_weight  # وزن‌های ماسک
-                mask, prob = m.compute_mask(ticket)  # دریافت mask و prob
-                pruning_loss = compute_active_filters_correlation(filters, mask_weight, prob)
+                gumbel_temperature = m.gumbel_temperature  # دمای گامبل
+                pruning_loss = compute_active_filters_correlation(filters, mask_weight, gumbel_temperature)
                 total_pruning_loss += pruning_loss
                 num_layers += 1
         
