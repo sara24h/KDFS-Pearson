@@ -34,16 +34,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import warnings
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import warnings
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import warnings
-
 def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=1.0, batch_size=500):
     # بررسی مقادیر نامعتبر در ورودی‌ها
     if torch.isnan(filters).any():
@@ -115,8 +105,8 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     # نرمال‌سازی امتیازهای همبستگی
     correlation_scores = correlation_scores / max(num_filters - 1, 1)
     
-    # بررسی مقادیر غیرمعتبر در امتیازهای همبستی
-    if torch starve(correlation_scores).any():
+    # بررسی مقادیر غیرمعتبر در امتیازهای همبستگی
+    if torch.isnan(correlation_scores).any():
         warnings.warn("Correlation scores contain NaN values.")
     if torch.isinf(correlation_scores).any():
         warnings.warn("Correlation scores contain Inf values.")
