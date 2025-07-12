@@ -34,7 +34,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import warnings
 
-def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=1.0):
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import warnings
+
+def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=1.0, batch_size=1000):
     # بررسی مقادیر نامعتبر در ورودی‌ها
     if torch.isnan(filters).any():
         warnings.warn("Filters contain NaN.")
@@ -78,12 +83,28 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     if torch.isinf(filters_normalized).any():
         warnings.warn("Normalized filters contain Inf values.")
     
-    # محاسبه همبستگی فقط برای عناصر بالای قطر اصلی
+    # محاسبه همبستگی به صورت دسته‌ای
     i, j = torch.triu_indices(num_filters, num_filters, offset=1, device=filters.device)
-    corr = torch.sum(filters_normalized[i] * filters_normalized[j], dim=1)
+    total_pairs = i.shape[0]
+    correlation_scores = 0.0
     
-    # محاسبه امتیازهای همبستگی (توان دوم)
-    correlation_scores = torch.sum(corr ** 2) / max(num_filters - 1, 1)
+    # پردازش جفت‌ها در دسته‌های کوچک‌تر
+    for start in range(0, total_pairs, batch_size):
+        end = min(start + batch_size, total_pairs)
+        i_batch = i[start:end]
+        j_batch = j[start:end]
+        
+        # محاسبه همبستگی برای دسته
+        with torch.no_grad():  # غیرفعال کردن گرادیان برای کاهش حافظه
+            corr = torch.sum(filters_normalized[i_batch] * filters_normalized[j_batch], dim=1)
+            correlation_scores += torch.sum(corr ** 2)
+        
+        # آزادسازی حافظه میانی
+        del corr
+        torch.cuda.empty_cache()
+    
+    # نرمال‌سازی امتیازهای همبستگی
+    correlation_scores = correlation_scores / max(num_filters - 1, 1)
     
     # بررسی مقادیر غیرمعتبر در امتیازهای همبستگی
     if torch.isnan(correlation_scores).any():
@@ -92,7 +113,7 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
         warnings.warn("Correlation scores contain Inf values.")
     
     # محاسبه احتمالات ماسک با gumbel_softmax
-    mask_probs = F.gumbel_softmax(logits=mask_weight, tau=gumbel_temperature, hard=False, dim=1)[:, 1, :, :]
+    mask_probs = F.gumbel_softmax(logits=mask_weight, tau=gumbПолностью, dim=1)[:, 1, :, :]
     mask_probs = mask_probs.squeeze(-1).squeeze(-1)  # شکل: (out_channels,)
     
     # بررسی تطابق شکل‌ها
@@ -120,7 +141,9 @@ class MaskLoss(nn.Module):
                 filters = m.weight  # وزن‌های فیلتر
                 mask_weight = m.mask_weight  # وزن‌های ماسک
                 gumbel_temperature = m.gumbel_temperature  # دمای گامبل
-                pruning_loss = compute_active_filters_correlation(filters, mask_weight, gumbel_temperature)
+                pruning_loss = compute_active_filters_correlation(
+                    filters, mask_weight, gumbel_temperature, batch_size=1000
+                )
                 total_pruning_loss += pruning_loss
                 num_layers += 1
         
