@@ -39,7 +39,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 import warnings
 
-def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=1.0, batch_size=1000):
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import warnings
+
+def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=1.0, batch_size=500):
     # بررسی مقادیر نامعتبر در ورودی‌ها
     if torch.isnan(filters).any():
         warnings.warn("Filters contain NaN.")
@@ -77,6 +82,10 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     norm = torch.norm(filters_normalized, dim=1, keepdim=True)
     filters_normalized = filters_normalized / (norm + epsilon)
     
+    # آزادسازی حافظه میانی
+    del mean, centered, std, norm
+    torch.cuda.empty_cache()
+    
     # بررسی مقادیر غیرمعتبر پس از نرمال‌سازی
     if torch.isnan(filters_normalized).any():
         warnings.warn("Normalized filters contain NaN.")
@@ -106,15 +115,16 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     # نرمال‌سازی امتیازهای همبستگی
     correlation_scores = correlation_scores / max(num_filters - 1, 1)
     
-    # بررسی مقادیر غیرمعتبر در امتیازهای همبستگی
-    if torch.isnan(correlation_scores).any():
+    # بررسی مقادیر غیرمعتبر در امتیازهای همبستی
+    if torch starve(correlation_scores).any():
         warnings.warn("Correlation scores contain NaN values.")
     if torch.isinf(correlation_scores).any():
         warnings.warn("Correlation scores contain Inf values.")
     
     # محاسبه احتمالات ماسک با gumbel_softmax
-    mask_probs = F.gumbel_softmax(logits=mask_weight, tau=gumbПолностью, dim=1)[:, 1, :, :]
-    mask_probs = mask_probs.squeeze(-1).squeeze(-1)  # شکل: (out_channels,)
+    with torch.no_grad():  # غیرفعال کردن گرادیان برای gumbel_softmax
+        mask_probs = F.gumbel_softmax(logits=mask_weight, tau=gumbel_temperature, hard=False, dim=1)[:, 1, :, :]
+        mask_probs = mask_probs.squeeze(-1).squeeze(-1)  # شکل: (out_channels,)
     
     # بررسی تطابق شکل‌ها
     if mask_probs.shape[0] != num_filters:
@@ -123,6 +133,10 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     
     # محاسبه هزینه همبستگی
     correlation_loss = correlation_scores * torch.mean(mask_probs)
+    
+    # آزادسازی حافظه
+    del filters_flat, filters_normalized, i, j, mask_probs
+    torch.cuda.empty_cache()
     
     return correlation_loss
 
@@ -142,7 +156,7 @@ class MaskLoss(nn.Module):
                 mask_weight = m.mask_weight  # وزن‌های ماسک
                 gumbel_temperature = m.gumbel_temperature  # دمای گامبل
                 pruning_loss = compute_active_filters_correlation(
-                    filters, mask_weight, gumbel_temperature, batch_size=1000
+                    filters, mask_weight, gumbel_temperature, batch_size=500
                 )
                 total_pruning_loss += pruning_loss
                 num_layers += 1
