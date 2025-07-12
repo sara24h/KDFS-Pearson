@@ -234,7 +234,7 @@ class TrainDDP:
         self.kd_loss = loss.KDLoss().cuda()
         self.rc_loss = loss.RCLoss().cuda()
         # تغییر: تعریف MaskLoss با correlation_weight
-        self.mask_loss = loss.MaskLoss(correlation_weight=0.1).cuda()
+        self.mask_loss = loss.MaskLoss().cuda()
 
     def define_optim(self):
         weight_params = map(
