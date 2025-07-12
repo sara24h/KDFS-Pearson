@@ -12,12 +12,22 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from torch.cuda.amp import autocast, GradScaler
 from data.dataset import Dataset_selector
-from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, ResNet_50_sparse_rvf10k, SoftMaskedConv2d  # وارد کردن SoftMaskedConv2d
+from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, ResNet_50_sparse_rvf10k
 from utils import utils, loss, meter, scheduler
 from thop import profile
 from model.teacher.ResNet import ResNet_50_hardfakevsreal
+from torch import amp
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+
+Flops_baselines = {
+    "ResNet_50": {
+        "hardfakevsrealfaces": 7700.0,
+        "rvf10k": 5000,
+        "140k": 5390.0,
+        "200k": 5390.0,
+    }
+}
 
 class TrainDDP:
     def __init__(self, args):
@@ -45,6 +55,7 @@ class TrainDDP:
         self.coef_kdloss = args.coef_kdloss
         self.coef_rcloss = args.coef_rcloss
         self.coef_maskloss = args.coef_maskloss
+        self.compress_rate = args.compress_rate
         self.resume = args.resume
 
         self.start_epoch = 0
@@ -65,8 +76,12 @@ class TrainDDP:
             self.args.dataset_type = "140k"
             self.num_classes = 1
             self.image_size = 256
+        elif self.dataset_mode == "200k":
+            self.args.dataset_type = "200k"
+            self.num_classes = 1
+            self.image_size = 256
         else:
-            raise ValueError("dataset_mode must be 'hardfake', 'rvf10k', or '140k'")
+            raise ValueError("dataset_mode must be 'hardfake', 'rvf10k', '140k', or '200k'")
 
     def dist_init(self):
         dist.init_process_group("nccl")
@@ -106,8 +121,8 @@ class TrainDDP:
             torch.backends.cudnn.enabled = True
 
     def dataload(self):
-        if self.dataset_mode not in ['hardfake', 'rvf10k', '140k']:
-            raise ValueError("dataset_mode must be 'hardfake', 'rvf10k', or '140k'")
+        if self.dataset_mode not in ['hardfake', 'rvf10k', '140k', '200k']:
+            raise ValueError("dataset_mode must be 'hardfake', 'rvf10k', '140k', or '200k'")
 
         if self.dataset_mode == 'hardfake':
             hardfake_csv_file = os.path.join(self.dataset_dir, 'data.csv')
@@ -119,6 +134,10 @@ class TrainDDP:
             realfake140k_valid_csv = None
             realfake140k_test_csv = None
             realfake140k_root_dir = None
+            realfake200k_train_csv = None
+            realfake200k_val_csv = None
+            realfake200k_test_csv = None
+            realfake200k_root_dir = None
         elif self.dataset_mode == 'rvf10k':
             hardfake_csv_file = None
             hardfake_root_dir = None
@@ -129,7 +148,11 @@ class TrainDDP:
             realfake140k_valid_csv = None
             realfake140k_test_csv = None
             realfake140k_root_dir = None
-        else:  # dataset_mode == '140k'
+            realfake200k_train_csv = None
+            realfake200k_val_csv = None
+            realfake200k_test_csv = None
+            realfake200k_root_dir = None
+        elif self.dataset_mode == '140k':
             hardfake_csv_file = None
             hardfake_root_dir = None
             rvf10k_train_csv = None
@@ -139,6 +162,24 @@ class TrainDDP:
             realfake140k_valid_csv = os.path.join(self.dataset_dir, 'valid.csv')
             realfake140k_test_csv = os.path.join(self.dataset_dir, 'test.csv')
             realfake140k_root_dir = self.dataset_dir
+           # realfake200k_train_csv = None
+           # realfake200k_val_csv = None
+           # realfake200k_test_csv = None
+            #realfake200k_root_dir = None
+       # elif self.dataset_mode == '200k':
+        #    hardfake_csv_file = None
+         #   hardfake_root_dir = None
+          #  rvf10k_train_csv = None
+           # rvf10k_valid_csv = None
+          #  rvf10k_root_dir = None
+          #  realfake140k_train_csv = None
+           # realfake140k_valid_csv = None
+           # realfake140k_test_csv = None
+           # realfake140k_root_dir = None
+           # realfake200k_train_csv = "/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/train_labels.csv"
+           # realfake200k_val_csv = "/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/val_labels.csv"
+           # realfake200k_test_csv = "/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/test_labels.csv"
+           # realfake200k_root_dir = self.dataset_dir
 
         if self.rank == 0:
             self.logger.info(f"Loading dataset: {self.dataset_mode}")
@@ -156,6 +197,13 @@ class TrainDDP:
                     raise FileNotFoundError(f"Valid CSV file not found: {realfake140k_valid_csv}")
                 if not os.path.exists(realfake140k_test_csv):
                     raise FileNotFoundError(f"Test CSV file not found: {realfake140k_test_csv}")
+            #elif self.dataset_mode == '200k':
+             #   if not os.path.exists(realfake200k_train_csv):
+              #      raise FileNotFoundError(f"Train CSV file not found: {realfake200k_train_csv}")
+               # if not os.path.exists(realfake200k_val_csv):
+                #    raise FileNotFoundError(f"Valid CSV file not found: {realfake200k_val_csv}")
+                #if not os.path.exists(realfake200k_test_csv):
+                 #   raise FileNotFoundError(f"Test CSV file not found: {realfake200k_test_csv}")
 
         dataset_instance = Dataset_selector(
             dataset_mode=self.dataset_mode,
@@ -168,6 +216,10 @@ class TrainDDP:
             realfake140k_valid_csv=realfake140k_valid_csv,
             realfake140k_test_csv=realfake140k_test_csv,
             realfake140k_root_dir=realfake140k_root_dir,
+            #realfake200k_train_csv=realfake200k_train_csv,
+            #realfake200k_val_csv=realfake200k_val_csv,
+            #realfake200k_test_csv=realfake200k_test_csv,
+            #realfake200k_root_dir=realfake200k_root_dir,
             train_batch_size=self.train_batch_size,
             eval_batch_size=self.eval_batch_size,
             num_workers=self.num_workers,
@@ -217,7 +269,7 @@ class TrainDDP:
                 gumbel_end_temperature=self.gumbel_end_temperature,
                 num_epochs=self.num_epochs,
             )
-        else:  # rvf10k or 140k
+        else:  # rvf10k, 140k, or 200k
             self.student = ResNet_50_sparse_rvf10k(
                 gumbel_start_temperature=self.gumbel_start_temperature,
                 gumbel_end_temperature=self.gumbel_end_temperature,
@@ -233,7 +285,6 @@ class TrainDDP:
         self.ori_loss = nn.BCEWithLogitsLoss().cuda()
         self.kd_loss = loss.KDLoss().cuda()
         self.rc_loss = loss.RCLoss().cuda()
-        # تغییر: تعریف MaskLoss با correlation_weight
         self.mask_loss = loss.MaskLoss().cuda()
 
     def define_optim(self):
@@ -330,7 +381,7 @@ class TrainDDP:
 
         torch.cuda.empty_cache()
         self.teacher.eval()
-        scaler = GradScaler()
+        scaler = amp.GradScaler('cuda')
 
         if self.resume:
             self.resume_student_ckpt()
@@ -375,7 +426,7 @@ class TrainDDP:
                             self.logger.warning("Invalid input detected (NaN or Inf)")
                         continue
 
-                    with autocast():
+                    with amp.autocast('cuda', enabled=True):
                         logits_student, feature_list_student = self.student(images)
                         logits_student = logits_student.squeeze(1)
                         with torch.no_grad():
@@ -396,8 +447,31 @@ class TrainDDP:
                                 feature_list_student[i], feature_list_teacher[i]
                             )
 
-                        # تغییر: استفاده از MaskLoss جدید که مستقیماً مدل را می‌گیرد
-                        mask_loss = self.mask_loss(self.student.module)
+                        from model.student.ResNet_sparse import SoftMaskedConv2d
+
+                        mask_loss = torch.tensor(0.0, device=images.device, dtype=torch.float32)
+                        matched_layers = 0
+                        for name, module in self.student.module.named_modules():
+                            if isinstance(module, SoftMaskedConv2d):
+                                filters = module.weight
+                                found = False
+                                adjusted_name = name.replace("module.", "")
+                                for mask_module in self.student.module.mask_modules:
+                                    if mask_module.mask.shape[0] == filters.shape[0] and mask_module.layer_name == adjusted_name:
+                                        m = mask_module.mask
+                                        correlation, active_indices = self.mask_loss(filters, m)
+                                        mask_loss += correlation
+                                        found = True
+                                        matched_layers += 1
+                                        break
+                                if not found and self.rank == 0:
+                                    self.logger.warning(f"No mask found for layer {name} (adjusted: {adjusted_name})")
+
+                        if matched_layers > 0:
+                            mask_loss = mask_loss / matched_layers
+                        else:
+                            if self.rank == 0:
+                                self.logger.warning("No layers matched for mask loss calculation.")
 
                         total_loss = (
                             ori_loss
@@ -480,13 +554,17 @@ class TrainDDP:
                     )
                 )
 
-                # لاگ‌گیری میانگین ماسک‌ها
                 masks = []
                 for _, m in enumerate(self.student.module.mask_modules):
                     masks.append(round(m.mask.mean().item(), 2))
                 self.logger.info("[Train mask avg] Epoch {0} : ".format(epoch) + str(masks))
 
-                # لاگ‌گیری میانگین وزن‌های فیلترها
+                self.logger.info(
+                    "[Train model Flops] Epoch {0} : ".format(epoch)
+                    + str(Flops.item() / (10**6))
+                    + "M"
+                )
+
                 filter_avgs = []
                 for name, module in self.student.module.named_modules():
                     if isinstance(module, SoftMaskedConv2d):
@@ -496,17 +574,12 @@ class TrainDDP:
                         filter_avgs.append(layer_avg)
                 self.logger.info("[Train filter avg] Epoch {0} : ".format(epoch) + str(filter_avgs))
 
-                self.logger.info(
-                    "[Train model Flops] Epoch {0} : ".format(epoch)
-                    + str(Flops.item() / (10**6))
-                    + "M"
-                )
-
             # Validation
             if self.rank == 0:
                 self.student.eval()
                 self.student.module.ticket = True
                 meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
+
                 with torch.no_grad():
                     with tqdm(total=len(self.val_loader), ncols=100) as _tqdm:
                         _tqdm.set_description("Validation epoch: {}/{}".format(epoch, self.num_epochs))
