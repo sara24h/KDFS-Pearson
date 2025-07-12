@@ -29,44 +29,31 @@ class RCLoss(nn.Module):
 
 import warnings
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import warnings
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import warnings
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import warnings
-
 def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=1.0):
-    # بررسی مقادیر نامعتبر
-    if torch.isnan(filters).any() or torch.isinf(filters).any():
-        warnings.warn("Filters contain NaN or Inf values.")
-        return torch.tensor(0.0, device=filters.device)
-    if torch.isnan(mask_weight).any() or torch.isinf(mask_weight).any():
-        warnings.warn("Mask weights contain NaN or Inf values.")
-        return torch.tensor(0.0, device=filters.device)
+    if torch.isnan(filters).any():
+        warnings.warn("Filters contain NaN.")
+    if torch.isinf(filters).any():
+        warnings.warn("Filters contain Inf values.")
+    if torch.isnan(mask_weight).any():
+        warnings.warn("Mask weights contain NaN.")
+    if torch.isinf(mask_weight).any():
+        warnings.warn("Mask weights contain Inf values.")
     
     # تعداد فیلترها
     num_filters = filters.shape[0]
     
     if num_filters < 2:
-        warnings.warn("Less than 2 filters, returning zero correlation loss.")
-        return torch.tensor(0.0, device=filters.device)
+        device = filters.device
+        print('less than 2')
     
     # تغییر شکل فیلترها به بردار
     filters_flat = filters.view(num_filters, -1)
     
-    # بررسی واریانس صفر
+    # بررسی واریانس فیلترها
     variance = torch.var(filters_flat, dim=1)
-    if (variance == 0).any():
-        warnings.warn(f"{(variance == 0).sum().item()} filters have zero variance.")
+    zero_variance_indices = torch.where(variance == 0)[0]
+    if len(zero_variance_indices) > 0:
+        warnings.warn(f"{len(zero_variance_indices)} filters have zero variance.")
     
     # نرمال‌سازی فیلترها (استانداردسازی)
     mean = torch.mean(filters_flat, dim=1, keepdim=True)
@@ -75,46 +62,59 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     epsilon = 1e-6
     filters_normalized = centered / (std + epsilon)
     
-    # نرمال‌سازی به طول واحد
+    # نرمال‌سازی با نرم (به طول واحد)
     norm = torch.norm(filters_normalized, dim=1, keepdim=True)
     filters_normalized = filters_normalized / (norm + epsilon)
     
-    # بررسی مقادیر نامعتبر پس از نرمال‌سازی
-    if torch.isnan(filters_normalized).any() or torch.isinf(filters_normalized).any():
-        warnings.warn("Normalized filters contain NaN or Inf values.")
-        return torch.tensor(0.0, device=filters.device)
+    # بررسی مقادیر غیرمعتبر پس از نرمال‌سازی
+    if torch.isnan(filters_normalized).any():
+        warnings.warn("Normalized filters contain NaN.")
+    if torch.isinf(filters_normalized).any():
+        warnings.warn("Normalized filters contain Inf values.")
     
-    # دریافت اندیس‌های بخش بالایی مثلثی (بدون قطر اصلی)
-    triu_indices = torch.triu_indices(row=num_filters, col=num_filters, offset=1, device=filters.device)
-    i, j = triu_indices[0], triu_indices[1]
+    # محاسبه‌ی ماتریس همبستگی
+    corr_matrix = torch.matmul(filters_normalized, filters_normalized.t())
     
-    # محاسبه‌ی همبستگی برای جفت‌های بخش بالایی مثلثی
-    correlations = torch.sum(filters_normalized[i] * filters_normalized[j], dim=1)
-    correlation_scores = torch.sum(correlations ** 2) / max(num_filters - 1, 1)
+    # بررسی مقادیر غیرمعتبر در ماتریس همبستگی
+    if torch.isnan(corr_matrix).any():
+        warnings.warn("Correlation matrix contains NaN values.")
+    if torch.isinf(corr_matrix).any():
+        warnings.warn("Correlation matrix contains Inf values.")
     
-    # بررسی مقادیر نامعتبر در همبستگی‌ها
-    if torch.isnan(correlation_scores).any() or torch.isinf(correlation_scores).any():
-        warnings.warn("Correlation scores contain NaN or Inf values.")
-        return torch.tensor(0.0, device=filters.device)
+    # ایجاد ماسک برای انتخاب عناصر بالای قطر اصلی
+    mask = torch.triu(torch.ones(num_filters, num_filters, device=filters.device), diagonal=1).bool()
+    
+    # اعمال نرم ۲ (بدون ریشه دوم) فقط برای عناصر بالای قطر اصلی
+    correlation_scores = torch.sum((corr_matrix[mask])**2, dim=0)
+    
+    # اگر mask به درستی کار نکند، به روش جمع روی محور دوم متوسل می‌شویم
+    if correlation_scores.shape == ():
+        correlation_scores = torch.sum((corr_matrix * mask.float())**2, dim=1)
+    
+    # نرمال‌سازی امتیازهای همبستگی
+    correlation_scores = correlation_scores / max(num_filters - 1, 1)
+    
+    # بررسی مقادیر غیرمعتبر در امتیازهای همبستگی
+    if torch.isnan(correlation_scores).any():
+        warnings.warn("Correlation scores contain NaN values.")
+    if torch.isinf(correlation_scores).any():
+        warnings.warn("Correlation scores contain Inf values.")
     
     # محاسبه‌ی احتمالات ماسک با gumbel_softmax
     mask_probs = F.gumbel_softmax(logits=mask_weight, tau=gumbel_temperature, hard=False, dim=1)[:, 1, :, :]
     mask_probs = mask_probs.squeeze(-1).squeeze(-1)  # شکل: (out_channels,)
     
-    # بررسی تطابق شکل‌ها
-    if mask_probs.shape[0] != num_filters:
-        warnings.warn("Shape mismatch between mask_probs and filters.")
-        return torch.tensor(0.0, device=filters.device)
-    
-    # محاسبه‌ی هزینه همبستگی
-    correlation_loss = correlation_scores * torch.mean(mask_probs)
+    if mask_probs.shape[0] != correlation_scores.shape[0]:
+        warnings.warn("Shape mismatch between mask_probs and correlation_scores.")
+        device = filters.device
+
+    correlation_loss = torch.mean(correlation_scores * mask_probs)
     
     return correlation_loss
 
 class MaskLoss(nn.Module):
-    def __init__(self, correlation_weight=0.1):
+    def __init__(self):
         super(MaskLoss, self).__init__()
-        self.correlation_weight = correlation_weight
     
     def forward(self, model):
         total_pruning_loss = 0.0
@@ -133,8 +133,7 @@ class MaskLoss(nn.Module):
         if num_layers == 0:
             print('0 layers')
 
-        
-        total_loss = self.correlation_weight * (total_pruning_loss / num_layers)
+        total_loss =  (total_pruning_loss / num_layers)
         return total_loss
 
 class CrossEntropyLabelSmooth(nn.Module):
