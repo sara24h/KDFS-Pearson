@@ -29,38 +29,20 @@ class RCLoss(nn.Module):
 
 import warnings
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import warnings
+def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=1.0, batch_size=64):
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import warnings
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import warnings
-
-def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=1.0):
-    # بررسی مقادیر نامعتبر
     if torch.isnan(filters).any() or torch.isinf(filters).any():
         warnings.warn("Filters contain NaN or Inf values.")
-        return torch.tensor(0.0, device=filters.device)
+
     if torch.isnan(mask_weight).any() or torch.isinf(mask_weight).any():
         warnings.warn("Mask weights contain NaN or Inf values.")
-        return torch.tensor(0.0, device=filters.device)
     
     # تعداد فیلترها
     num_filters = filters.shape[0]
     
     if num_filters < 2:
         warnings.warn("Less than 2 filters, returning zero correlation loss.")
-        return torch.tensor(0.0, device=filters.device)
-    
-    # تغییر شکل فیلترها به بردار
+
     filters_flat = filters.view(num_filters, -1)
     
     # بررسی واریانس صفر
@@ -79,40 +61,48 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     norm = torch.norm(filters_normalized, dim=1, keepdim=True)
     filters_normalized = filters_normalized / (norm + epsilon)
     
+    # استفاده از نیم‌دقت (FP16) برای کاهش مصرف حافظه
+    filters_normalized = filters_normalized.half()
+    
     # بررسی مقادیر نامعتبر پس از نرمال‌سازی
     if torch.isnan(filters_normalized).any() or torch.isinf(filters_normalized).any():
         warnings.warn("Normalized filters contain NaN or Inf values.")
-        return torch.tensor(0.0, device=filters.device)
-    
-    # دریافت اندیس‌های بخش بالایی مثلثی (بدون قطر اصلی)
+
     triu_indices = torch.triu_indices(row=num_filters, col=num_filters, offset=1, device=filters.device)
     i, j = triu_indices[0], triu_indices[1]
+    num_pairs = i.shape[0]
     
-    # محاسبه‌ی همبستگی برای جفت‌های بخش بالایی مثلثی
-    correlations = torch.sum(filters_normalized[i] * filters_normalized[j], dim=1)
-    correlation_scores = torch.sum(correlations ** 2) / max(num_filters - 1, 1)
+    # آزادسازی حافظه اضافی
+    torch.cuda.empty_cache()
+
+    correlation_scores = 0.0
+    for start in range(0, num_pairs, batch_size):
+        end = min(start + batch_size, num_pairs)
+        batch_i = i[start:end]
+        batch_j = j[start:end]
+        batch_correlations = torch.sum(filters_normalized[batch_i] * filters_normalized[batch_j], dim=1)
+        correlation_scores += torch.sum(batch_correlations ** 2)
     
-    # بررسی مقادیر نامعتبر در همبستگی‌ها
+    # نرمال‌سازی توسط تعداد جفت‌ها
+    correlation_scores = correlation_scores / max(num_filters - 1, 1)
+    
+    # بررسی مقادیر نامعتبر در امتیازهای همبستگی
     if torch.isnan(correlation_scores).any() or torch.isinf(correlation_scores).any():
         warnings.warn("Correlation scores contain NaN or Inf values.")
-        return torch.tensor(0.0, device=filters.device)
-    
-    # محاسبه‌ی احتمالات ماسک با gumbel_softmax
+
     mask_probs = F.gumbel_softmax(logits=mask_weight, tau=gumbel_temperature, hard=False, dim=1)[:, 1, :, :]
     mask_probs = mask_probs.squeeze(-1).squeeze(-1)  # شکل: (out_channels,)
     
     # بررسی تطابق شکل‌ها
     if mask_probs.shape[0] != num_filters:
         warnings.warn("Shape mismatch between mask_probs and filters.")
-        return torch.tensor(0.0, device=filters.device)
-    
-    # محاسبه‌ی هزینه همبستگی
+
     correlation_loss = correlation_scores * torch.mean(mask_probs)
     
     return correlation_loss
 
 class MaskLoss(nn.Module):
-    def __init__(self, correlation_weight=0.1):
+    def __init__(self, correlation_weight=1000.0):  # کاهش ضریب برای پایداری
         super(MaskLoss, self).__init__()
         self.correlation_weight = correlation_weight
     
@@ -123,16 +113,17 @@ class MaskLoss(nn.Module):
         
         for m in model.mask_modules:
             if isinstance(m, SoftMaskedConv2d):
-                filters = m.weight  # وزن‌های فیلتر
-                mask_weight = m.mask_weight  # وزن‌های ماسک
-                gumbel_temperature = m.gumbel_temperature  # دمای گامبل
-                pruning_loss = compute_active_filters_correlation(filters, mask_weight, gumbel_temperature)
+                filters = m.weight
+                mask_weight = m.mask_weight
+                gumbel_temperature = m.gumbel_temperature
+                pruning_loss = compute_active_filters_correlation(
+                    filters, mask_weight, gumbel_temperature, batch_size=46
+                )
                 total_pruning_loss += pruning_loss
                 num_layers += 1
         
         if num_layers == 0:
-            print('0 layers')
-
+            warnings.warn("No maskable layers found, returning zero loss.")
         
         total_loss = self.correlation_weight * (total_pruning_loss / num_layers)
         return total_loss
