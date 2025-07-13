@@ -76,7 +76,7 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
 
     mask = ~torch.eye(num_filters, num_filters, device=filters.device).bool()
     
-    ccorrelation_scores = torch.sum(torch.abs(corr_matrix * mask.float()), dim=1)
+    correlation_scores = torch.sum(torch.abs(corr_matrix * mask.float()), dim=1)
     correlation_scores = correlation_scores / max(num_filters - 1, 1)
     
     if torch.isnan(correlation_scores).any():
