@@ -43,7 +43,8 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     num_filters = filters.shape[0]
     
     if num_filters < 2:
-        print('less then 2 filters')
+        print('less than 2 filters')
+        return torch.tensor(0.0, device=filters.device)
     
     filters_flat = filters.view(num_filters, -1)
 
@@ -52,7 +53,6 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     if len(zero_variance_indices) > 0:
         warnings.warn(f"{len(zero_variance_indices)} filters have zero variance.")
     
-
     mean = torch.mean(filters_flat, dim=1, keepdim=True)
     centered = filters_flat - mean
     std = torch.std(filters_flat, dim=1, keepdim=True)
@@ -89,8 +89,12 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     
     if mask_probs.shape[0] != correlation_scores.shape[0]:
         warnings.warn("Shape mismatch between mask_probs and correlation_scores.")
+    
+    filter_importance = torch.norm(filters_flat, dim=1)
+    filter_importance = filter_importance / (filter_importance.max() + epsilon) 
+    importance_weight = 1.0 - filter_importance  
 
-    correlation_loss = torch.mean(correlation_scores * mask_probs)
+    correlation_loss = torch.mean(correlation_scores * mask_probs * importance_weight)
     
     return correlation_loss
 
@@ -99,7 +103,6 @@ class MaskLoss(nn.Module):
         super(MaskLoss, self).__init__()
     
     def forward(self, model):
-   
         total_pruning_loss = 0.0
         num_layers = 0
         device = next(model.parameters()).device
