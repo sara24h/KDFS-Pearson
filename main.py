@@ -12,14 +12,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
-from torch.cuda.amp import autocast, GradScaler
+from torch.cuda.amp import GradScaler, autocast
 import torch.distributed as dist
 
 matplotlib.use('Agg')
 
 from data.dataset import FaceDataset, Dataset_selector
 from model.teacher.ResNet import ResNet_50_hardfakevsreal
-from model.student import ResNet_sparse
+from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 from utils import utils, loss, meter, scheduler
 from train import Train
 from test import Test
@@ -44,14 +44,14 @@ def parse_args():
         "--dataset_mode",
         type=str,
         default="hardfake",
-        choices=("hardfake", "rvf10k", "140k", "200k", "190k", "330k"),  # Added 330k
-        help="Dataset to use: hardfake, rvf10k, 140k, 200k, 190k, or 330k",
+        choices=("hardfake", "rvf10k", "140k"),
+        help="Dataset to use: hardfake, rvf10k, or 140k",
     )
     parser.add_argument(
         "--dataset_dir",
         type=str,
         default="/kaggle/input/hardfakevsrealfaces",
-        help="The dataset path (used for hardfake, rvf10k, 140k, 200k)",
+        help="The dataset path",
     )
     parser.add_argument(
         "--hardfake_csv_file",
@@ -88,36 +88,6 @@ def parse_args():
         type=str,
         default="/kaggle/input/140k-real-and-fake-faces/test.csv",
         help="The path to the 140k test CSV file (for 140k mode)",
-    )
-    parser.add_argument(
-        "--realfake200k_train_csv",
-        type=str,
-        default="/kaggle/input/200k-real-v-ai-visuals-by-mbilal/train_labels.csv",
-        help="The path to the 200k train CSV file (for 200k mode)",
-    )
-    parser.add_argument(
-        "--realfake200k_valid_csv",
-        type=str,
-        default="/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/val_labels.csv",
-        help="The path to the 200k valid CSV file (for 200k mode)",
-    )
-    parser.add_argument(
-        "--realfake200k_test_csv",
-        type=str,
-        default="/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/test_labels.csv",
-        help="The path to the 200k test CSV file (for 200k mode)",
-    )
-    parser.add_argument(
-        "--realfake190k_root_dir",
-        type=str,
-        default="/kaggle/input/deepfake-and-real-images/Dataset",
-        help="The path to the 190k dataset directory (for 190k mode)",
-    )
-    parser.add_argument(
-        "--realfake330k_root_dir",  # New argument for 330k
-        type=str,
-        default="/kaggle/input/deepfake-dataset",
-        help="The path to the 330k dataset directory (for 330k mode)",
     )
     parser.add_argument(
         "--num_workers",
@@ -190,7 +160,7 @@ def parse_args():
     parser.add_argument(
         "--teacher_ckpt_path",
         type=str,
-        default="/kaggle/working/KDFS/teacher_dir/teacher_model.pth",
+        default="/kaggle/working/KDFS-Pearson-2/teacher_dir/teacher_model.pth",
         help="The path where the teacher model is stored",
     )
     parser.add_argument(
@@ -250,7 +220,7 @@ def parse_args():
     parser.add_argument(
         "--target_temperature",
         type=float,
-        default=3.0,
+        default=2.0,
         help="temperature of soft targets",
     )
     parser.add_argument(
@@ -387,21 +357,6 @@ def validate_args(args):
             raise FileNotFoundError(f"140k test CSV file not found: {args.realfake140k_test_csv}")
         if not os.path.exists(args.dataset_dir):
             raise FileNotFoundError(f"Dataset directory not found: {args.dataset_dir}")
-    elif args.dataset_mode == "200k":
-        if not os.path.exists(args.realfake200k_train_csv):
-            raise FileNotFoundError(f"200k train CSV file not found: {args.realfake200k_train_csv}")
-        if not os.path.exists(args.realfake200k_valid_csv):
-            raise FileNotFoundError(f"200k valid CSV file not found: {args.realfake200k_valid_csv}")
-        if not os.path.exists(args.realfake200k_test_csv):
-            raise FileNotFoundError(f"200k test CSV file not found: {args.realfake200k_test_csv}")
-        if not os.path.exists(args.dataset_dir):
-            raise FileNotFoundError(f"Dataset directory not found: {args.dataset_dir}")
-    elif args.dataset_mode == "190k":
-        if not os.path.exists(args.realfake190k_root_dir):
-            raise FileNotFoundError(f"190k dataset directory not found: {args.realfake190k_root_dir}")
-    elif args.dataset_mode == "330k":
-        if not os.path.exists(args.realfake330k_root_dir):
-            raise FileNotFoundError(f"330k dataset directory not found: {args.realfake330k_root_dir}")
 
     if args.phase in ["train", "finetune"] and not os.path.exists(args.teacher_ckpt_path):
         raise FileNotFoundError(f"Teacher checkpoint not found: {args.teacher_ckpt_path}")
@@ -435,12 +390,7 @@ def main():
     print(f"Architecture: {args.arch}")
 
     if args.dali:
-        print("Using NVIDIA DALI for data loading.")
-        from nvidia.dali.pipeline import Pipeline
-        from nvidia.dali.plugin.pytorch import DALIClassificationIterator
-        # DALI pipeline implementation would go here
-    else:
-        print("Using standard PyTorch DataLoader.")
+        print("Warning: DALI is not implemented in this version. Ignoring --dali flag.")
 
     # Execute the corresponding phase
     if args.ddp:
