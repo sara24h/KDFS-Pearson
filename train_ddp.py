@@ -136,9 +136,9 @@ class TrainDDP:
         elif self.dataset_mode == '190k':
             realfake190k_root_dir = self.dataset_dir
         elif self.dataset_mode == '200k':
-            realfake200k_train_csv = os.path.join(self.dataset_dir, 'train.csv')
-            realfake200k_val_csv = os.path.join(self.dataset_dir, 'valid.csv')
-            realfake200k_test_csv = os.path.join(self.dataset_dir, 'test.csv')
+            realfake200k_train_csv = self.args.realfake200k_train_csv
+            realfake200k_val_csv = self.args.realfake200k_valid_csv
+            realfake200k_test_csv = self.args.realfake200k_test_csv
             realfake200k_root_dir = self.dataset_dir
         elif self.dataset_mode == '330k':
             realfake330k_root_dir = self.dataset_dir
