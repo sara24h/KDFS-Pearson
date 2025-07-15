@@ -283,12 +283,7 @@ def parse_args():
         default=0.5,
         help="Coefficient of mask loss",
     )
-    parser.add_argument(
-        "--compress_rate",
-        type=float,
-        default=0.3,
-        help="Compress rate of the student model",
-    )
+
     parser.add_argument(
         "--finetune_student_ckpt_path",
         type=str,
