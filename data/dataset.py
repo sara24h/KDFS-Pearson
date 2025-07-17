@@ -168,8 +168,8 @@ class Dataset_selector:
                 img_name = row['id']
                 img_name = os.path.basename(img_name)
                 if not img_name.endswith('.jpg'):
-                    img_name += '.jpg'
-                return os.path.join('rvf10k', split, folder, img_name)
+                   img_name += '.jpg'
+                return os.path.join(split, folder, img_name)  
 
             train_data['images_id'] = train_data.apply(lambda row: create_image_path(row, 'train'), axis=1)
             valid_data = pd.read_csv(rvf10k_valid_csv)
