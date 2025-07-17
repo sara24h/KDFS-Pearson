@@ -53,7 +53,7 @@ class Dataset_selector(Dataset):
         realfake330k_root_dir=None,
         train_batch_size=32,
         eval_batch_size=32,
-        num_workers=0,  # کاهش برای پایداری در Kaggle
+        num_workers=8,  
         pin_memory=True,
         ddp=False,
     ):
@@ -402,10 +402,9 @@ if __name__ == "__main__":
         realfake200k_train_csv='/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/train_labels.csv',
         realfake200k_val_csv='/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/val_labels.csv',
         realfake200k_test_csv='/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/test_labels.csv',
-        realfake200k_root_dir='/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/',  # مسیر اصلاح‌شده
+        realfake200k_root_dir='/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/', 
         train_batch_size=64,
         eval_batch_size=64,
-        num_workers=0,  # کاهش برای پایداری
         ddp=True,
     )
 
