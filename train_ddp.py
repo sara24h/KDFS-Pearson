@@ -12,24 +12,13 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from torch.cuda.amp import autocast, GradScaler
 from data.dataset import Dataset_selector
-from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, ResNet_50_sparse_rvf10k
+from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, ResNet_50_sparse_rvf10k,SoftMaskedConv2d
 from utils import utils, loss, meter, scheduler
 from thop import profile
 from model.teacher.ResNet import ResNet_50_hardfakevsreal
 from torch import amp
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
-Flops_baselines = {
-    "ResNet_50": {
-        "hardfakevsrealfaces": 7700.0,
-        "rvf10k": 5000,
-        "140k": 5390.0,
-        "200k": 5390.0,
-        "190k": 5390.0,
-        "330k": 5390.0, 
-    }
-}
 
 class TrainDDP:
     def __init__(self, args):
@@ -527,15 +516,6 @@ class TrainDDP:
                 for _, m in enumerate(self.student.module.mask_modules):
                     masks.append(round(m.mask.mean().item(), 2))
                 self.logger.info("[Train mask avg] Epoch {0} : ".format(epoch) + str(masks))
-
-                filter_avgs = []
-                for name, module in self.student.module.named_modules():
-                    if isinstance(module, SoftMaskedConv2d):
-                        filters = module.weight
-                        filter_mean = filters.view(filters.size(0), -1).mean(dim=1)
-                        layer_avg = round(filter_mean.mean().item(), 7)
-                        filter_avgs.append(layer_avg)
-                self.logger.info("[Train filter avg] Epoch {0} : ".format(epoch) + str(filter_avgs))
 
                 self.logger.info(
                     "[Train model Flops] Epoch {0} : ".format(epoch)
