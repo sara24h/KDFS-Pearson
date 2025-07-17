@@ -165,10 +165,11 @@ class Dataset_selector:
 
             def create_image_path(row, split='train'):
                 folder = 'fake' if row['label'] == 0 else 'real'
-                img_name = os.path.basename(row['id']) 
+                img_name = row['id']
+                img_name = os.path.basename(img_name)
                 if not img_name.endswith('.jpg'):
                     img_name += '.jpg'
-                return os.path.join('rvf10k', split, folder, img_name)  
+                return os.path.join('rvf10k', split, folder, img_name)
 
             train_data['images_id'] = train_data.apply(lambda row: create_image_path(row, 'train'), axis=1)
             valid_data = pd.read_csv(rvf10k_valid_csv)
@@ -177,6 +178,8 @@ class Dataset_selector:
             val_data, test_data = train_test_split(
                 valid_data, test_size=0.5, stratify=valid_data['label'], random_state=3407
             )
+            val_data = val_data.reset_index(drop=True)
+            test_data = test_data.reset_index(drop=True)
             root_dir = rvf10k_root_dir
             
         elif dataset_mode == '140k':
@@ -385,9 +388,9 @@ if __name__ == "__main__":
         rvf10k_train_csv='/kaggle/input/rvf10k/train.csv',
         rvf10k_valid_csv='/kaggle/input/rvf10k/valid.csv',
         rvf10k_root_dir='/kaggle/input/rvf10k',
-        train_batch_size=256,
-        eval_batch_size=128,
-        ddp=True,
+        train_batch_size=64,
+        eval_batch_size=64,
+        ddp=True, 
     )
 
     dataset_140k = Dataset_selector(
