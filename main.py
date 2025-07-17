@@ -44,14 +44,14 @@ def parse_args():
         "--dataset_mode",
         type=str,
         default="hardfake",
-        choices=("hardfake", "rvf10k", "140k", "200k", "330k"),  # Added 330k
-        help="Dataset to use: hardfake, rvf10k, 140k, 200k,  or 330k",
+        choices=("hardfake", "rvf10k", "140k", "200k", "190k", "330k"),  # Added 330k
+        help="Dataset to use: hardfake, rvf10k, 140k, 200k, 190k, or 330k",
     )
     parser.add_argument(
         "--dataset_dir",
         type=str,
         default="/kaggle/input/hardfakevsrealfaces",
-        help="The dataset path",
+        help="The dataset path (used for hardfake, rvf10k, 140k, 200k)",
     )
     parser.add_argument(
         "--hardfake_csv_file",
@@ -92,7 +92,7 @@ def parse_args():
     parser.add_argument(
         "--realfake200k_train_csv",
         type=str,
-        default="/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/train_labels.csv",
+        default="/kaggle/input/200k-real-v-ai-visuals-by-mbilal/train_labels.csv",
         help="The path to the 200k train CSV file (for 200k mode)",
     )
     parser.add_argument(
@@ -107,7 +107,12 @@ def parse_args():
         default="/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/test_labels.csv",
         help="The path to the 200k test CSV file (for 200k mode)",
     )
-  
+    parser.add_argument(
+        "--realfake190k_root_dir",
+        type=str,
+        default="/kaggle/input/deepfake-and-real-images/Dataset",
+        help="The path to the 190k dataset directory (for 190k mode)",
+    )
     parser.add_argument(
         "--realfake330k_root_dir",  # New argument for 330k
         type=str,
@@ -278,7 +283,12 @@ def parse_args():
         default=0.5,
         help="Coefficient of mask loss",
     )
-
+    parser.add_argument(
+        "--compress_rate",
+        type=float,
+        default=0.3,
+        help="Compress rate of the student model",
+    )
     parser.add_argument(
         "--finetune_student_ckpt_path",
         type=str,
@@ -386,7 +396,9 @@ def validate_args(args):
             raise FileNotFoundError(f"200k test CSV file not found: {args.realfake200k_test_csv}")
         if not os.path.exists(args.dataset_dir):
             raise FileNotFoundError(f"Dataset directory not found: {args.dataset_dir}")
-    
+    elif args.dataset_mode == "190k":
+        if not os.path.exists(args.realfake190k_root_dir):
+            raise FileNotFoundError(f"190k dataset directory not found: {args.realfake190k_root_dir}")
     elif args.dataset_mode == "330k":
         if not os.path.exists(args.realfake330k_root_dir):
             raise FileNotFoundError(f"330k dataset directory not found: {args.realfake330k_root_dir}")
