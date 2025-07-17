@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument(
         "--dataset_dir",
         type=str,
-        default="/kaggle/input/200k-real-v-ai-visuals-by-mbilal/my_real_vs_ai_dataset/my_real_vs_ai_dataset",
+        default="/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/my_real_vs_ai_dataset/my_real_vs_ai_dataset",
         help="The dataset path (used for hardfake, rvf10k, 140k, 200k)",
     )
     parser.add_argument(
