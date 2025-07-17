@@ -20,12 +20,17 @@ class FaceDataset(Dataset):
     def __getitem__(self, idx):
         img_name = os.path.join(self.root_dir, self.data[self.img_column].iloc[idx])
         if not os.path.exists(img_name):
-            raise FileNotFoundError(f"image not found: {img_name}")
-        image = Image.open(img_name).convert('RGB')
-        label = self.label_map[self.data['label'].iloc[idx]]
-        if self.transform:
-            image = self.transform(image)
-        return image, torch.tensor(label, dtype=torch.float)
+            print(f"Warning: image not found: {img_name}")
+            return None, None
+        try:
+            image = Image.open(img_name).convert('RGB')
+            label = self.label_map[self.data['label'].iloc[idx]]
+            if self.transform:
+                image = self.transform(image)
+            return image, torch.tensor(label, dtype=torch.float)
+        except Exception as e:
+            print(f"Error loading image {img_name}: {e}")
+            return None, None
 
 class Dataset_selector(Dataset):
     def __init__(
@@ -78,7 +83,7 @@ class Dataset_selector(Dataset):
             std = (0.2410, 0.2161, 0.2081)
         else:  # 330k
             mean = (0.4923, 0.4042, 0.3624)
-            std = (0.2446, 0.2198, 0.2141)   
+            std = (0.2446, 0.2198, 0.2141)
 
         # Define transforms
         transform_train = transforms.Compose([
@@ -170,7 +175,6 @@ class Dataset_selector(Dataset):
         elif dataset_mode == '200k':
             if not realfake200k_train_csv or not realfake200k_val_csv or not realfake200k_test_csv or not realfake200k_root_dir:
                 raise ValueError("realfake200k_train_csv, realfake200k_val_csv, realfake200k_test_csv, and realfake200k_root_dir must be provided")
-                
             train_data = pd.read_csv(realfake200k_train_csv)
             val_data = pd.read_csv(realfake200k_val_csv)
             test_data = pd.read_csv(realfake200k_test_csv)
@@ -178,14 +182,14 @@ class Dataset_selector(Dataset):
 
             def create_image_path(row):
                 folder = 'real' if row['label'] == 1 else 'ai_images'
-                img_name = row['filename'] 
+                img_name = row['filename']
                 if not img_name:
                     raise ValueError("No valid filename found in CSV")
                 return os.path.join(folder, img_name)
 
             train_data['images_id'] = train_data.apply(create_image_path, axis=1)
             val_data['images_id'] = val_data.apply(create_image_path, axis=1)
-           test_data['images_id'] = test_data.apply(create_image_path, axis=1)
+            test_data['images_id'] = test_data.apply(create_image_path, axis=1)
 
         elif dataset_mode == '190k':
             if not realfake190k_root_dir:
@@ -265,7 +269,14 @@ class Dataset_selector(Dataset):
         val_dataset = FaceDataset(val_data, root_dir, transform=transform_test, img_column=img_column)
         test_dataset = FaceDataset(test_data, root_dir, transform=transform_test, img_column=img_column)
 
-        # Create data loaders with DDP support for all loaders
+        # Custom collate function to handle None values
+        def collate_fn(batch):
+            batch = [b for b in batch if b[0] is not None]
+            if not batch:
+                return None
+            return torch.utils.data.dataloader.default_collate(batch)
+
+        # Create data loaders with DDP support
         if ddp:
             train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, shuffle=True)
             val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset, shuffle=True)
@@ -277,6 +288,7 @@ class Dataset_selector(Dataset):
                 num_workers=num_workers,
                 pin_memory=pin_memory, 
                 sampler=train_sampler,
+                collate_fn=collate_fn
             )
             self.loader_val = DataLoader(
                 val_dataset, 
@@ -284,6 +296,7 @@ class Dataset_selector(Dataset):
                 num_workers=num_workers,
                 pin_memory=pin_memory, 
                 sampler=val_sampler,
+                collate_fn=collate_fn
             )
             self.loader_test = DataLoader(
                 test_dataset, 
@@ -291,6 +304,7 @@ class Dataset_selector(Dataset):
                 num_workers=num_workers,
                 pin_memory=pin_memory, 
                 sampler=test_sampler,
+                collate_fn=collate_fn
             )
         else:
             self.loader_train = DataLoader(
@@ -299,6 +313,7 @@ class Dataset_selector(Dataset):
                 shuffle=True,
                 num_workers=num_workers, 
                 pin_memory=pin_memory,
+                collate_fn=collate_fn
             )
             self.loader_val = DataLoader(
                 val_dataset, 
@@ -306,6 +321,7 @@ class Dataset_selector(Dataset):
                 shuffle=False, 
                 num_workers=num_workers, 
                 pin_memory=pin_memory,
+                collate_fn=collate_fn
             )
             self.loader_test = DataLoader(
                 test_dataset, 
@@ -313,6 +329,7 @@ class Dataset_selector(Dataset):
                 shuffle=False, 
                 num_workers=num_workers, 
                 pin_memory=pin_memory,
+                collate_fn=collate_fn
             )
 
         # Debug: Print loader sizes
@@ -375,10 +392,10 @@ if __name__ == "__main__":
     # Example for 200k Real and Fake Faces
     dataset_200k = Dataset_selector(
         dataset_mode='200k',
-        realfake200k_train_csv='/kaggle/input/200k-real-and-fake-faces/train.csv',
-        realfake200k_val_csv='/kaggle/input/200k-real-and-fake-faces/valid.csv',
-        realfake200k_test_csv='/kaggle/input/200k-real-and-fake-faces/test.csv',
-        realfake200k_root_dir='/kaggle/input/200k-real-and-fake-faces',
+        realfake200k_train_csv='/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/train_labels.csv',
+        realfake200k_val_csv='/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/val_labels.csv',
+        realfake200k_test_csv='/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/test_labels.csv',
+        realfake200k_root_dir='/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/my_real_vs_ai_dataset',
         train_batch_size=64,
         eval_batch_size=64,
         ddp=True,
