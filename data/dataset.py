@@ -53,7 +53,7 @@ class Dataset_selector(Dataset):
         realfake330k_root_dir=None,
         train_batch_size=32,
         eval_batch_size=32,
-        num_workers=8,
+        num_workers=0,  # کاهش برای پایداری در Kaggle
         pin_memory=True,
         ddp=False,
     ):
@@ -104,7 +104,7 @@ class Dataset_selector(Dataset):
         ])
 
         # Set img_column based on dataset_mode
-        img_column = 'path' if dataset_mode in ['140k'] else 'images_id'
+        img_column = 'path' if dataset_mode in ['140k'] else 'filename'
 
         # Load data based on dataset_mode
         if dataset_mode == 'hardfake':
@@ -180,11 +180,15 @@ class Dataset_selector(Dataset):
             test_data = pd.read_csv(realfake200k_test_csv)
             root_dir = realfake200k_root_dir
 
+            # بررسی وجود ستون‌های مورد نیاز
+            if 'filename' not in train_data.columns or 'label' not in train_data.columns:
+                raise ValueError("CSV files for 200k dataset must contain 'filename' and 'label' columns")
+
             def create_image_path(row):
                 folder = 'real' if row['label'] == 1 else 'ai_images'
                 img_name = row['filename']
                 if not img_name:
-                    raise ValueError("No valid filename found in CSV")
+                    raise ValueError(f"No valid filename found in CSV at row {row.name}")
                 return os.path.join(folder, img_name)
 
             train_data['images_id'] = train_data.apply(create_image_path, axis=1)
@@ -341,8 +345,11 @@ class Dataset_selector(Dataset):
         for loader, name in [(self.loader_train, 'train'), (self.loader_val, 'validation'), (self.loader_test, 'test')]:
             try:
                 sample = next(iter(loader))
-                print(f"Sample {name} batch image shape: {sample[0].shape}")
-                print(f"Sample {name} batch labels: {sample[1]}")
+                if sample is not None:
+                    print(f"Sample {name} batch image shape: {sample[0].shape}")
+                    print(f"Sample {name} batch labels: {sample[1]}")
+                else:
+                    print(f"No valid samples in {name} batch")
             except Exception as e:
                 print(f"Error loading sample {name} batch: {e}")
 
@@ -395,9 +402,10 @@ if __name__ == "__main__":
         realfake200k_train_csv='/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/train_labels.csv',
         realfake200k_val_csv='/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/val_labels.csv',
         realfake200k_test_csv='/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/test_labels.csv',
-        realfake200k_root_dir='/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/my_real_vs_ai_dataset',
+        realfake200k_root_dir='/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/',  # مسیر اصلاح‌شده
         train_batch_size=64,
         eval_batch_size=64,
+        num_workers=0,  # کاهش برای پایداری
         ddp=True,
     )
 
