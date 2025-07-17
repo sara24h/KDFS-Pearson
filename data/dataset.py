@@ -178,7 +178,8 @@ class Dataset_selector:
             val_data, test_data = train_test_split(
                 valid_data, test_size=0.5, stratify=valid_data['label'], random_state=3407
             )
-
+            root_dir = rvf10k_root_dir
+            
         elif dataset_mode == '140k':
             if not realfake140k_train_csv or not realfake140k_valid_csv or not realfake140k_test_csv or not realfake140k_root_dir:
                 raise ValueError("realfake140k_train_csv, realfake140k_valid_csv, realfake140k_test_csv, and realfake140k_root_dir must be provided")
