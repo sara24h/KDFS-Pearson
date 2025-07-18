@@ -23,7 +23,7 @@ class Test:
         self.device = args.device
         self.test_batch_size = args.test_batch_size
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
-        self.dataset_mode = args.dataset_mode 
+        self.dataset_mode = args.dataset_mode  # 'hardfake', 'rvf10k', '140k', '200k', '190k', '330k'
 
         # Verify CUDA availability
         if self.device == 'cuda' and not torch.cuda.is_available():
@@ -50,10 +50,9 @@ class Test:
                 test_csv = os.path.join(self.dataset_dir, 'test_labels.csv')
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
-            elif self.dataset_mode == '190k':
-                if not os.path.exists(self.dataset_dir):
-                    raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
-          
+     
+     
+
             # Initialize dataset based on mode
             if self.dataset_mode == 'hardfake':
                 dataset = Dataset_selector(
@@ -94,9 +93,9 @@ class Test:
             elif self.dataset_mode == '200k':
                 dataset = Dataset_selector(
                     dataset_mode='200k',
-                    realfake200k_train_csv=os.path.join(self.dataset_dir, 'train.csv'),
-                    realfake200k_valid_csv=os.path.join(self.dataset_dir, 'valid.csv'),
-                    realfake200k_test_csv=os.path.join(self.dataset_dir, 'test.csv'),
+                    realfake200k_train_csv=os.path.join(self.dataset_dir, 'train_labels.csv'),
+                    realfake200k_valid_csv=os.path.join(self.dataset_dir, 'val_labels.csv'),
+                    realfake200k_test_csv=os.path.join(self.dataset_dir, 'test_labels.csv'),
                     realfake200k_root_dir=self.dataset_dir,
                     train_batch_size=self.test_batch_size,
                     eval_batch_size=self.test_batch_size,
@@ -104,17 +103,7 @@ class Test:
                     pin_memory=self.pin_memory,
                     ddp=False
                 )
-            elif self.dataset_mode == '190k':
-                dataset = Dataset_selector(
-                    dataset_mode='190k',
-                    realfake190k_root_dir=self.dataset_dir,
-                    train_batch_size=self.test_batch_size,
-                    eval_batch_size=self.test_batch_size,
-                    num_workers=self.num_workers,
-                    pin_memory=self.pin_memory,
-                    ddp=False
-                )
-           
+         
 
             self.test_loader = dataset.loader_test
             print(f"{self.dataset_mode} test dataset loaded! Total batches: {len(self.test_loader)}")
