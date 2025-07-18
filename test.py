@@ -1,4 +1,3 @@
-
 import os
 import time
 import numpy as np
@@ -12,9 +11,9 @@ from torch.utils.data import Dataset, DataLoader
 from utils import meter
 from get_flops_and_params import get_flops_and_params
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
-from data.dataset import Dataset_selector
 
-class Test:
+
+class Test:  
     def __init__(self, args):
         self.args = args
         self.dataset_dir = args.dataset_dir
@@ -24,7 +23,7 @@ class Test:
         self.device = args.device
         self.test_batch_size = args.test_batch_size
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
-        self.dataset_mode = args.dataset_mode  # 'hardfake', 'rvf10k', or '140k'
+        self.dataset_mode = args.dataset_mode  # 'hardfake', 'rvf10k', '140k', '200k'
 
         # Verify CUDA availability
         if self.device == 'cuda' and not torch.cuda.is_available():
@@ -43,7 +42,11 @@ class Test:
                 valid_csv = os.path.join(self.dataset_dir, 'valid.csv')
                 if not os.path.exists(train_csv) or not os.path.exists(valid_csv):
                     raise FileNotFoundError(f"CSV files not found: {train_csv}, {valid_csv}")
-            else:  # 140k
+            elif self.dataset_mode == '140k':
+                test_csv = os.path.join(self.dataset_dir, 'test.csv')
+                if not os.path.exists(test_csv):
+                    raise FileNotFoundError(f"CSV file not found: {test_csv}")
+            elif self.dataset_mode == '200k':
                 test_csv = os.path.join(self.dataset_dir, 'test.csv')
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
@@ -72,13 +75,26 @@ class Test:
                     pin_memory=self.pin_memory,
                     ddp=False
                 )
-            else:  # 140k
+            elif self.dataset_mode == '140k':
                 dataset = Dataset_selector(
                     dataset_mode='140k',
                     realfake140k_train_csv=os.path.join(self.dataset_dir, 'train.csv'),
                     realfake140k_valid_csv=os.path.join(self.dataset_dir, 'valid.csv'),
                     realfake140k_test_csv=os.path.join(self.dataset_dir, 'test.csv'),
                     realfake140k_root_dir=self.dataset_dir,
+                    train_batch_size=self.test_batch_size,
+                    eval_batch_size=self.test_batch_size,
+                    num_workers=self.num_workers,
+                    pin_memory=self.pin_memory,
+                    ddp=False
+                )
+            elif self.dataset_mode == '200k':
+                dataset = Dataset_selector(
+                    dataset_mode='200k',
+                    realfake200k_train_csv=os.path.join(self.dataset_dir, 'train.csv'),
+                    realfake200k_valid_csv=os.path.join(self.dataset_dir, 'valid.csv'),
+                    realfake200k_test_csv=os.path.join(self.dataset_dir, 'test.csv'),
+                    realfake200k_root_dir=self.dataset_dir,
                     train_batch_size=self.test_batch_size,
                     eval_batch_size=self.test_batch_size,
                     num_workers=self.num_workers,
@@ -96,8 +112,9 @@ class Test:
         print("==> Building student model..")
         try:
             print(f"Loading sparse student model for dataset mode: {self.dataset_mode}")
+            
             self.student = ResNet_50_sparse_hardfakevsreal()
-           
+            
 
             # Load checkpoint
             if not os.path.exists(self.sparsed_student_ckpt_path):
