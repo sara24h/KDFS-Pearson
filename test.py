@@ -8,12 +8,12 @@ from PIL import Image
 from sklearn.model_selection import train_test_split
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset, DataLoader
+import glob
 from utils import meter
 from get_flops_and_params import get_flops_and_params
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 
-
-class Test:  
+class Test:
     def __init__(self, args):
         self.args = args
         self.dataset_dir = args.dataset_dir
@@ -23,7 +23,7 @@ class Test:
         self.device = args.device
         self.test_batch_size = args.test_batch_size
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
-        self.dataset_mode = args.dataset_mode  # 'hardfake', 'rvf10k', '140k', '200k'
+        self.dataset_mode = args.dataset_mode 
 
         # Verify CUDA availability
         if self.device == 'cuda' and not torch.cuda.is_available():
@@ -47,10 +47,13 @@ class Test:
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
             elif self.dataset_mode == '200k':
-                test_csv = os.path.join(self.dataset_dir, 'test_labels.csv')
+                test_csv = os.path.join(self.dataset_dir, 'test.csv')
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
-
+            elif self.dataset_mode == '190k':
+                if not os.path.exists(self.dataset_dir):
+                    raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
+          
             # Initialize dataset based on mode
             if self.dataset_mode == 'hardfake':
                 dataset = Dataset_selector(
@@ -91,9 +94,9 @@ class Test:
             elif self.dataset_mode == '200k':
                 dataset = Dataset_selector(
                     dataset_mode='200k',
-                    realfake200k_train_csv=os.path.join(self.dataset_dir, 'train_labels.csv'),
-                    realfake200k_valid_csv=os.path.join(self.dataset_dir, 'val_labels.csv'),
-                    realfake200k_test_csv=os.path.join(self.dataset_dir, 'test_labels.csv'),
+                    realfake200k_train_csv=os.path.join(self.dataset_dir, 'train.csv'),
+                    realfake200k_valid_csv=os.path.join(self.dataset_dir, 'valid.csv'),
+                    realfake200k_test_csv=os.path.join(self.dataset_dir, 'test.csv'),
                     realfake200k_root_dir=self.dataset_dir,
                     train_batch_size=self.test_batch_size,
                     eval_batch_size=self.test_batch_size,
@@ -101,6 +104,17 @@ class Test:
                     pin_memory=self.pin_memory,
                     ddp=False
                 )
+            elif self.dataset_mode == '190k':
+                dataset = Dataset_selector(
+                    dataset_mode='190k',
+                    realfake190k_root_dir=self.dataset_dir,
+                    train_batch_size=self.test_batch_size,
+                    eval_batch_size=self.test_batch_size,
+                    num_workers=self.num_workers,
+                    pin_memory=self.pin_memory,
+                    ddp=False
+                )
+           
 
             self.test_loader = dataset.loader_test
             print(f"{self.dataset_mode} test dataset loaded! Total batches: {len(self.test_loader)}")
@@ -112,10 +126,7 @@ class Test:
         print("==> Building student model..")
         try:
             print(f"Loading sparse student model for dataset mode: {self.dataset_mode}")
-            
             self.student = ResNet_50_sparse_hardfakevsreal()
-            
-
             # Load checkpoint
             if not os.path.exists(self.sparsed_student_ckpt_path):
                 raise FileNotFoundError(f"Checkpoint file not found: {self.sparsed_student_ckpt_path}")
