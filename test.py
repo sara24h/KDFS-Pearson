@@ -92,18 +92,19 @@ class Test:
                     ddp=False
                 )
             elif self.dataset_mode == '200k':
+               
                 dataset = Dataset_selector(
-                    dataset_mode='200k',
-                    realfake200k_train_csv=os.path.join(self.dataset_dir, 'train_labels.csv'),
-                    realfake200k_valid_csv=os.path.join(self.dataset_dir, 'val_labels.csv'),
-                    realfake200k_test_csv=os.path.join(self.dataset_dir, 'test_labels.csv'),
-                    realfake200k_root_dir=self.dataset_dir,
-                    train_batch_size=self.test_batch_size,
-                    eval_batch_size=self.test_batch_size,
-                    num_workers=self.num_workers,
-                    pin_memory=self.pin_memory,
-                    ddp=False
-                )
+                dataset_mode='200k',
+                realfake200k_train_csv=os.path.join(self.dataset_dir, 'train_labels.csv'),
+                realfake200k_val_csv=os.path.join(self.dataset_dir, 'val_labels.csv'),  # تغییر از valid_csv به val_csv
+                realfake200k_test_csv=os.path.join(self.dataset_dir, 'test_labels.csv'),
+                realfake200k_root_dir=self.dataset_dir,
+                train_batch_size=self.test_batch_size,
+                eval_batch_size=self.test_batch_size,
+                num_workers=self.num_workers,
+               pin_memory=self.pin_memory,
+               ddp=False
+            )
          
 
             self.test_loader = dataset.loader_test
