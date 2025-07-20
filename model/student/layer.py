@@ -54,13 +54,13 @@ class SoftMaskedConv2d(nn.Module):
         nn.init.kaiming_normal_(self.mask_weight)
 
     def compute_mask(self, ticket):
-    if ticket:
-        mask = torch.argmax(self.mask_weight, dim=1).unsqueeze(1).float()
-    else:
-        soft_probs = F.gumbel_softmax(logits=self.mask_weight, tau=self.gumbel_temperature, hard=False, dim=1)[:, 1, :, :].unsqueeze(1)
-        mask = F.gumbel_softmax(logits=self.mask_weight, tau=self.gumbel_temperature, hard=True, dim=1)[:, 1, :, :].unsqueeze(1)
-        self.soft_probs = soft_probs
-    return mask
+        if ticket:
+            mask = torch.argmax(self.mask_weight, dim=1).unsqueeze(1).float()
+        else:
+            soft_probs = F.gumbel_softmax(logits=self.mask_weight, tau=self.gumbel_temperature, hard=False, dim=1)[:, 1, :, :].unsqueeze(1)
+            mask = F.gumbel_softmax(logits=self.mask_weight, tau=self.gumbel_temperature, hard=True, dim=1)[:, 1, :, :].unsqueeze(1)
+            self.soft_probs = soft_probs
+        return mask
 
     def update_gumbel_temperature(self, gumbel_temperature):
         self.gumbel_temperature = gumbel_temperature
