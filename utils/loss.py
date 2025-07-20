@@ -47,12 +47,6 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     
     filters_flat = filters.view(num_filters, -1)
 
-    variance = torch.var(filters_flat, dim=1)
-    zero_variance_indices = torch.where(variance == 0)[0]
-    if len(zero_variance_indices) > 0:
-        warnings.warn(f"{len(zero_variance_indices)} filters have zero variance.")
-    
-
     mean = torch.mean(filters_flat, dim=1, keepdim=True)
     centered = filters_flat - mean
     std = torch.std(filters_flat, dim=1, keepdim=True)
