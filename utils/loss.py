@@ -78,8 +78,9 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     if torch.isinf(correlation_scores).any():
         warnings.warn("Correlation scores contain Inf values.")
 
-    mask_probs = F.gumbel_softmax(logits=mask_weight, tau=gumbel_temperature, hard=False, dim=1)[:, 1, :, :]
-    mask_probs = mask_probs.squeeze(-1).squeeze(-1)
+    #mask_probs = F.gumbel_softmax(logits=mask_weight, tau=gumbel_temperature, hard=False, dim=1)[:, 1, :, :]
+    #mask_probs = mask_probs.squeeze(-1).squeeze(-1)
+    mask_probs = m.soft_probs.squeeze(-1).squeeze(-1)
     
     if mask_probs.shape[0] != correlation_scores.shape[0]:
         warnings.warn("Shape mismatch between mask_probs and correlation_scores.")
