@@ -56,29 +56,18 @@ class SoftMaskedConv2d(nn.Module):
     def compute_mask(self, ticket):
         if ticket:
             mask = torch.argmax(self.mask_weight, dim=1).unsqueeze(1).float()
-            self.continuous_mask = None  # در حالت ticket=True مقادیر پیوسته وجود ندارن
-        return mask, self.continuous_mask
         else:
-        # ذخیره seed تصادفی فعلی
-            current_state = torch.get_rng_state()
-        # محاسبه مقادیر پیوسته (soft)
-            self.continuous_mask = F.gumbel_softmax(
-                logits=self.mask_weight, tau=self.gumbel_temperature, hard=False, dim=1
-            )[:, 1, :, :].unsqueeze(1)
-        # بازگرداندن seed به حالت قبلی برای استفاده از همان نویز
-            torch.set_rng_state(current_state)
-        # محاسبه ماسک باینری
             mask = F.gumbel_softmax(
                 logits=self.mask_weight, tau=self.gumbel_temperature, hard=True, dim=1
             )[:, 1, :, :].unsqueeze(1)
-        return mask, self.continuous_mask  # بازگشت هر دو مقدار
+
+        return mask  # shape = [C, 1, 1, 1]
 
     def update_gumbel_temperature(self, gumbel_temperature):
         self.gumbel_temperature = gumbel_temperature
 
     def forward(self, x, ticket=False):
-        mask, _ = self.compute_mask(ticket)  # فقط ماسک باینری رو می‌گیریم
-        self.mask = mask
+        self.mask = self.compute_mask(ticket)
         masked_weight = self.weight * self.mask
         out = F.conv2d(
             x,
@@ -88,7 +77,7 @@ class SoftMaskedConv2d(nn.Module):
             padding=self.padding,
         )
         self.feature_map_h, self.feature_map_w = out.shape[2], out.shape[3]
-        return out 
+        return out
 
     def extra_repr(self):
         return "{}, {}, kernel_size={}, stride={}, padding={}".format(
