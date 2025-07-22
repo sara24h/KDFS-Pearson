@@ -30,7 +30,6 @@ class RCLoss(nn.Module):
 import warnings
 
 def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=1.0):
-
     if torch.isnan(filters).any():
         warnings.warn("Filters contain NaN.")
     if torch.isinf(filters).any():
@@ -43,39 +42,38 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     num_filters = filters.shape[0]
     
     if num_filters < 2:
-        print('less then 2 filters')
+        print('less than 2 filters')
     
+    # Flatten filters
     filters_flat = filters.view(num_filters, -1)
-
-    variance = torch.var(filters_flat, dim=1)
-    zero_variance_indices = torch.where(variance == 0)[0]
-    if len(zero_variance_indices) > 0:
-        warnings.warn(f"{len(zero_variance_indices)} filters have zero variance.")
     
-
-    mean = torch.mean(filters_flat, dim=1, keepdim=True)
-    centered = filters_flat - mean
-    std = torch.std(filters_flat, dim=1, keepdim=True)
-    epsilon = 1e-4 
-    filters_normalized = centered / (std + epsilon)
-
-    #norm = torch.norm(filters_normalized, dim=1, keepdim=True)
-    #filters_normalized = filters_normalized / (norm + epsilon)
+    # Check for zero norm
+    norm = torch.norm(filters_flat, dim=1, keepdim=True)
+    zero_norm_indices = torch.where(norm == 0)[0]
+    if len(zero_norm_indices) > 0:
+        warnings.warn(f"{len(zero_norm_indices)} filters have zero norm.")
+    
+    # Normalize filters using L2 norm for cosine similarity
+    epsilon = 1e-4
+    filters_normalized = filters_flat / (norm + epsilon)
     
     if torch.isnan(filters_normalized).any():
         warnings.warn("Normalized filters contain NaN.")
     if torch.isinf(filters_normalized).any():
         warnings.warn("Normalized filters contain Inf values.")
     
+    # Compute cosine similarity matrix
     corr_matrix = torch.matmul(filters_normalized, filters_normalized.t())
     
     if torch.isnan(corr_matrix).any():
         warnings.warn("Correlation matrix contains NaN values.")
     if torch.isinf(corr_matrix).any():
         warnings.warn("Correlation matrix contains Inf values.")
-
+    
+    # Mask the diagonal to exclude self-correlations
     mask = ~torch.eye(num_filters, num_filters, device=filters.device).bool()
     
+    # Compute correlation scores (sum of squared cosine similarities, excluding diagonal)
     correlation_scores = torch.sum((corr_matrix * mask.float())**2, dim=1)
     correlation_scores = correlation_scores / max(num_filters - 1, 1)
     
@@ -83,13 +81,15 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
         warnings.warn("Correlation scores contain NaN values.")
     if torch.isinf(correlation_scores).any():
         warnings.warn("Correlation scores contain Inf values.")
-
+    
+    # Compute mask probabilities
     mask_probs = F.gumbel_softmax(logits=mask_weight, tau=gumbel_temperature, hard=False, dim=1)[:, 1, :, :]
     mask_probs = mask_probs.squeeze(-1).squeeze(-1)
     
     if mask_probs.shape[0] != correlation_scores.shape[0]:
         warnings.warn("Shape mismatch between mask_probs and correlation_scores.")
-
+    
+    # Compute final correlation loss
     correlation_loss = torch.mean(correlation_scores * mask_probs)
     
     return correlation_loss
