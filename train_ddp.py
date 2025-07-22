@@ -46,7 +46,6 @@ class TrainDDP:
         self.coef_kdloss = args.coef_kdloss
         self.coef_rcloss = args.coef_rcloss
         self.coef_maskloss = args.coef_maskloss
-        self.compress_rate = args.compress_rate
         self.resume = args.resume
 
         self.start_epoch = 0
