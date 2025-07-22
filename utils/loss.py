@@ -30,7 +30,6 @@ class RCLoss(nn.Module):
 import warnings
 
 def compute_filter_correlation(filters, mask_weight, gumbel_temperature=1.0):
-
     if torch.isnan(filters).any():
         warnings.warn("Filters contain NaN.")
     if torch.isinf(filters).any():
@@ -43,45 +42,49 @@ def compute_filter_correlation(filters, mask_weight, gumbel_temperature=1.0):
     num_filters = filters.shape[0]
     
     if num_filters < 2:
-        print('less then 2 filters')
+        warnings.warn("Less than 2 filters, returning zero loss.")
+        return torch.tensor(0.0, device=filters.device)
     
     filters_flat = filters.view(num_filters, -1)
     variance = torch.var(filters_flat, dim=1)
     valid_indices = torch.where(variance > 0)[0]
     
     if len(valid_indices) < 2:
-        warnings.warn("Fewer than 2 filters with non-zero variance found.")
-
+        warnings.warn(f"Only {len(valid_indices)} filters with non-zero variance found.")
+    
+    if len(valid_indices) < num_filters:
+        warnings.warn(f"{num_filters - len(valid_indices)} filters have zero variance.")
+    
     active_filters_flat = filters_flat[valid_indices]
     mean = torch.mean(active_filters_flat, dim=1, keepdim=True)
     centered = active_filters_flat - mean
     cov_matrix = torch.matmul(centered, centered.t()) / (active_filters_flat.size(1) - 1)
     std = torch.sqrt(variance[valid_indices])
-    epsilon = 1e-6
+    epsilon = 1e-4  
     std_outer = std.unsqueeze(1) * std.unsqueeze(0)
-    corr_matrix = cov_matrix / (std_outer + epsilon)   
-
+    corr_matrix = cov_matrix / (std_outer + epsilon)
+    
     if torch.isnan(corr_matrix).any():
         warnings.warn("Correlation matrix contains NaN values.")
-
     if torch.isinf(corr_matrix).any():
         warnings.warn("Correlation matrix contains Inf values.")
-
-    mask = ~torch.eye(num_filters, num_filters, device=filters.device).bool()
     
-    correlation_scores = torch.sum((corr_matrix * mask.float())**2, dim=1) / max(num_filters - 1, 1)
+    mask = ~torch.eye(len(valid_indices), len(valid_indices), device=filters.device).bool()
+    
+    correlation_scores = torch.sum((corr_matrix * mask.float())**2, dim=1) / max(len(valid_indices) - 1, 1)
     
     if torch.isnan(correlation_scores).any():
         warnings.warn("Correlation scores contain NaN values.")
     if torch.isinf(correlation_scores).any():
         warnings.warn("Correlation scores contain Inf values.")
-
+    
     mask_probs = F.gumbel_softmax(logits=mask_weight, tau=gumbel_temperature, hard=False, dim=1)[:, 1, :, :]
     mask_probs = mask_probs.squeeze(-1).squeeze(-1)
+    mask_probs = mask_probs[valid_indices]
     
     if mask_probs.shape[0] != correlation_scores.shape[0]:
-        warnings.warn("Shape mismatch between mask_probs and correlation_scores.")
-
+        warnings.warn(f"Shape mismatch between mask_probs ({mask_probs.shape[0]}) and correlation_scores ({correlation_scores.shape[0]}).")
+    
     correlation_loss = torch.mean(correlation_scores * mask_probs)
     
     return correlation_loss
