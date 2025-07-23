@@ -29,7 +29,7 @@ class RCLoss(nn.Module):
 
 import warnings
 
-def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=1.0):
+def compute_filter_correlation(filters, mask_weight, gumbel_temperature=1.0):
 
     if torch.isnan(filters).any():
         warnings.warn("Filters contain NaN.")
@@ -56,8 +56,8 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     mean = torch.mean(filters_flat, dim=1, keepdim=True)
     centered = filters_flat - mean
     std = torch.std(filters_flat, dim=1, keepdim=True)
-    epsilon = 1e-4 
-    filters_normalized = centered / (std + epsilon)
+    #epsilon = 1e-4 
+    filters_normalized = centered / (std)
 
     #norm = torch.norm(filters_normalized, dim=1, keepdim=True)
     #filters_normalized = filters_normalized / (norm + epsilon)
@@ -77,7 +77,7 @@ def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=
     mask = ~torch.eye(num_filters, num_filters, device=filters.device).bool()
     
     correlation_scores = torch.sum((corr_matrix * mask.float())**2, dim=1)
-    correlation_scores = correlation_scores / max(num_filters - 1, 1)
+    correlation_scores = correlation_scores / (num_filters - 1)
     
     if torch.isnan(correlation_scores).any():
         warnings.warn("Correlation scores contain NaN values.")
@@ -109,7 +109,7 @@ class MaskLoss(nn.Module):
                 filters = m.weight  
                 mask_weight = m.mask_weight 
                 gumbel_temperature = m.gumbel_temperature 
-                pruning_loss = compute_active_filters_correlation(filters, mask_weight, gumbel_temperature)
+                pruning_loss = compute_filter_correlation(filters, mask_weight, gumbel_temperature)
                 total_pruning_loss += pruning_loss
                 num_layers += 1
         
