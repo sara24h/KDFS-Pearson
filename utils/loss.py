@@ -29,7 +29,8 @@ class RCLoss(nn.Module):
 
 import warnings
 
-def compute_cosine_similarity(filters, mask_weight, gumbel_temperature=1.0):
+def compute_active_filters_correlation(filters, mask_weight, gumbel_temperature=1.0):
+
     if torch.isnan(filters).any():
         warnings.warn("Filters contain NaN.")
     if torch.isinf(filters).any():
@@ -42,18 +43,24 @@ def compute_cosine_similarity(filters, mask_weight, gumbel_temperature=1.0):
     num_filters = filters.shape[0]
     
     if num_filters < 2:
-        print('less than 2 filters')
+        print('less then 2 filters')
     
     filters_flat = filters.view(num_filters, -1)
+
+    variance = torch.var(filters_flat, dim=1)
+    zero_variance_indices = torch.where(variance == 0)[0]
+    if len(zero_variance_indices) > 0:
+        warnings.warn(f"{len(zero_variance_indices)} filters have zero variance.")
     
-    norm = torch.norm(filters_flat, dim=1, keepdim=True)
-    zero_norm_indices = torch.where(norm == 0)[0]
-    if len(zero_norm_indices) > 0:
-        warnings.warn(f"{len(zero_norm_indices)} filters have zero norm.")
-    
-    # Normalize filters using L2 norm for cosine similarity
-    #epsilon = 1e-4
-    filters_normalized = filters_flat / (norm)
+
+    mean = torch.mean(filters_flat, dim=1, keepdim=True)
+    centered = filters_flat - mean
+    std = torch.std(filters_flat, dim=1, keepdim=True)
+    epsilon = 1e-4 
+    filters_normalized = centered / (std + epsilon)
+
+    #norm = torch.norm(filters_normalized, dim=1, keepdim=True)
+    #filters_normalized = filters_normalized / (norm + epsilon)
     
     if torch.isnan(filters_normalized).any():
         warnings.warn("Normalized filters contain NaN.")
@@ -66,23 +73,23 @@ def compute_cosine_similarity(filters, mask_weight, gumbel_temperature=1.0):
         warnings.warn("Correlation matrix contains NaN values.")
     if torch.isinf(corr_matrix).any():
         warnings.warn("Correlation matrix contains Inf values.")
-    
+
     mask = ~torch.eye(num_filters, num_filters, device=filters.device).bool()
     
     correlation_scores = torch.sum((corr_matrix * mask.float())**2, dim=1)
-    correlation_scores = correlation_scores / (num_filters - 1)
+    correlation_scores = correlation_scores / max(num_filters - 1, 1)
     
     if torch.isnan(correlation_scores).any():
         warnings.warn("Correlation scores contain NaN values.")
     if torch.isinf(correlation_scores).any():
         warnings.warn("Correlation scores contain Inf values.")
-    
+
     mask_probs = F.gumbel_softmax(logits=mask_weight, tau=gumbel_temperature, hard=False, dim=1)[:, 1, :, :]
     mask_probs = mask_probs.squeeze(-1).squeeze(-1)
     
     if mask_probs.shape[0] != correlation_scores.shape[0]:
         warnings.warn("Shape mismatch between mask_probs and correlation_scores.")
-    
+
     correlation_loss = torch.mean(correlation_scores * mask_probs)
     
     return correlation_loss
@@ -102,7 +109,7 @@ class MaskLoss(nn.Module):
                 filters = m.weight  
                 mask_weight = m.mask_weight 
                 gumbel_temperature = m.gumbel_temperature 
-                pruning_loss = compute_cosine_similarity(filters, mask_weight, gumbel_temperature)
+                pruning_loss = compute_active_filters_correlation(filters, mask_weight, gumbel_temperature)
                 total_pruning_loss += pruning_loss
                 num_layers += 1
         
