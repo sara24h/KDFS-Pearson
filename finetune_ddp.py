@@ -12,11 +12,11 @@ from tqdm import tqdm
 from utils import utils, loss, meter, scheduler
 from data.dataset import Dataset_selector
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
+from get_flops_and_params import get_flops_and_params  # Added import
 
 
 class FinetuneDDP:
     def __init__(self, args):
-
         self.args = args
         self.dataset_dir = args.dataset_dir
         self.dataset_mode = args.dataset_mode
@@ -84,9 +84,9 @@ class FinetuneDDP:
         torch.use_deterministic_algorithms(True)
         self.seed += self.rank
         random.seed(self.seed)
-        np.random.seed(self.seed)  # اصلاح self.seed_ به self.seed
+        np.random.seed(self.seed)
         torch.manual_seed(self.seed)
-        os.environ["PYTHONHASHSEED"] = str(self.seed)  # اصلاح PYTHONPATH به PYTHONHASHSEED
+        os.environ["PYTHONHASHSEED"] = str(self.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed(self.seed)
             torch.cuda.manual_seed_all(self.seed)
@@ -369,6 +369,7 @@ class FinetuneDDP:
                             meter_top1.update(prec1, n)
                             _tqdm.set_postfix(top1=f"{meter_top1.avg:.4f}")
                             _tqdm.update(1)
+                            _tqdm.update(1)
                             time.sleep(0.01)
 
                 self.writer.add_scalar("finetune_val/acc/top1", meter_top1.avg, epoch)
@@ -397,15 +398,15 @@ class FinetuneDDP:
                     Params_baseline,
                     Params,
                     Params_reduction,
-                ) = utils.get_flops_and_params(self.args)
+                ) = get_flops_and_params(self.args)  # Changed to get_flops_and_params
                 self.logger.info(
-                    f"Baseline parameters: {Params_baseline:.2f}M, Parameters: {Params:.2f}M, Parameter reduction: {Params_reduction:.2f}%"
+                    f"Params_baseline: {Params_baseline:.2f}M, Params: {Params:.2f}M, Params reduction: {Params_reduction:.2f}%"
                 )
                 self.logger.info(
-                    f"Baseline FLOPs: {Flops_baseline:.2f}M, FLOPs: {Flops:.2f}M, FLOPs reduction: {Flops_reduction:.2f}%"
+                    f"Flops_baseline: {Flops_baseline:.2f}M, Flops: {Flops:.2f}M, Flops reduction: {Flops_reduction:.2f}%"
                 )
-            except AttributeError:
-                self.logger.warning("Function get_flops_and_params not found in utils. Skipping FLOPs and parameters calculation.")
+            except Exception as e:
+                self.logger.warning(f"Error calculating FLOPs and parameters: {str(e)}")
 
     def main(self):
         self.dist_init()
