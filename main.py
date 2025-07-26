@@ -92,7 +92,7 @@ def parse_args():
     parser.add_argument(
         "--realfake200k_train_csv",
         type=str,
-        default="/kaggle/input/200k-real-v-ai-visuals-by-mbilal/train_labels.csv",
+        default="/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/train_labels.csv",
         help="The path to the 200k train CSV file (for 200k mode)",
     )
     parser.add_argument(
