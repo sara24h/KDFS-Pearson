@@ -12,11 +12,11 @@ from tqdm import tqdm
 from utils import utils, loss, meter, scheduler
 from data.dataset import Dataset_selector
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
-from get_flops_and_params import get_flops_and_params  # Added import
 
 
 class FinetuneDDP:
     def __init__(self, args):
+        """Initialize FinetuneDDP with provided arguments."""
         self.args = args
         self.dataset_dir = args.dataset_dir
         self.dataset_mode = args.dataset_mode
@@ -28,10 +28,7 @@ class FinetuneDDP:
             self.dataset_type = "140k"
         elif self.dataset_mode == "200k":
             self.dataset_type = "200k"
-        elif self.dataset_mode == "190k":
-            self.dataset_type = "190k"
-        elif self.dataset_mode == "330k":
-            self.dataset_type = "330k"  
+
         else:
             raise ValueError(f"Unknown dataset_mode: {self.dataset_mode}")
         self.num_workers = args.num_workers
@@ -59,6 +56,7 @@ class FinetuneDDP:
         self.rank = -1
 
     def dist_init(self):
+        """Initialize distributed training with NCCL backend."""
         dist.init_process_group("nccl")
         self.world_size = dist.get_world_size()
         self.rank = dist.get_rank()
@@ -66,6 +64,7 @@ class FinetuneDDP:
         torch.cuda.set_device(self.local_rank)
 
     def result_init(self):
+        """Initialize logging and TensorBoard writer for rank 0."""
         if self.rank == 0:
             self.writer = SummaryWriter(self.result_dir)
             self.logger = utils.get_logger(
@@ -79,14 +78,15 @@ class FinetuneDDP:
             self.logger.info("--------- Finetune -----------")
 
     def setup_seed(self):
+        """Set random seeds for reproducibility."""
         os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
         os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
         torch.use_deterministic_algorithms(True)
         self.seed += self.rank
         random.seed(self.seed)
-        np.random.seed(self.seed)
+        np.random.seed(self.seed)  
         torch.manual_seed(self.seed)
-        os.environ["PYTHONHASHSEED"] = str(self.seed)
+        os.environ["PYTHONHASHSEED"] = str(self.seed)  
         if torch.cuda.is_available():
             torch.cuda.manual_seed(self.seed)
             torch.cuda.manual_seed_all(self.seed)
@@ -95,6 +95,7 @@ class FinetuneDDP:
             torch.backends.cudnn.enabled = True
 
     def dataload(self):
+        """Load dataset based on dataset_mode."""
         if self.dataset_mode == 'hardfake':
             hardfake_csv_file = os.path.join(self.dataset_dir, 'data.csv')
             hardfake_root_dir = self.dataset_dir
@@ -157,28 +158,8 @@ class FinetuneDDP:
                 pin_memory=self.pin_memory,
                 ddp=True
             )
-        elif self.dataset_mode == '190k':
-            realfake190k_root_dir = self.args.realfake190k_root_dir
-            dataset = Dataset_selector(
-                dataset_mode='190k',
-                realfake190k_root_dir=realfake190k_root_dir,
-                train_batch_size=self.finetune_train_batch_size,
-                eval_batch_size=self.finetune_eval_batch_size,
-                num_workers=self.num_workers,
-                pin_memory=self.pin_memory,
-                ddp=True
-            )
-        elif self.dataset_mode == '330k':
-            realfake330k_root_dir = self.args.realfake330k_root_dir
-            dataset = Dataset_selector(
-                dataset_mode='330k',
-                realfake330k_root_dir=realfake330k_root_dir,
-                train_batch_size=self.finetune_train_batch_size,
-                eval_batch_size=self.finetune_eval_batch_size,
-                num_workers=self.num_workers,
-                pin_memory=self.pin_memory,
-                ddp=True
-            )
+       
+      
         else:
             raise ValueError(f"Unknown dataset_mode: {self.dataset_mode}")
 
@@ -189,6 +170,7 @@ class FinetuneDDP:
             self.logger.info("Dataset loaded successfully!")
 
     def build_model(self):
+        """Build and load the student model."""
         if self.rank == 0:
             self.logger.info("==> Building model...")
             self.logger.info("Loading student model")
@@ -205,9 +187,11 @@ class FinetuneDDP:
         self.student = DDP(self.student, device_ids=[self.local_rank], find_unused_parameters=True)
 
     def define_loss(self):
+        """Define the loss function."""
         self.ori_loss = nn.BCEWithLogitsLoss()
 
     def define_optim(self):
+        """Define optimizer and scheduler."""
         weight_params = map(
             lambda a: a[1],
             filter(
@@ -231,6 +215,7 @@ class FinetuneDDP:
         )
 
     def resume_student_ckpt(self):
+        """Resume training from a checkpoint."""
         ckpt_student = torch.load(self.finetune_resume, map_location="cpu", weights_only=True)
         self.best_prec1_after_finetune = ckpt_student["best_prec1_after_finetune"]
         self.start_epoch = ckpt_student["start_epoch"]
@@ -245,6 +230,7 @@ class FinetuneDDP:
             self.logger.info(f"=> Resuming from epoch {self.start_epoch}...")
 
     def save_student_ckpt(self, is_best):
+        """Save model checkpoint."""
         if self.rank == 0:
             folder = os.path.join(self.result_dir, "student_model")
             if not os.path.exists(folder):
@@ -269,12 +255,14 @@ class FinetuneDDP:
             )
 
     def reduce_tensor(self, tensor):
+        """Reduce tensor across all processes in DDP."""
         rt = tensor.clone()
         dist.all_reduce(rt, op=dist.ReduceOp.SUM)
         rt /= self.world_size
         return rt
 
     def finetune(self):
+        """Perform finetuning of the student model."""
         self.ori_loss = self.ori_loss.cuda()
         if self.finetune_resume:
             self.resume_student_ckpt()
@@ -369,13 +357,15 @@ class FinetuneDDP:
                             meter_top1.update(prec1, n)
                             _tqdm.set_postfix(top1=f"{meter_top1.avg:.4f}")
                             _tqdm.update(1)
-                            _tqdm.update(1)
                             time.sleep(0.01)
 
                 self.writer.add_scalar("finetune_val/acc/top1", meter_top1.avg, epoch)
                 self.logger.info(
                     f"[Finetune_val] Epoch {epoch}: Accuracy@1 {meter_top1.avg:.2f}"
                 )
+
+                masks = [round(m.mask.mean().item(), 2) for m in self.student.module.mask_modules]
+                self.logger.info(f"[Average mask] Epoch {epoch}: {masks}")
 
                 self.start_epoch += 1
                 if self.best_prec1_after_finetune < meter_top1.avg:
@@ -398,17 +388,18 @@ class FinetuneDDP:
                     Params_baseline,
                     Params,
                     Params_reduction,
-                ) = get_flops_and_params(self.args)  # Changed to get_flops_and_params
+                ) = utils.get_flops_and_params(self.args)
                 self.logger.info(
-                    f"Params_baseline: {Params_baseline:.2f}M, Params: {Params:.2f}M, Params reduction: {Params_reduction:.2f}%"
+                    f"Baseline parameters: {Params_baseline:.2f}M, Parameters: {Params:.2f}M, Parameter reduction: {Params_reduction:.2f}%"
                 )
                 self.logger.info(
-                    f"Flops_baseline: {Flops_baseline:.2f}M, Flops: {Flops:.2f}M, Flops reduction: {Flops_reduction:.2f}%"
+                    f"Baseline FLOPs: {Flops_baseline:.2f}M, FLOPs: {Flops:.2f}M, FLOPs reduction: {Flops_reduction:.2f}%"
                 )
-            except Exception as e:
-                self.logger.warning(f"Error calculating FLOPs and parameters: {str(e)}")
+            except AttributeError:
+                self.logger.warning("Function get_flops_and_params not found in utils. Skipping FLOPs and parameters calculation.")
 
     def main(self):
+        """Main function to orchestrate finetuning process."""
         self.dist_init()
         self.result_init()
         self.setup_seed()
