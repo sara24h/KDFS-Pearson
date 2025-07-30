@@ -8,7 +8,7 @@ from thop import profile
 Flops_baselines = {
     "ResNet_50": {
         "hardfakevsreal": 7700.0,
-        "rvf10k": 5000.0,
+        "rvf10k": 5390.0,
         "140k": 5390.0,
         "190k": 5390.0,  # Added for 190k
         "200k": 5390.0,
@@ -19,7 +19,7 @@ Flops_baselines = {
 Params_baselines = {
     "ResNet_50": {
         "hardfakevsreal": 14.97,
-        "rvf10k": 25.50,
+        "rvf10k": 23.51,
         "140k": 23.51,
         "190k": 23.51,  # Added for 190k
         "200k": 23.51,
