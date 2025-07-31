@@ -110,8 +110,8 @@ class FinetuneDDP:
                 ddp=True
             )
         elif self.dataset_mode == 'rvf10k':
-            rvf10k_train_csv = os.path.join(self.dataset_dir, 'train.csv')
-            rvf10k_valid_csv = os.path.join(self.dataset_dir, 'valid.csv')
+            rvf10k_train_csv = '/kaggle/input/rvf10k/train.csv'
+            rvf10k_valid_csv = '/kaggle/input/rvf10k/valid.csv'
             rvf10k_root_dir = self.dataset_dir
             dataset = Dataset_selector(
                 dataset_mode='rvf10k',
