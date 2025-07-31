@@ -28,7 +28,10 @@ class FinetuneDDP:
             self.dataset_type = "140k"
         elif self.dataset_mode == "200k":
             self.dataset_type = "200k"
-
+        elif self.dataset_mode == "190k":
+            self.dataset_type = "190k"
+        elif self.dataset_mode == "330k":
+            self.dataset_type = "330k"  
         else:
             raise ValueError(f"Unknown dataset_mode: {self.dataset_mode}")
         self.num_workers = args.num_workers
@@ -84,9 +87,9 @@ class FinetuneDDP:
         torch.use_deterministic_algorithms(True)
         self.seed += self.rank
         random.seed(self.seed)
-        np.random.seed(self.seed)  
+        np.random.seed(self.seed)  # اصلاح self.seed_ به self.seed
         torch.manual_seed(self.seed)
-        os.environ["PYTHONHASHSEED"] = str(self.seed)  
+        os.environ["PYTHONHASHSEED"] = str(self.seed)  # اصلاح PYTHONPATH به PYTHONHASHSEED
         if torch.cuda.is_available():
             torch.cuda.manual_seed(self.seed)
             torch.cuda.manual_seed_all(self.seed)
@@ -158,8 +161,28 @@ class FinetuneDDP:
                 pin_memory=self.pin_memory,
                 ddp=True
             )
-       
-      
+        elif self.dataset_mode == '190k':
+            realfake190k_root_dir = self.args.realfake190k_root_dir
+            dataset = Dataset_selector(
+                dataset_mode='190k',
+                realfake190k_root_dir=realfake190k_root_dir,
+                train_batch_size=self.finetune_train_batch_size,
+                eval_batch_size=self.finetune_eval_batch_size,
+                num_workers=self.num_workers,
+                pin_memory=self.pin_memory,
+                ddp=True
+            )
+        elif self.dataset_mode == '330k':
+            realfake330k_root_dir = self.args.realfake330k_root_dir
+            dataset = Dataset_selector(
+                dataset_mode='330k',
+                realfake330k_root_dir=realfake330k_root_dir,
+                train_batch_size=self.finetune_train_batch_size,
+                eval_batch_size=self.finetune_eval_batch_size,
+                num_workers=self.num_workers,
+                pin_memory=self.pin_memory,
+                ddp=True
+            )
         else:
             raise ValueError(f"Unknown dataset_mode: {self.dataset_mode}")
 
