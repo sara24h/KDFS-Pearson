@@ -23,6 +23,8 @@ def parse_args():
                         help='Path to the dataset directory')
     parser.add_argument('--teacher_dir', type=str, default='teacher_dir',
                         help='Directory to save trained model and outputs')
+    parser.add_argument('--checkpoint_path', type=str, required=True,
+                        help='Path to the checkpoint file')
     parser.add_argument('--img_height', type=int, default=300,
                         help='Height of input images (default: 300 for hardfake, 256 for rvf10k/140k)')
     parser.add_argument('--img_width', type=int, default=300,
@@ -51,6 +53,7 @@ torch.backends.cudnn.enabled = True
 dataset_mode = args.dataset_mode
 data_dir = args.data_dir
 teacher_dir = args.teacher_dir
+checkpoint_path = args.checkpoint_path
 img_height = 256 if dataset_mode in ['rvf10k', '140k'] else args.img_height
 img_width = 256 if dataset_mode in ['rvf10k', '140k'] else args.img_width
 batch_size = args.batch_size
@@ -63,6 +66,8 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 # Validate directories
 if not os.path.exists(data_dir):
     raise FileNotFoundError(f"Directory {data_dir} not found!")
+if not os.path.exists(checkpoint_path):
+    raise FileNotFoundError(f"Checkpoint file {checkpoint_path} not found!")
 os.makedirs(teacher_dir, exist_ok=True)
 
 # Initialize dataset
@@ -115,9 +120,7 @@ num_ftrs = model.fc.in_features
 model.fc = nn.Linear(num_ftrs, 1)
 
 # Load checkpoint
-checkpoint_path = '/kaggle/input/kdfs-15-khordad-pearson-weight-values/results/run_resnet50_imagenet_prune1/student_model/finetune_ResNet_50_sparse_best.pt'
 checkpoint = torch.load(checkpoint_path)
-
 if 'student' in checkpoint:
     state_dict = checkpoint['student']
     filtered_state_dict = {k: v for k, v in state_dict.items() if not k.endswith('mask_weight') and k not in ['feat1.weight', 'feat1.bias', 'feat2.weight', 'feat2.bias', 'feat3.weight', 'feat3.bias', 'feat4.weight', 'feat4.bias']}
@@ -177,7 +180,6 @@ for epoch in range(epochs):
         preds = (torch.sigmoid(outputs) > 0.5).float()
         correct_train += (preds == labels).sum().item()
         total_train += labels.size(0)
-
     train_loss = running_loss / len(train_loader)
     train_accuracy = 100 * correct_train / total_train
     train_losses.append(train_loss)
@@ -199,7 +201,6 @@ for epoch in range(epochs):
             preds = (torch.sigmoid(outputs) > 0.5).float()
             correct_val += (preds == labels).sum().item()
             total_val += labels.size(0)
-
     val_loss = val_loss / len(val_loader)
     val_accuracy = 100 * correct_val / total_val
     val_losses.append(val_loss)
@@ -264,7 +265,6 @@ transform_test = dataset.loader_test.dataset.transform
 random_indices = random.sample(range(len(test_data)), min(20, len(test_data)))
 fig, axes = plt.subplots(4, 5, figsize=(15, 8))
 axes = axes.ravel()
-
 label_map = {'fake': 0, 'real': 1, 0: 0, 1: 1, 'Fake': 0, 'Real': 1}
 inverse_label_map = {0: 'fake', 1: 'real'}
 
