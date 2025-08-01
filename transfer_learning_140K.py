@@ -16,27 +16,23 @@ from ptflops import get_model_complexity_info
 from data.dataset import FaceDataset, Dataset_selector
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Train a ResNet50 model for fake vs real face classification.')
-    parser.add_argument('--dataset_mode', type=str, required=True, choices=['hardfake', 'rvf10k', '140k'],
-                        help='Dataset to use: hardfake, rvf10k, or 140k')
+    parser = argparse.ArgumentParser(description='Transfer learning with the student model for fake vs real face classification.')
+    parser.add_argument('--dataset_mode', type=str, required=True, choices=['hardfake', 'rvf10k', '140k', '200k', '190k', '330k'],
+                        help='Dataset to use: hardfake, rvf10k, 140k, 200k, 190k, or 330k')
     parser.add_argument('--data_dir', type=str, required=True,
                         help='Path to the dataset directory')
-    parser.add_argument('--teacher_dir', type=str, default='teacher_dir',
+    parser.add_argument('--output_dir', type=str, default='output_dir',
                         help='Directory to save trained model and outputs')
     parser.add_argument('--checkpoint_path', type=str, required=True,
-                        help='Path to the checkpoint file')
-    parser.add_argument('--img_height', type=int, default=300,
-                        help='Height of input images (default: 300 for hardfake, 256 for rvf10k/140k)')
-    parser.add_argument('--img_width', type=int, default=300,
-                        help='Width of input images (default: 300 for hardfake, 256 for rvf10k/140k)')
+                        help='Path to the student checkpoint file')
     parser.add_argument('--batch_size', type=int, default=32,
                         help='Batch size for training')
-    parser.add_argument('--epochs', type=int, default=15,
-                        help='Number of training epochs')
-    parser.add_argument('--lr', type=float, default=0.0001,
-                        help='Learning rate for the optimizer (fc layer)')
-    parser.add_argument('--lr_layer4', type=float, default=1e-5,
-                        help='Learning rate for layer4 parameters')
+    parser.add_argument('--epochs', type=int, default=5,
+                        help='Number of fine-tuning epochs')
+    parser.add_argument('--lr', type=float, default=1e-5,
+                        help='Learning rate for fc layer')
+    parser.add_argument('--lr_layer4', type=float, default=1e-6,
+                        help='Learning rate for layer4')
     parser.add_argument('--weight_decay', type=float, default=1e-4,
                         help='Weight decay for the optimizer')
     return parser.parse_args()
@@ -52,10 +48,8 @@ torch.backends.cudnn.enabled = True
 # Assign arguments to variables
 dataset_mode = args.dataset_mode
 data_dir = args.data_dir
-teacher_dir = args.teacher_dir
+output_dir = args.output_dir
 checkpoint_path = args.checkpoint_path
-img_height = 256 if dataset_mode in ['rvf10k', '140k'] else args.img_height
-img_width = 256 if dataset_mode in ['rvf10k', '140k'] else args.img_width
 batch_size = args.batch_size
 epochs = args.epochs
 lr = args.lr
@@ -68,7 +62,7 @@ if not os.path.exists(data_dir):
     raise FileNotFoundError(f"Directory {data_dir} not found!")
 if not os.path.exists(checkpoint_path):
     raise FileNotFoundError(f"Checkpoint file {checkpoint_path} not found!")
-os.makedirs(teacher_dir, exist_ok=True)
+os.makedirs(output_dir, exist_ok=True)
 
 # Initialize dataset
 if dataset_mode == 'hardfake':
@@ -107,8 +101,41 @@ elif dataset_mode == '140k':
         pin_memory=True,
         ddp=False
     )
+elif dataset_mode == '200k':
+    dataset = Dataset_selector(
+        dataset_mode='200k',
+        realfake200k_train_csv=os.path.join(data_dir, 'train_labels.csv'),
+        realfake200k_val_csv=os.path.join(data_dir, 'val_labels.csv'),
+        realfake200k_test_csv=os.path.join(data_dir, 'test_labels.csv'),
+        realfake200k_root_dir=data_dir,
+        train_batch_size=batch_size,
+        eval_batch_size=batch_size,
+        num_workers=4,
+        pin_memory=True,
+        ddp=False
+    )
+elif dataset_mode == '190k':
+    dataset = Dataset_selector(
+        dataset_mode='190k',
+        realfake190k_root_dir=data_dir,
+        train_batch_size=batch_size,
+        eval_batch_size=batch_size,
+        num_workers=4,
+        pin_memory=True,
+        ddp=False
+    )
+elif dataset_mode == '330k':
+    dataset = Dataset_selector(
+        dataset_mode='330k',
+        realfake330k_root_dir=data_dir,
+        train_batch_size=batch_size,
+        eval_batch_size=batch_size,
+        num_workers=4,
+        pin_memory=True,
+        ddp=False
+    )
 else:
-    raise ValueError("Invalid dataset_mode. Choose 'hardfake', 'rvf10k', or '140k'.")
+    raise ValueError("Invalid dataset_mode. Choose 'hardfake', 'rvf10k', '140k', '200k', '190k', or '330k'.")
 
 train_loader = dataset.loader_train
 val_loader = dataset.loader_val
@@ -117,13 +144,17 @@ test_loader = dataset.loader_test
 # Initialize model
 model = models.resnet50()
 num_ftrs = model.fc.in_features
-model.fc = nn.Linear(num_ftrs, 1)
+model.fc = nn.Linear(num_ftrs, 1)  # Binary classification
 
 # Load checkpoint
-checkpoint = torch.load(checkpoint_path)
+checkpoint = torch.load(checkpoint_path, map_location=device)
 if 'student' in checkpoint:
     state_dict = checkpoint['student']
-    filtered_state_dict = {k: v for k, v in state_dict.items() if not k.endswith('mask_weight') and k not in ['feat1.weight', 'feat1.bias', 'feat2.weight', 'feat2.bias', 'feat3.weight', 'feat3.bias', 'feat4.weight', 'feat4.bias']}
+    # Filter out mask_weight and feat1 to feat4
+    filtered_state_dict = {k: v for k, v in state_dict.items() 
+                          if not k.endswith('mask_weight') 
+                          and k not in ['feat1.weight', 'feat1.bias', 'feat2.weight', 'feat2.bias', 
+                                        'feat3.weight', 'feat3.bias', 'feat4.weight', 'feat4.bias']}
     missing, unexpected = model.load_state_dict(filtered_state_dict, strict=False)
     print(f"Missing keys: {missing}")
     print(f"Unexpected keys: {unexpected}")
@@ -140,7 +171,7 @@ for param in model.layer4.parameters():
 for param in model.fc.parameters():
     param.requires_grad = True
 
-# Initialize optimizer with configurable weight decay and learning rates
+# Initialize optimizer
 optimizer = optim.Adam([
     {'params': model.layer4.parameters(), 'lr': lr_layer4},
     {'params': model.fc.parameters(), 'lr': lr}
@@ -152,11 +183,11 @@ scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
 if device.type == 'cuda':
     torch.cuda.empty_cache()
 
-# Training loop
+# Training loop for fine-tuning
 train_losses, train_accuracies = [], []
 val_losses, val_accuracies = [], []
 best_val_acc = 0.0
-best_model_path = os.path.join(teacher_dir, 'teacher_model_best.pth')
+best_model_path = os.path.join(output_dir, 'finetuned_model_best.pth')
 
 for epoch in range(epochs):
     model.train()
@@ -233,13 +264,13 @@ plt.legend()
 plt.grid(True)
 
 plt.tight_layout()
-metrics_plot_path = os.path.join(teacher_dir, 'training_metrics.png')
+metrics_plot_path = os.path.join(output_dir, 'finetuning_metrics.png')
 plt.savefig(metrics_plot_path)
 display(IPImage(filename=metrics_plot_path))
 plt.close()
 
 # Save final model
-torch.save(model.state_dict(), os.path.join(teacher_dir, 'teacher_model_final.pth'))
+torch.save(model.state_dict(), os.path.join(output_dir, 'finetuned_model_final.pth'))
 print(f'Saved final model at epoch {epochs}')
 
 # Test evaluation
@@ -271,10 +302,10 @@ inverse_label_map = {0: 'fake', 1: 'real'}
 with torch.no_grad():
     for i, idx in enumerate(random_indices):
         row = test_data.iloc[idx]
-        img_column = 'path' if dataset_mode == '140k' else 'images_id'
+        img_column = 'path' if dataset_mode in ['140k', '200k'] else 'images_id'
         img_name = row[img_column]
         label = row['label']
-        img_path = os.path.join(data_dir, 'real_vs_fake', 'real-vs-fake', img_name) if dataset_mode == '140k' else os.path.join(data_dir, img_name)
+        img_path = os.path.join(data_dir, img_name)
         
         if not os.path.exists(img_path):
             print(f"Warning: Image not found: {img_path}")
@@ -297,15 +328,11 @@ with torch.no_grad():
         print(f"Image: {img_path}, True Label: {true_label}, Predicted: {predicted_label}")
 
 plt.tight_layout()
-file_path = os.path.join(teacher_dir, 'test_samples.png')
+file_path = os.path.join(output_dir, 'test_samples.png')
 plt.savefig(file_path)
 display(IPImage(filename=file_path))
 
-# Unfreeze all parameters for FLOPs calculation
-for param in model.parameters():
-    param.requires_grad = True
-
 # Calculate FLOPs and parameters
-flops, params = get_model_complexity_info(model, (3, img_height, img_width), as_strings=True, print_per_layer_stat=True)
+flops, params = get_model_complexity_info(model, (3, 256 if dataset_mode in ['rvf10k', '140k', '200k', '190k', '330k'] else 300, 256 if dataset_mode in ['rvf10k', '140k', '200k', '190k', '330k'] else 300), as_strings=True, print_per_layer_stat=True)
 print(f'FLOPs: {flops}')
 print(f'Parameters: {params}')
