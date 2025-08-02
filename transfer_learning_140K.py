@@ -78,34 +78,31 @@ def apply_pruning_to_state_dict(state_dict, masks, layer_names):
     mask_idx = 0
     
     for name, param in state_dict.items():
-        if name in layer_names:
-            # پیدا کردن ماسک مربوطه
-            mask = masks[mask_idx].to("cpu")  # اطمینان از اینکه ماسک روی CPU است
-            # اگر ماسک تک‌بعدی است
-            if mask.dim() == 1:
-                indices = mask.nonzero(as_tuple=True)[0].to("cpu")
+        # فقط کلیدهایی که در مدل هرس‌شده انتظار می‌روند را نگه می‌داریم
+        if name in layer_names or "bn" in name or "fc" in name:
+            if name in layer_names:
+                mask = masks[mask_idx].to("cpu")
+                # استخراج شاخص‌های کانال‌های حفظ‌شده
+                indices = mask.nonzero(as_tuple=True)[0].to("cpu") if mask.dim() == 1 else mask.nonzero(as_tuple=True)[0].to("cpu")
+                
+                # برای وزن‌های conv
+                if "conv" in name and "weight" in name:
+                    pruned_param = param[indices]
+                    # برای conv2 و conv3، ورودی‌ها را با ماسک لایه قبلی فیلتر می‌کنیم
+                    if "conv2" in name or "conv3" in name:
+                        prev_mask = masks[mask_idx-1].to("cpu")
+                        prev_indices = prev_mask.nonzero(as_tuple=True)[0].to("cpu") if prev_mask.dim() == 1 else prev_mask.nonzero(as_tuple=True)[0].to("cpu")
+                        pruned_param = pruned_param[:, prev_indices]
+                    pruned_state_dict[name] = pruned_param
+                    mask_idx += 1
+                
+                # برای لایه‌های BatchNorm
+                elif "bn" in name:
+                    pruned_state_dict[name] = param[indices]
+            
             else:
-                # اگر ماسک چند‌بعدی است (مثل [C, 1] یا [C, 1, 1])
-                indices = torch.argmax(mask, dim=0).nonzero(as_tuple=True)[0].to("cpu")
-            
-            # برای وزن‌های conv (شکل: [out_channels, in_channels, k, k])
-            if "conv" in name and "weight" in name:
-                pruned_param = param[indices]
-                # برای لایه‌های conv2 و conv3، ورودی‌ها نیز باید فیلتر شوند
-                if "conv2" in name or "conv3" in name:
-                    prev_mask = masks[mask_idx-1].to("cpu")
-                    prev_indices = prev_mask.nonzero(as_tuple=True)[0].to("cpu") if prev_mask.dim() == 1 else torch.argmax(prev_mask, dim=0).nonzero(as_tuple=True)[0].to("cpu")
-                    pruned_param = pruned_param[:, prev_indices]
-                pruned_state_dict[name] = pruned_param
-                mask_idx += 1
-            
-            # برای bn (weight, bias, running_mean, running_var)
-            elif "bn" in name:
-                pruned_state_dict[name] = param[indices]
-            
-        else:
-            # وزن‌هایی که نیازی به هرس ندارند (مثل fc.weight)
-            pruned_state_dict[name] = param
+                # وزن‌هایی که نیازی به هرس ندارند (مثل fc.weight)
+                pruned_state_dict[name] = param
     
     return pruned_state_dict
 
@@ -130,7 +127,7 @@ def main():
     student = ResNet_50_sparse_rvf10k().to(device)
     ckpt_student = torch.load(args.checkpoint_path, map_location="cpu")
     student.load_state_dict(ckpt_student["student"])
-    mask_weights = [m.mask_weight.to("cpu") for m in student.mask_modules]  # اطمینان از اینکه ماسک‌ها روی CPU هستند
+    mask_weights = [m.mask_weight.to("cpu") for m in student.mask_modules]
     
     # استخراج شاخص‌های کانال‌های حفظ‌شده
     masks = []
@@ -138,12 +135,16 @@ def main():
         if mask_weight.dim() == 1:
             masks.append(mask_weight)
         else:
-            masks.append(torch.argmax(mask_weight, dim=0).squeeze())
+            # برای ماسک‌های چند‌بعدی، از nonzero به جای argmax استفاده می‌کنیم
+            indices = mask_weight.squeeze().nonzero(as_tuple=True)[0]
+            mask = torch.zeros(mask_weight.size(0), device="cpu")
+            mask[indices] = 1
+            masks.append(mask)
 
     # بررسی تعداد کانال‌های حفظ‌شده
     layer_names = [f"layer{i}.{j}.conv{k}.weight" for i in range(1, 5) for j in range([3, 4, 6, 3][i-1]) for k in range(1, 4)]
     for i, mask in enumerate(masks):
-        kept_channels = mask.sum().item() if mask.dim() == 1 else mask.numel()
+        kept_channels = mask.sum().item()
         total_channels = mask.numel()
         print(f"Mask {i} ({layer_names[i]}): {kept_channels}/{total_channels} channels kept")
 
@@ -153,10 +154,15 @@ def main():
     # فیلتر کردن state_dict بر اساس ماسک‌ها
     pruned_state_dict = apply_pruning_to_state_dict(ckpt_student["student"], masks, layer_names)
     
+    # بررسی کلیدها و ابعاد pruned_state_dict برای دیباگ
+    for name, param in pruned_state_dict.items():
+        if "weight" in name or "bias" in name:
+            print(f"{name}: {param.shape}")
+    
     # بارگذاری state_dict هرس‌شده
     model_dict = model.state_dict()
     model_dict.update(pruned_state_dict)
-    model.load_state_dict(model_dict)
+    model.load_state_dict(model_dict, strict=True)
 
     # محاسبه فلاپس و پارامترها
     input = torch.rand([1, 3, 256, 256]).to(device)
