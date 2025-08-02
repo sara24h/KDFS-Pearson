@@ -132,7 +132,7 @@ def main():
     print(f"استفاده از دستگاه: {device}")
 
     # بارگذاری مدل دانش‌آموز برای استخراج ماسک‌ها
-    student = hardfakevsreal().to(device)
+    student = ResNet_50_pruned_hardfakevsreal().to(device)
     ckpt_student = torch.load(args.checkpoint_path, map_location="cpu")
     student.load_state_dict(ckpt_student["student"])
     mask_weights = [m.mask_weight.to("cpu") for m in student.mask_modules]
