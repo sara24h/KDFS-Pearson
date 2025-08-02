@@ -160,42 +160,36 @@ def count_parameters(model, state_dict):
             if mask_key in state_dict:
                 mask = state_dict[mask_key].to(device)
                 print(f"{mask_key} shape: {mask.shape}, Sample values: {mask.flatten()[:10]}")
-                if len(mask.shape) >= 2:
+                if len(mask.shape) >= 2 and mask.shape[0] == weight.shape[0]:
                     mask_binary = torch.argmax(mask, dim=1).float()
-                    if mask_binary.shape[0] == weight.shape[0]:
-                        active_channels = int(mask_binary.sum().item())
-                        active_count = active_channels * weight.shape[1] * weight.shape[2] * weight.shape[3]
-                        total_count = weight.numel()
-                        trainable_count = active_count if weight.requires_grad else 0
-                        active_params += active_count
-                        total_params += total_count
-                        trainable_params += trainable_count
-                        print(f"{name}.weight: {active_channels}/{weight.shape[0]} channels kept")
-                    else:
-                        print(f"Dimension mismatch: mask_binary {mask_binary.shape[0]} vs weight {weight.shape[0]} for {name}")
-                        active_params += weight.count_nonzero().item()
-                        total_params += weight.numel()
-                        trainable_params += weight.count_nonzero().item() if weight.requires_grad else 0
+                    active_channels = int(mask_binary.sum().item())
+                    active_count = active_channels * weight.shape[1] * weight.shape[2] * weight.shape[3]
+                    total_count = active_count  # فقط پارامترهای فعال شمرده شوند
+                    trainable_count = active_count if weight.requires_grad else 0
+                    active_params += active_count
+                    total_params += total_count
+                    trainable_params += trainable_count
+                    print(f"{name}.weight: {active_channels}/{weight.shape[0]} channels kept")
                 else:
-                    print(f"Unexpected mask shape for {mask_key}: {mask.shape}")
+                    print(f"Dimension mismatch: mask_binary {mask_binary.shape[0]} vs weight {weight.shape[0]} for {name}")
                     active_params += weight.count_nonzero().item()
-                    total_params += weight.numel()
+                    total_params += weight.count_nonzero().item()
                     trainable_params += weight.count_nonzero().item() if weight.requires_grad else 0
             else:
                 print(f"{name}.weight: No mask available, using all {weight.shape[0]} channels")
                 active_params += weight.count_nonzero().item()
-                total_params += weight.numel()
+                total_params += weight.count_nonzero().item()
                 trainable_params += weight.count_nonzero().item() if weight.requires_grad else 0
         elif isinstance(module, nn.Linear):
             active_params += module.weight.count_nonzero().item()
-            total_params += module.weight.numel()
+            total_params += module.weight.count_nonzero().item()
             trainable_params += module.weight.count_nonzero().item() if module.weight.requires_grad else 0
             if module.bias is not None:
                 active_params += module.bias.count_nonzero().item()
-                total_params += module.bias.numel()
+                total_params += module.bias.count_nonzero().item()
                 trainable_params += module.bias.count_nonzero().item() if module.bias.requires_grad else 0
         elif isinstance(module, nn.BatchNorm2d):
-            total_params += module.weight.numel() + module.bias.numel()
+            total_params += module.weight.count_nonzero().item() + module.bias.count_nonzero().item()
             active_params += module.weight.count_nonzero().item() + module.bias.count_nonzero().item()
             if module.weight.requires_grad:
                 trainable_params += module.weight.count_nonzero().item() + module.bias.count_nonzero().item()
@@ -235,6 +229,8 @@ def count_flops(model, input_size, state_dict):
             flops += module.weight.numel() * 2
             if module.bias is not None:
                 flops += module.bias.numel() * 2
+        elif isinstance(module, nn.BatchNorm2d):
+            flops += module.weight.numel() * 4  # عملیات نرمال‌سازی
     
     return flops
 
@@ -248,7 +244,43 @@ if dataset_mode == 'hardfake':
     print(f"hardfake FLOPs: {flops_hardfake / 1e9:.2f} GMac")
 
 # محاسبه فلاپس با thop برای مقایسه
-flops_thop_rvf10k, params_thop_rvf10k = profile(model, inputs=(input_tensor_rvf10k,), verbose=False)
+def custom_thop_profile(model, inputs, state_dict):
+    flops = 0
+    params = 0
+    h, w = inputs.shape[2], inputs.shape[3]
+    for name, module in model.named_modules():
+        if isinstance(module, SoftMaskedConv2d):
+            weight = module.weight
+            mask_key = name + '.mask_weight'
+            if mask_key in state_dict:
+                mask = state_dict[mask_key].to(device)
+                if len(mask.shape) >= 2 and mask.shape[0] == weight.shape[0]:
+                    active_channels = int(torch.argmax(mask, dim=1).sum().item())
+                    if active_channels > 0:
+                        flops += active_channels * weight.shape[1] * weight.shape[2] * weight.shape[3] * h * w * 2
+                        params += active_channels * weight.shape[1] * weight.shape[2] * weight.shape[3]
+                        if 'conv3' in name or 'downsample' in name:
+                            h //= 2
+                            w //= 2
+            else:
+                flops += weight.shape[0] * weight.shape[1] * weight.shape[2] * weight.shape[3] * h * w * 2
+                params += weight.shape[0] * weight.shape[1] * weight.shape[2] * weight.shape[3]
+                if 'conv3' in name or 'downsample' in name:
+                    h //= 2
+                    w //= 2
+        elif isinstance(module, nn.Linear):
+            flops += module.weight.numel() * 2
+            params += module.weight.numel()
+            if module.bias is not None:
+                flops += module.bias.numel() * 2
+                params += module.bias.numel()
+        elif isinstance(module, nn.BatchNorm2d):
+            flops += module.weight.numel() * 4
+            params += module.weight.numel() + module.bias.numel()
+    
+    return flops, params
+
+flops_thop_rvf10k, params_thop_rvf10k = custom_thop_profile(model, input_tensor_rvf10k, state_dict)
 print(f"thop rvf10k FLOPs: {flops_thop_rvf10k / 1e9:.2f} GMac")
 print(f"thop rvf10k Parameters: {params_thop_rvf10k / 1e6:.2f} M")
 
@@ -429,3 +461,4 @@ file_path = os.path.join(teacher_dir, 'test_samples.png')
 plt.savefig(file_path)
 display(IPImage(filename=file_path))
 plt.close()
+
