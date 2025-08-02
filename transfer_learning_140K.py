@@ -1,206 +1,311 @@
+import os
+import pandas as pd
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms
-from thop import profile
+from torchvision import transforms, models
+from torch.amp import autocast, GradScaler
+from PIL import Image
 import argparse
-import os
-from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
-from model.student.ResNet_sparse import ResNet_50_sparse_rvf10k
+import random
+import matplotlib.pyplot as plt
+import numpy as np
+from IPython.display import Image as IPImage, display
+from ptflops import get_model_complexity_info
+from data.dataset import FaceDataset, Dataset_selector
 
-def get_data_loaders(data_dir, batch_size, img_size=224):
-    transform = transforms.Compose([
-        transforms.Resize((img_size, img_size)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    
-    # به‌روزرسانی مسیر دیتاست
-    train_dir = f"{data_dir}/train"
-    val_dir = f"{data_dir}/valid"
-    if not os.path.exists(train_dir):
-        raise FileNotFoundError(f"پوشه آموزشی {train_dir} وجود ندارد. لطفاً مسیر دیتاست را بررسی کنید.")
-    if not os.path.exists(val_dir):
-        raise FileNotFoundError(f"پوشه اعتبارسنجی {val_dir} وجود ندارد. لطفاً مسیر دیتاست را بررسی کنید.")
-    
-    train_dataset = datasets.ImageFolder(root=train_dir, transform=transform)
-    val_dataset = datasets.ImageFolder(root=val_dir, transform=transform)
-    
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
-    
-    return train_loader, val_loader
+def parse_args():
+    parser = argparse.ArgumentParser(description='Train a ResNet50 model for fake vs real face classification.')
+    parser.add_argument('--dataset_mode', type=str, required=True, choices=['hardfake', 'rvf10k', '140k'],
+                        help='Dataset to use: hardfake, rvf10k, or 140k')
+    parser.add_argument('--data_dir', type=str, required=True,
+                        help='Path to the dataset directory')
+    parser.add_argument('--teacher_dir', type=str, default='teacher_dir',
+                        help='Directory to save trained model and outputs')
+    parser.add_argument('--img_height', type=int, default=300,
+                        help='Height of input images (default: 300 for hardfake, 256 for rvf10k/140k)')
+    parser.add_argument('--img_width', type=int, default=300,
+                        help='Width of input images (default: 300 for hardfake, 256 for rvf10k/140k)')
+    parser.add_argument('--batch_size', type=int, default=32,
+                        help='Batch size for training')
+    parser.add_argument('--epochs', type=int, default=15,
+                        help='Number of training epochs')
+    parser.add_argument('--lr', type=float, default=0.0001,
+                        help='Learning rate for the optimizer (fc layer)')
+    parser.add_argument('--lr_layer4', type=float, default=1e-5,
+                        help='Learning rate for layer4 parameters')
+    parser.add_argument('--weight_decay', type=float, default=1e-4,
+                        help='Weight decay for the optimizer')
+    return parser.parse_args()
 
-def evaluate(model, data_loader, criterion, device):
-    model.eval()
-    running_loss = 0.0
-    correct = 0
-    total = 0
-    
-    with torch.no_grad():
-        for inputs, labels in data_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-            outputs, _ = model(inputs)
-            loss = criterion(outputs, labels)
-            running_loss += loss.item()
-            _, predicted = torch.max(outputs, 1)
-            total += labels.size(0)
-            correct += (predicted == labels).sum().item()
-    
-    avg_loss = running_loss / len(data_loader)
-    accuracy = 100 * correct / total
-    return avg_loss, accuracy
+# Parse arguments
+args = parse_args()
 
-def train(model, train_loader, val_loader, criterion, optimizer, device, epochs, output_dir):
+# Set environment variables
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.enabled = True
+
+# Assign arguments to variables
+dataset_mode = args.dataset_mode
+data_dir = args.data_dir
+teacher_dir = args.teacher_dir
+img_height = 256 if dataset_mode in ['rvf10k', '140k'] else args.img_height
+img_width = 256 if dataset_mode in ['rvf10k', '140k'] else args.img_width
+batch_size = args.batch_size
+epochs = args.epochs
+lr = args.lr
+lr_layer4 = args.lr_layer4
+weight_decay = args.weight_decay
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# Validate directories
+if not os.path.exists(data_dir):
+    raise FileNotFoundError(f"Directory {data_dir} not found!")
+os.makedirs(teacher_dir, exist_ok=True)
+
+# Initialize dataset
+if dataset_mode == 'hardfake':
+    dataset = Dataset_selector(
+        dataset_mode='hardfake',
+        hardfake_csv_file=os.path.join(data_dir, 'data.csv'),
+        hardfake_root_dir=data_dir,
+        train_batch_size=batch_size,
+        eval_batch_size=batch_size,
+        num_workers=4,
+        pin_memory=True,
+        ddp=False
+    )
+elif dataset_mode == 'rvf10k':
+    dataset = Dataset_selector(
+        dataset_mode='rvf10k',
+        rvf10k_train_csv=os.path.join(data_dir, 'train.csv'),
+        rvf10k_valid_csv=os.path.join(data_dir, 'valid.csv'),
+        rvf10k_root_dir=data_dir,
+        train_batch_size=batch_size,
+        eval_batch_size=batch_size,
+        num_workers=4,
+        pin_memory=True,
+        ddp=False
+    )
+elif dataset_mode == '140k':
+    dataset = Dataset_selector(
+        dataset_mode='140k',
+        realfake140k_train_csv=os.path.join(data_dir, 'train.csv'),
+        realfake140k_valid_csv=os.path.join(data_dir, 'valid.csv'),
+        realfake140k_test_csv=os.path.join(data_dir, 'test.csv'),
+        realfake140k_root_dir=data_dir,
+        train_batch_size=batch_size,
+        eval_batch_size=batch_size,
+        num_workers=4,
+        pin_memory=True,
+        ddp=False
+    )
+else:
+    raise ValueError("Invalid dataset_mode. Choose 'hardfake', 'rvf10k', or '140k'.")
+
+train_loader = dataset.loader_train
+val_loader = dataset.loader_val
+test_loader = dataset.loader_test
+
+# Initialize model
+model = models.resnet50()
+num_ftrs = model.fc.in_features
+model.fc = nn.Linear(num_ftrs, 1)
+
+# Load checkpoint
+checkpoint_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt'
+checkpoint = torch.load(checkpoint_path)
+
+if 'student' in checkpoint:
+    state_dict = checkpoint['student']
+    filtered_state_dict = {k: v for k, v in state_dict.items() if not k.endswith('mask_weight') and k not in ['feat1.weight', 'feat1.bias', 'feat2.weight', 'feat2.bias', 'feat3.weight', 'feat3.bias', 'feat4.weight', 'feat4.bias']}
+    missing, unexpected = model.load_state_dict(filtered_state_dict, strict=False)
+    print(f"Missing keys: {missing}")
+    print(f"Unexpected keys: {unexpected}")
+else:
+    raise KeyError("'student' key not found in checkpoint")
+
+model = model.to(device)
+
+# Freeze all parameters except layer4 and fc
+for param in model.parameters():
+    param.requires_grad = False
+for param in model.layer4.parameters():
+    param.requires_grad = True
+for param in model.fc.parameters():
+    param.requires_grad = True
+
+# Initialize optimizer with configurable weight decay and learning rates
+optimizer = optim.Adam([
+    {'params': model.layer4.parameters(), 'lr': lr_layer4},
+    {'params': model.fc.parameters(), 'lr': lr}
+], weight_decay=weight_decay)
+
+criterion = nn.BCEWithLogitsLoss()
+scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
+
+if device.type == 'cuda':
+    torch.cuda.empty_cache()
+
+# Training loop
+train_losses, train_accuracies = [], []
+val_losses, val_accuracies = [], []
+best_val_acc = 0.0
+best_model_path = os.path.join(teacher_dir, 'teacher_model_best.pth')
+
+for epoch in range(epochs):
     model.train()
-    best_acc = 0.0
-    best_model_path = f"{output_dir}/best_model.pt"
-    
-    for epoch in range(epochs):
-        running_loss = 0.0
-        for inputs, labels in train_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-            optimizer.zero_grad()
-            outputs, _ = model(inputs)
+    running_loss = 0.0
+    correct_train = 0
+    total_train = 0
+    for images, labels in train_loader:
+        images, labels = images.to(device), labels.to(device).float()
+        optimizer.zero_grad()
+        with torch.amp.autocast('cuda', enabled=device.type == 'cuda'):
+            outputs = model(images).squeeze(1)
             loss = criterion(outputs, labels)
+        if device.type == 'cuda':
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
             loss.backward()
             optimizer.step()
-            running_loss += loss.item()
+        running_loss += loss.item()
+        preds = (torch.sigmoid(outputs) > 0.5).float()
+        correct_train += (preds == labels).sum().item()
+        total_train += labels.size(0)
+
+    train_loss = running_loss / len(train_loader)
+    train_accuracy = 100 * correct_train / total_train
+    train_losses.append(train_loss)
+    train_accuracies.append(train_accuracy)
+    print(f'Epoch {epoch+1}, Train Loss: {train_loss:.4f}, Train Accuracy: {train_accuracy:.2f}%')
+
+    # Validation
+    model.eval()
+    val_loss = 0.0
+    correct_val = 0
+    total_val = 0
+    with torch.no_grad():
+        for images, labels in val_loader:
+            images, labels = images.to(device), labels.to(device).float()
+            with torch.amp.autocast('cuda', enabled=device.type == 'cuda'):
+                outputs = model(images).squeeze(1)
+                loss = criterion(outputs, labels)
+            val_loss += loss.item()
+            preds = (torch.sigmoid(outputs) > 0.5).float()
+            correct_val += (preds == labels).sum().item()
+            total_val += labels.size(0)
+
+    val_loss = val_loss / len(val_loader)
+    val_accuracy = 100 * correct_val / total_val
+    val_losses.append(val_loss)
+    val_accuracies.append(val_accuracy)
+    print(f'Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%')
+
+    if val_accuracy > best_val_acc:
+        best_val_acc = val_accuracy
+        torch.save(model.state_dict(), best_model_path)
+        print(f'Saved best model with validation accuracy: {val_accuracy:.2f}% at epoch {epoch+1}')
+
+# Plot metrics
+plt.figure(figsize=(12, 5))
+plt.subplot(1, 2, 1)
+plt.plot(range(1, epochs + 1), train_losses, label='Training Loss', color='blue')
+plt.plot(range(1, epochs + 1), val_losses, label='Validation Loss', color='orange')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.title('Training and Validation Loss')
+plt.legend()
+plt.grid(True)
+
+plt.subplot(1, 2, 2)
+plt.plot(range(1, epochs + 1), train_accuracies, label='Training Accuracy', color='blue')
+plt.plot(range(1, epochs + 1), val_accuracies, label='Validation Accuracy', color='orange')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy (%)')
+plt.title('Training and Validation Accuracy')
+plt.legend()
+plt.grid(True)
+
+plt.tight_layout()
+metrics_plot_path = os.path.join(teacher_dir, 'training_metrics.png')
+plt.savefig(metrics_plot_path)
+display(IPImage(filename=metrics_plot_path))
+plt.close()
+
+# Save final model
+torch.save(model.state_dict(), os.path.join(teacher_dir, 'teacher_model_final.pth'))
+print(f'Saved final model at epoch {epochs}')
+
+# Test evaluation
+model.eval()
+test_loss = 0.0
+correct = 0
+total = 0
+with torch.no_grad():
+    for images, labels in test_loader:
+        images, labels = images.to(device), labels.to(device).float()
+        with torch.amp.autocast('cuda', enabled=device.type == 'cuda'):
+            outputs = model(images).squeeze(1)
+            loss = criterion(outputs, labels)
+        test_loss += loss.item()
+        preds = (torch.sigmoid(outputs) > 0.5).float()
+        correct += (preds == labels).sum().item()
+        total += labels.size(0)
+print(f'Test Loss: {test_loss / len(test_loader):.4f}, Test Accuracy: {100 * correct / total:.2f}%')
+
+# Visualize test samples
+test_data = dataset.loader_test.dataset.data
+transform_test = dataset.loader_test.dataset.transform
+random_indices = random.sample(range(len(test_data)), min(20, len(test_data)))
+fig, axes = plt.subplots(4, 5, figsize=(15, 8))
+axes = axes.ravel()
+
+label_map = {'fake': 0, 'real': 1, 0: 0, 1: 1, 'Fake': 0, 'Real': 1}
+inverse_label_map = {0: 'fake', 1: 'real'}
+
+with torch.no_grad():
+    for i, idx in enumerate(random_indices):
+        row = test_data.iloc[idx]
+        img_column = 'path' if dataset_mode == '140k' else 'images_id'
+        img_name = row[img_column]
+        label = row['label']
+        img_path = os.path.join(data_dir, 'real_vs_fake', 'real-vs-fake', img_name) if dataset_mode == '140k' else os.path.join(data_dir, img_name)
         
-        avg_train_loss = running_loss / len(train_loader)
-        val_loss, val_acc = evaluate(model, val_loader, criterion, device)
-        print(f"دوره {epoch+1}/{epochs}, خطای آموزشی: {avg_train_loss:.4f}, خطای اعتبارسنجی: {val_loss:.4f}, دقت اعتبارسنجی: {val_acc:.2f}%")
+        if not os.path.exists(img_path):
+            print(f"Warning: Image not found: {img_path}")
+            axes[i].set_title("Image not found")
+            axes[i].axis('off')
+            continue
         
-        if val_acc > best_acc:
-            best_acc = val_acc
-            torch.save(model.state_dict(), best_model_path)
-            print(f"بهترین مدل با دقت {val_acc:.2f}% در {best_model_path} ذخیره شد")
-    
-    return best_acc
+        image = Image.open(img_path).convert('RGB')
+        image_transformed = transform_test(image).unsqueeze(0).to(device)
+        with torch.amp.autocast('cuda', enabled=device.type == 'cuda'):
+            output = model(image_transformed).squeeze(1)
+        prob = torch.sigmoid(output).item()
+        predicted_label = 'real' if prob > 0.5 else 'fake'
+        
+        true_label = inverse_label_map[int(label)] if isinstance(label, (int, float)) else inverse_label_map[label_map[label]]
+        
+        axes[i].imshow(image)
+        axes[i].set_title(f'True: {true_label}\nPred: {predicted_label}', fontsize=10)
+        axes[i].axis('off')
+        print(f"Image: {img_path}, True Label: {true_label}, Predicted: {predicted_label}")
 
-def apply_pruning_to_state_dict(state_dict, masks, layer_names):
-    """
-    فیلتر کردن وزن‌های state_dict بر اساس ماسک‌های هرس
-    """
-    pruned_state_dict = {}
-    mask_idx = 0
-    
-    for name, param in state_dict.items():
-        # فقط کلیدهای مورد انتظار را پردازش می‌کنیم
-        if name in layer_names or "bn" in name or "fc" in name:
-            if name in layer_names:
-                mask = masks[mask_idx].to("cpu")
-                indices = mask.nonzero(as_tuple=True)[0].to("cpu")
-                
-                # پردازش وزن‌های کانولوشنی
-                if "conv" in name and "weight" in name:
-                    pruned_param = param[indices]
-                    # برای conv2 و conv3، ورودی‌ها را با ماسک لایه قبلی فیلتر می‌کنیم
-                    if "conv2" in name or "conv3" in name:
-                        prev_mask = masks[mask_idx-1].to("cpu")
-                        prev_indices = prev_mask.nonzero(as_tuple=True)[0].to("cpu")
-                        pruned_param = pruned_param[:, prev_indices]
-                    pruned_state_dict[name] = pruned_param
-                    mask_idx += 1
-                
-                # برای لایه‌های BatchNorm
-                elif "bn" in name:
-                    pruned_state_dict[name] = param[indices]
-            
-            else:
-                # وزن‌هایی که نیازی به هرس ندارند (مثل fc.weight)
-                pruned_state_dict[name] = param
-    
-    return pruned_state_dict
+plt.tight_layout()
+file_path = os.path.join(teacher_dir, 'test_samples.png')
+plt.savefig(file_path)
+display(IPImage(filename=file_path))
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--checkpoint_path', type=str, required=True, help='Path to the student checkpoint')
-    parser.add_argument('--data_dir', type=str, required=True, help='Path to dataset')
-    parser.add_argument('--dataset_mode', type=str, default='rvf10k', help='Dataset mode')
-    parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
-    parser.add_argument('--lr', type=float, default=0.0005, help='Learning rate for most layers')
-    parser.add_argument('--lr_layer4', type=float, default=0.0001, help='Learning rate for layer4')
-    parser.add_argument('--weight_decay', type=float, default=5e-5, help='Weight decay')
-    parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
-    parser.add_argument('--output_dir', type=str, default='/kaggle/working', help='Output directory for saving models')
-    args = parser.parse_args()
+# Unfreeze all parameters for FLOPs calculation
+for param in model.parameters():
+    param.requires_grad = True
 
-    # تنظیم دستگاه
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"استفاده از دستگاه: {device}")
-
-    # بارگذاری مدل دانش‌آموز برای استخراج ماسک‌ها
-    student = ResNet_50_pruned_hardfakevsreal().to(device)
-    ckpt_student = torch.load(args.checkpoint_path, map_location="cpu")
-    student.load_state_dict(ckpt_student["student"])
-    mask_weights = [m.mask_weight.to("cpu") for m in student.mask_modules]
-    
-    # استخراج شاخص‌های کانال‌های نگه‌داری‌شده
-    masks = []
-    for mask_weight in mask_weights:
-        if mask_weight.dim() > 1:
-            # برای ماسک‌های چند‌بعدی، به صورت باینری تبدیل می‌کنیم
-            mask = (mask_weight.squeeze() != 0).float()
-            indices = mask.nonzero(as_tuple=True)[0]
-            binary_mask = torch.zeros(mask_weight.size(0), device="cpu")
-            binary_mask[indices] = 1
-            masks.append(binary_mask)
-        else:
-            masks.append(mask_weight)
-
-    # بررسی تعداد کانال‌های نگه‌داری‌شده
-    layer_names = [f"layer{i}.{j}.conv{k}.weight" for i in range(1, 5) for j in range([3, 4, 6, 3][i-1]) for k in range(1, 4)]
-    for i, mask in enumerate(masks):
-        kept_channels = mask.sum().item()
-        total_channels = mask.numel()
-        print(f"ماسک {i} ({layer_names[i]}): {kept_channels}/{total_channels} کانال نگه‌داری‌شده")
-
-    # بارگذاری مدل هرس‌شده
-    model = ResNet_50_pruned_hardfakevsreal(masks=masks).to(device)
-    
-    # فیلتر کردن state_dict بر اساس ماسک‌ها
-    pruned_state_dict = apply_pruning_to_state_dict(ckpt_student["student"], masks, layer_names)
-    
-    # بررسی کلیدها و ابعاد pruned_state_dict برای دیباگ
-    for name, param in pruned_state_dict.items():
-        if "weight" in name or "bias" in name:
-            print(f"{name}: {param.shape}")
-    
-    # بارگذاری state_dict هرس‌شده
-    model_dict = model.state_dict()
-    model_dict.update(pruned_state_dict)
-    model.load_state_dict(model_dict, strict=True)
-
-    # محاسبه فلاپس و پارامترها
-    input = torch.rand([1, 3, 224, 224]).to(device)
-    flops, params = profile(model, inputs=(input,), verbose=True)
-    print(f"FLOPs: {flops / (10**9):.2f} GMac")
-    print(f"Parameters: {params / (10**6):.2f} M")
-
-    # بارگذاری داده‌ها
-    train_loader, val_loader = get_data_loaders(args.data_dir, args.batch_size, img_size=224)
-
-    # تعریف معیار و بهینه‌ساز
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam([
-        {'params': [p for n, p in model.named_parameters() if 'layer4' not in n], 'lr': args.lr},
-        {'params': [p for n, p in model.named_parameters() if 'layer4' in n], 'lr': args.lr_layer4}
-    ], weight_decay=args.weight_decay)
-
-    # آموزش و ارزیابی
-    best_acc = train(model, train_loader, val_loader, criterion, optimizer, device, args.epochs, args.output_dir)
-    
-    # ارزیابی نهایی روی مجموعه تست
-    final_loss, final_acc = evaluate(model, val_loader, criterion, device)
-    print(f"خطای تست نهایی: {final_loss:.4f}, دقت تست نهایی: {final_acc:.2f}%")
-
-    # ذخیره نتایج
-    with open(f"{args.output_dir}/results.txt", "w") as f:
-        f.write(f"FLOPs: {flops / (10**9):.2f} GMac\n")
-        f.write(f"Parameters: {params / (10**6):.2f} M\n")
-        f.write(f"Final Test Accuracy: {final_acc:.2f}%\n")
-
-if __name__ == "__main__":
-    main()
+# Calculate FLOPs and parameters
+flops, params = get_model_complexity_info(model, (3, img_height, img_width), as_strings=True, print_per_layer_stat=True)
+print(f'FLOPs: {flops}')
+print(f'Parameters: {params}')
