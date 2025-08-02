@@ -144,18 +144,25 @@ total_params = 0
 for name, module in model.named_modules():
     if isinstance(module, SoftMaskedConv2d):
         weight = module.weight
-        mask = module.mask
-        if mask is not None:
-            mask = mask.to(device)  # انتقال ماسک به دستگاه
-            # تبدیل ماسک به باینری با استفاده از argmax
-            mask_binary = torch.argmax(mask, dim=1).squeeze(1).squeeze(1)
-            mask_binary = (mask_binary != 0).float()
-            mask_binary = mask_binary.view(-1, 1, 1, 1)
+        mask_key = name + '.mask_weight'
+        if mask_key in state_dict:
+            mask = state_dict[mask_key].to(device)  # استفاده از state_dict برای ماسک
+            # بررسی ساختار ماسک
+            print(f"{mask_key} shape: {mask.shape}, Sample values: {mask.flatten()[:10]}")
+            # تبدیل ماسک به باینری
+            if len(mask.shape) == 2:  # فرض می‌کنیم ماسک‌ها دو بعدی هستند (مانند [128, 2])
+                mask_binary = torch.argmax(mask, dim=1)
+                mask_binary = (mask_binary != 0).float()
+                mask_binary = mask_binary.view(-1, 1, 1, 1)
+            else:
+                # اگر ماسک تک‌بعدی یا ساختار دیگری دارد
+                mask_binary = (mask > 0.5).float()
+                mask_binary = mask_binary.view(-1, 1, 1, 1)
             active_params = (weight * mask_binary).abs().count_nonzero().item()
             print(f"{name}.weight: {int(mask_binary.sum().item())}/{weight.shape[0]} channels kept")
         else:
-            active_params = weight.count_nonzero().item()
             print(f"{name}.weight: No mask available, using all {weight.shape[0]} channels")
+            active_params = weight.count_nonzero().item()
         total_params += active_params
     elif isinstance(module, nn.Linear):
         total_params += module.weight.count_nonzero().item()
@@ -163,14 +170,14 @@ for name, module in model.named_modules():
             total_params += module.bias.count_nonzero().item()
 print(f"Active Parameters: {total_params / 1e6:.2f} M")
 
-# Calculate FLOPs using model's get_flops method
+# Calculate FLOPs
 try:
-    flops = model.get_flops(input_shape=(3, img_height, img_width))
+    flops = model.get_flops()  # بدون input_shape
     print(f"Pruned FLOPs: {flops / 1e9:.2f} GMac")
-except AttributeError:
-    print("Warning: get_flops method not found, using thop for FLOPs calculation")
+except (AttributeError, TypeError):
+    print("Warning: get_flops method not found or failed, using thop for FLOPs calculation")
     input_tensor = torch.randn(1, 3, img_height, img_width).to(device)
-    flops, params = profile(model, inputs=(input_tensor,))
+    flops, params = profile(model, inputs=(input_tensor,), verbose=False)
     print(f"THOP FLOPs: {flops / 1e9:.2f} GMac")
     print(f"THOP Parameters: {params / 1e6:.2f} M")
 
