@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from IPython.display import Image as IPImage, display
 from ptflops import get_model_complexity_info
-import torch_pruning as tp  # برای پرونینگ سخت‌افزاری
+from data.dataset import FaceDataset, Dataset_selector
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a ResNet50 model for fake vs real face classification.')
@@ -182,30 +182,6 @@ def calculate_flops_pruned(model, state_dict, input_shape=(3, 256, 256)):
 
 flops = calculate_flops_pruned(model, state_dict, input_shape=(3, img_height, img_width))
 print(f"Pruned FLOPs: {flops:.2f} GMac")
-
-# Apply hard pruning (optional, for comparison)
-def apply_hard_pruning(model, state_dict):
-    for name, module in model.named_modules():
-        if isinstance(module, nn.Conv2d):
-            mask_key = f"{name}.mask_weight"
-            if mask_key in state_dict:
-                mask = state_dict[mask_key]
-                kept_channels = int(mask.sum().item())
-                if kept_channels == 0:
-                    continue  # جلوگیری از پرونینگ کامل
-                pruner = tp.pruner.MagnitudePruner(
-                    module,
-                    sparsity=1 - kept_channels / module.out_channels
-                )
-                pruner.step()
-    return model
-
-# Uncomment below to apply hard pruning and recalculate FLOPs
-# model = apply_hard_pruning(model, state_dict)
-# model = model.to(device)
-# flops, params = get_model_complexity_info(model, (3, img_height, img_width), as_strings=True, print_per_layer_stat=True)
-# print(f'Hard Pruned FLOPs: {flops}')
-# print(f'Hard Pruned Parameters: {params}')
 
 # Freeze all parameters except layer4 and fc
 for param in model.parameters():
