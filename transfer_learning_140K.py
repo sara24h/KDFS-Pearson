@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torchvision import transforms, models
+from torchvision import transforms
 from torch.amp import autocast, GradScaler
 from PIL import Image
 import argparse
@@ -12,11 +12,12 @@ import random
 import matplotlib.pyplot as plt
 import numpy as np
 from IPython.display import Image as IPImage, display
-from thop import profile  # استفاده از thop به جای ptflops
+from thop import profile
+from model.student.ResNet_sparse import ResNet_50_sparse_rvf10k, SoftMaskedConv2d
 from data.dataset import FaceDataset, Dataset_selector
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Train a ResNet50 model for fake vs real face classification.')
+    parser = argparse.ArgumentParser(description='Transfer learning with pruned ResNet50 model.')
     parser.add_argument('--dataset_mode', type=str, required=True, choices=['hardfake', 'rvf10k', '140k'],
                         help='Dataset to use: hardfake, rvf10k, or 140k')
     parser.add_argument('--data_dir', type=str, required=True,
@@ -109,8 +110,13 @@ train_loader = dataset.loader_train
 val_loader = dataset.loader_val
 test_loader = dataset.loader_test
 
-# Initialize model
-model = models.resnet50()
+# Initialize student model
+model = ResNet_50_sparse_rvf10k(
+    gumbel_start_temperature=1.0,  # مقادیر پیش‌فرض، در صورت نیاز تنظیم کنید
+    gumbel_end_temperature=0.1,
+    num_epochs=epochs
+)
+model.dataset_type = 'rvf10k'
 num_ftrs = model.fc.in_features
 model.fc = nn.Linear(num_ftrs, 1)
 
@@ -118,11 +124,12 @@ model.fc = nn.Linear(num_ftrs, 1)
 checkpoint_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt'
 if not os.path.exists(checkpoint_path):
     raise FileNotFoundError(f"Checkpoint file {checkpoint_path} not found!")
-checkpoint = torch.load(checkpoint_path, map_location='cpu')
+checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
 
 if 'student' in checkpoint:
     state_dict = checkpoint['student']
-    filtered_state_dict = {k: v for k, v in state_dict.items() if not k.endswith('mask_weight') and k not in ['feat1.weight', 'feat1.bias', 'feat2.weight', 'feat2.bias', 'feat3.weight', 'feat3.bias', 'feat4.weight', 'feat4.bias']}
+    # فیلتر کردن کلیدهای اضافی
+    filtered_state_dict = {k: v for k, v in state_dict.items() if not k.startswith('feat')}
     missing, unexpected = model.load_state_dict(filtered_state_dict, strict=False)
     print(f"Missing keys: {missing}")
     print(f"Unexpected keys: {unexpected}")
@@ -130,86 +137,33 @@ else:
     raise KeyError("'student' key not found in checkpoint")
 
 model = model.to(device)
+model.ticket = True  # فعال کردن حالت پرونینگ
 
-# Calculate active parameters considering pruning masks
+# Calculate active parameters
 total_params = 0
-for name, param in model.named_parameters():
-    if '.weight' in name:  # فقط وزن‌ها را بررسی می‌کنیم، نه بایاس‌ها
-        mask_key = name.replace('.weight', '.mask_weight')
-        if mask_key in state_dict:
-            mask = state_dict[mask_key].to(device)
-            # تبدیل ماسک به باینری (0 یا 1) در صورت غیرباینری بودن
-            mask = (mask != 0).float()
-            # بررسی تطابق ابعاد
-            if mask.shape[0] == param.shape[0]:  # اطمینان از تطابق تعداد کانال‌های خروجی
-                # برای لایه‌های کانولوشنی، ماسک را به ابعاد وزن گسترش می‌دهیم
-                if len(param.shape) == 4:  # [out_channels, in_channels, kernel_h, kernel_w]
-                    mask = mask.view(-1, 1, 1, 1)  # [out_channels, 1, 1, 1]
-                elif len(param.shape) == 2:  # برای لایه fc
-                    mask = mask.view(-1, 1)  # [out_features, 1]
-                try:
-                    active_params = (param * mask).abs().count_nonzero().item()
-                except RuntimeError as e:
-                    print(f"Error in applying mask for {name}: {e}")
-                    active_params = param.count_nonzero().item()
-            else:
-                print(f"Dimension mismatch for {name}: param.shape={param.shape}, mask.shape={mask.shape}")
-                active_params = param.count_nonzero().item()
+for name, module in model.named_modules():
+    if isinstance(module, SoftMaskedConv2d):
+        weight = module.weight
+        mask = module.mask
+        if mask is not None:
+            # تبدیل ماسک به باینری با استفاده از argmax
+            mask_binary = torch.argmax(mask, dim=1).squeeze(1).squeeze(1)
+            mask_binary = (mask_binary != 0).float()
+            mask_binary = mask_binary.view(-1, 1, 1, 1)
+            active_params = (weight * mask_binary).abs().count_nonzero().item()
+            print(f"{name}.weight: {int(mask_binary.sum().item())}/{weight.shape[0]} channels kept")
         else:
-            active_params = param.count_nonzero().item()
-    else:
-        active_params = param.count_nonzero().item()
-    total_params += active_params
+            active_params = weight.count_nonzero().item()
+        total_params += active_params
+    elif isinstance(module, nn.Linear):
+        total_params += module.weight.count_nonzero().item()
+        if module.bias is not None:
+            total_params += module.bias.count_nonzero().item()
 print(f"Active Parameters: {total_params / 1e6:.2f} M")
 
-# Custom FLOPs calculation considering pruning masks
-def calculate_flops_pruned(model, state_dict, input_shape=(3, 256, 256)):
-    flops = 0
-    input_size = input_shape[1:]  # (height, width)
-
-    def conv_flops(module, input_size, mask=None):
-        if isinstance(module, nn.Conv2d):
-            in_channels = module.in_channels
-            out_channels = module.out_channels
-            if mask is not None:
-                out_channels = int(mask.sum().item())  # تعداد کانال‌های فعال
-            k_h, k_w = module.kernel_size
-            stride_h, stride_w = module.stride
-            padding_h, padding_w = module.padding
-            groups = module.groups
-
-            # محاسبه اندازه خروجی
-            out_h = (input_size[0] + 2 * padding_h - k_h) // stride_h + 1
-            out_w = (input_size[1] + 2 * padding_w - k_w) // stride_w + 1
-
-            # FLOPs برای یک لایه کانولوشنی
-            flops_per_instance = k_h * k_w * in_channels * out_channels / groups
-            total_flops = flops_per_instance * out_h * out_w
-            return total_flops, (out_h, out_w)
-        return 0, input_size
-
-    for name, module in model.named_modules():
-        mask_key = f"{name}.mask_weight"
-        mask = state_dict.get(mask_key, None)
-        if mask is not None:
-            mask = (mask != 0).float()  # تبدیل به باینری
-        if isinstance(module, nn.Conv2d):
-            module_flops, input_size = conv_flops(module, input_size, mask)
-            flops += module_flops
-        elif isinstance(module, nn.Linear):
-            # FLOPs برای لایه fc
-            mask_key = 'fc.mask_weight'
-            if mask_key in state_dict:
-                mask = state_dict[mask_key].to(device)
-                mask = (mask != 0).float()
-                out_features = int(mask.sum().item())
-            else:
-                out_features = module.out_features
-            flops += module.in_features * out_features
-    return flops / 1e9  # تبدیل به گیگا فلاپس
-
-flops = calculate_flops_pruned(model, state_dict, input_shape=(3, img_height, img_width))
-print(f"Pruned FLOPs: {flops:.2f} GMac")
+# Calculate FLOPs using model's get_flops method
+flops = model.get_flops(input_shape=(3, img_height, img_width))
+print(f"Pruned FLOPs: {flops / 1e9:.2f} GMac")
 
 # Freeze all parameters except layer4 and fc
 for param in model.parameters():
@@ -219,7 +173,7 @@ for param in model.layer4.parameters():
 for param in model.fc.parameters():
     param.requires_grad = True
 
-# Initialize optimizer with configurable weight decay and learning rates
+# Initialize optimizer
 optimizer = optim.Adam([
     {'params': model.layer4.parameters(), 'lr': lr_layer4},
     {'params': model.fc.parameters(), 'lr': lr}
@@ -239,6 +193,7 @@ best_model_path = os.path.join(teacher_dir, 'teacher_model_best.pth')
 
 for epoch in range(epochs):
     model.train()
+    model.ticket = True
     running_loss = 0.0
     correct_train = 0
     total_train = 0
@@ -246,7 +201,8 @@ for epoch in range(epochs):
         images, labels = images.to(device), labels.to(device).float()
         optimizer.zero_grad()
         with torch.amp.autocast('cuda', enabled=device.type == 'cuda'):
-            outputs = model(images).squeeze(1)
+            outputs, _ = model(images)
+            outputs = outputs.squeeze(1)
             loss = criterion(outputs, labels)
         if device.type == 'cuda':
             scaler.scale(loss).backward()
@@ -268,6 +224,7 @@ for epoch in range(epochs):
 
     # Validation
     model.eval()
+    model.ticket = True
     val_loss = 0.0
     correct_val = 0
     total_val = 0
@@ -275,7 +232,8 @@ for epoch in range(epochs):
         for images, labels in val_loader:
             images, labels = images.to(device), labels.to(device).float()
             with torch.amp.autocast('cuda', enabled=device.type == 'cuda'):
-                outputs = model(images).squeeze(1)
+                outputs, _ = model(images)
+                outputs = outputs.squeeze(1)
                 loss = criterion(outputs, labels)
             val_loss += loss.item()
             preds = (torch.sigmoid(outputs) > 0.5).float()
@@ -325,6 +283,7 @@ print(f'Saved final model at epoch {epochs}')
 
 # Test evaluation
 model.eval()
+model.ticket = True
 test_loss = 0.0
 correct = 0
 total = 0
@@ -332,7 +291,8 @@ with torch.no_grad():
     for images, labels in test_loader:
         images, labels = images.to(device), labels.to(device).float()
         with torch.amp.autocast('cuda', enabled=device.type == 'cuda'):
-            outputs = model(images).squeeze(1)
+            outputs, _ = model(images)
+            outputs = outputs.squeeze(1)
             loss = criterion(outputs, labels)
         test_loss += loss.item()
         preds = (torch.sigmoid(outputs) > 0.5).float()
@@ -367,7 +327,8 @@ with torch.no_grad():
         image = Image.open(img_path).convert('RGB')
         image_transformed = transform_test(image).unsqueeze(0).to(device)
         with torch.amp.autocast('cuda', enabled=device.type == 'cuda'):
-            output = model(image_transformed).squeeze(1)
+            output, _ = model(image_transformed)
+            output = output.squeeze(1)
         prob = torch.sigmoid(output).item()
         predicted_label = 'real' if prob > 0.5 else 'fake'
         
