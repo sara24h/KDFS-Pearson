@@ -81,15 +81,20 @@ def apply_pruning_to_state_dict(state_dict, masks, layer_names):
         if name in layer_names:
             # پیدا کردن ماسک مربوطه
             mask = masks[mask_idx]
-            selected_channels = torch.argmax(mask, dim=1).squeeze(1).squeeze(1)
-            indices = selected_channels.nonzero(as_tuple=True)[0]
+            # اگر ماسک تک‌بعدی است، مستقیماً از آن استفاده می‌کنیم
+            if mask.dim() == 1:
+                indices = mask.nonzero(as_tuple=True)[0]
+            else:
+                # اگر ماسک چند‌بعدی است (مثل [C, 1] یا [C, 1, 1])
+                indices = torch.argmax(mask, dim=0).nonzero(as_tuple=True)[0]
             
             # برای وزن‌های conv (شکل: [out_channels, in_channels, k, k])
             if "conv" in name and "weight" in name:
                 pruned_param = param[indices]
                 # برای لایه‌های conv2 و conv3، ورودی‌ها نیز باید فیلتر شوند
                 if "conv2" in name or "conv3" in name:
-                    prev_indices = masks[mask_idx-1].nonzero(as_tuple=True)[0]
+                    prev_mask = masks[mask_idx-1]
+                    prev_indices = prev_mask.nonzero(as_tuple=True)[0] if prev_mask.dim() == 1 else torch.argmax(prev_mask, dim=0).nonzero(as_tuple=True)[0]
                     pruned_param = pruned_param[:, prev_indices]
                 pruned_state_dict[name] = pruned_param
                 mask_idx += 1
@@ -126,7 +131,7 @@ def main():
     ckpt_student = torch.load(args.checkpoint_path, map_location="cpu")
     student.load_state_dict(ckpt_student["student"])
     mask_weights = [m.mask_weight for m in student.mask_modules]
-    masks = [torch.argmax(mask_weight, dim=1).squeeze(1).squeeze(1) for mask_weight in mask_weights]
+    masks = [mask_weight if mask_weight.dim() == 1 else torch.argmax(mask_weight, dim=0).squeeze() for mask_weight in mask_weights]
 
     # بررسی تعداد کانال‌های حفظ‌شده
     layer_names = [f"layer{i}.{j}.conv{k}.weight" for i in range(1, 5) for j in range([3, 4, 6, 3][i-1]) for k in range(1, 4)]
