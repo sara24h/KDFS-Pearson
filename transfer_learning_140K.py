@@ -161,15 +161,16 @@ def count_parameters(model, state_dict):
                 mask = state_dict[mask_key].to(device)
                 print(f"{mask_key} shape: {mask.shape}, Sample values: {mask.flatten()[:10]}")
                 if len(mask.shape) >= 2:
-                    mask_binary = torch.argmax(mask, dim=1).float().view(-1, 1, 1, 1)
+                    mask_binary = torch.argmax(mask, dim=1).float()
                     if mask_binary.shape[0] == weight.shape[0]:
-                        active_count = (weight * mask_binary).abs().count_nonzero().item()
+                        active_channels = int(mask_binary.sum().item())
+                        active_count = active_channels * weight.shape[1] * weight.shape[2] * weight.shape[3]
                         total_count = weight.numel()
                         trainable_count = active_count if weight.requires_grad else 0
                         active_params += active_count
                         total_params += total_count
                         trainable_params += trainable_count
-                        print(f"{name}.weight: {int(mask_binary.sum().item())}/{weight.shape[0]} channels kept")
+                        print(f"{name}.weight: {active_channels}/{weight.shape[0]} channels kept")
                     else:
                         print(f"Dimension mismatch: mask_binary {mask_binary.shape[0]} vs weight {weight.shape[0]} for {name}")
                         active_params += weight.count_nonzero().item()
@@ -206,9 +207,10 @@ print(f"Total Parameters: {total_params / 1e6:.2f} M")
 print(f"Trainable Parameters: {trainable_params / 1e6:.2f} M")
 print(f"Active Parameters: {active_params / 1e6:.2f} M")
 
-# محاسبه فلاپس با thop و اعمال ماسک‌ها
+# محاسبه فلاپس با اعمال ماسک‌ها
 def count_flops(model, input_size, state_dict):
     flops = 0
+    h, w = input_size[2], input_size[3]
     for name, module in model.named_modules():
         if isinstance(module, SoftMaskedConv2d):
             weight = module.weight
@@ -219,13 +221,20 @@ def count_flops(model, input_size, state_dict):
                     active_channels = int(torch.argmax(mask, dim=1).sum().item())
                     if active_channels > 0:
                         # محاسبه فلاپس برای کانال‌های فعال
-                        flops += active_channels * weight.shape[1] * weight.shape[2] * weight.shape[3] * input_size[2] * input_size[3]
+                        flops += active_channels * weight.shape[1] * weight.shape[2] * weight.shape[3] * h * w * 2
+                        # به‌روزرسانی اندازه تصویر پس از هر لایه
+                        if 'conv3' in name or 'downsample' in name:
+                            h //= 2
+                            w //= 2
             else:
-                flops += weight.shape[0] * weight.shape[1] * weight.shape[2] * weight.shape[3] * input_size[2] * input_size[3]
+                flops += weight.shape[0] * weight.shape[1] * weight.shape[2] * weight.shape[3] * h * w * 2
+                if 'conv3' in name or 'downsample' in name:
+                    h //= 2
+                    w //= 2
         elif isinstance(module, nn.Linear):
-            flops += module.weight.numel()
+            flops += module.weight.numel() * 2
             if module.bias is not None:
-                flops += module.bias.numel()
+                flops += module.bias.numel() * 2
     
     return flops
 
