@@ -15,7 +15,6 @@ from IPython.display import Image as IPImage, display
 from thop import profile
 
 # فرض می‌کنیم این کلاس‌ها در فایل‌های جداگانه تعریف شده‌اند
-# در صورت نیاز، مسیر درست را وارد کنید
 from model.student.ResNet_sparse import ResNet_50_sparse_rvf10k, SoftMaskedConv2d
 from data.dataset import FaceDataset, Dataset_selector
 
@@ -119,9 +118,9 @@ model = ResNet_50_sparse_rvf10k(
     gumbel_end_temperature=0.1,
     num_epochs=epochs
 )
-model.dataset_type = dataset_mode  # تنظیم dataset_type به دیتاست انتخاب‌شده
+model.dataset_type = dataset_mode
 num_ftrs = model.fc.in_features
-model.fc = nn.Linear(num_ftrs, 1)  # تنظیم برای طبقه‌بندی باینری
+model.fc = nn.Linear(num_ftrs, 1)
 
 # Load checkpoint
 checkpoint_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt'
@@ -139,7 +138,7 @@ else:
     raise KeyError("'student' key not found in checkpoint")
 
 model = model.to(device)
-model.ticket = True  # فعال کردن حالت پرونینگ
+model.ticket = True
 
 # Freeze all parameters except layer4 and fc
 for param in model.parameters():
@@ -149,13 +148,9 @@ for param in model.layer4.parameters():
 for param in model.fc.parameters():
     param.requires_grad = True
 
-# محاسبه تعداد پارامترها
-total_params_all = sum(p.numel() for p in model.parameters())
-print(f"Total Parameters: {total_params_all / 1e6:.2f} M")
-trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print(f"Trainable Parameters: {trainable_params / 1e6:.2f} M")
-
-# محاسبه پارامترهای فعال (با اعمال ماسک)
+# محاسبه تعداد پارامترها با اعمال ماسک‌ها
+total_params_all = 0
+trainable_params = 0
 active_params = 0
 for name, module in model.named_modules():
     if isinstance(module, SoftMaskedConv2d):
@@ -168,32 +163,59 @@ for name, module in model.named_modules():
                 mask_binary = torch.argmax(mask, dim=1).float().view(-1, 1, 1, 1)
                 if mask_binary.shape[0] == weight.shape[0]:
                     active_params += (weight * mask_binary).abs().count_nonzero().item()
+                    total_params_all += weight.numel()
+                    if weight.requires_grad:
+                        trainable_params += (weight * mask_binary).abs().count_nonzero().item()
                     print(f"{name}.weight: {int(mask_binary.sum().item())}/{weight.shape[0]} channels kept")
                 else:
                     print(f"Dimension mismatch: mask_binary {mask_binary.shape[0]} vs weight {weight.shape[0]} for {name}")
                     active_params += weight.count_nonzero().item()
+                    total_params_all += weight.numel()
+                    if weight.requires_grad:
+                        trainable_params += weight.count_nonzero().item()
             else:
                 print(f"Unexpected mask shape for {mask_key}: {mask.shape}")
                 active_params += weight.count_nonzero().item()
+                total_params_all += weight.numel()
+                if weight.requires_grad:
+                    trainable_params += weight.count_nonzero().item()
         else:
             print(f"{name}.weight: No mask available, using all {weight.shape[0]} channels")
             active_params += weight.count_nonzero().item()
+            total_params_all += weight.numel()
+            if weight.requires_grad:
+                trainable_params += weight.count_nonzero().item()
     elif isinstance(module, nn.Linear):
         active_params += module.weight.count_nonzero().item()
+        total_params_all += module.weight.numel()
+        if module.weight.requires_grad:
+            trainable_params += module.weight.count_nonzero().item()
         if module.bias is not None:
             active_params += module.bias.count_nonzero().item()
+            total_params_all += module.bias.numel()
+            if module.bias.requires_grad:
+                trainable_params += module.bias.count_nonzero().item()
+    elif isinstance(module, nn.BatchNorm2d):
+        total_params_all += module.weight.numel() + module.bias.numel()
+        if module.weight.requires_grad:
+            trainable_params += module.weight.count_nonzero().item()
+            trainable_params += module.bias.count_nonzero().item()
+
+print(f"Total Parameters: {total_params_all / 1e6:.2f} M")
+print(f"Trainable Parameters: {trainable_params / 1e6:.2f} M")
 print(f"Active Parameters: {active_params / 1e6:.2f} M")
 
-# محاسبه فلاپس
-try:
-    flops = model.get_flops()  # بدون input_shape
-    print(f"Pruned FLOPs: {flops / 1e9:.2f} GMac")
-except (AttributeError, TypeError) as e:
-    print(f"Warning: get_flops method failed ({e}), using thop for FLOPs calculation")
-    input_tensor = torch.randn(1, 3, img_height, img_width).to(device)
-    flops, params = profile(model, inputs=(input_tensor,), verbose=False)
-    print(f"THOP FLOPs: {flops / 1e9:.2f} GMac")
-    print(f"THOP Parameters: {params / 1e6:.2f} M")
+# محاسبه فلاپس با thop
+input_tensor_rvf10k = torch.randn(1, 3, 256, 256).to(device)
+flops_rvf10k, params_rvf10k = profile(model, inputs=(input_tensor_rvf10k,), verbose=False)
+print(f"rvf10k FLOPs: {flops_rvf10k / 1e9:.2f} GMac")
+print(f"rvf10k Parameters: {params_rvf10k / 1e6:.2f} M")
+
+if dataset_mode == 'hardfake':
+    input_tensor_hardfake = torch.randn(1, 3, 300, 300).to(device)
+    flops_hardfake, params_hardfake = profile(model, inputs=(input_tensor_hardfake,), verbose=False)
+    print(f"hardfake FLOPs: {flops_hardfake / 1e9:.2f} GMac")
+    print(f"hardfake Parameters: {params_hardfake / 1e6:.2f} M")
 
 # بررسی requires_grad برای اطمینان
 print("\nChecking requires_grad status:")
@@ -341,10 +363,10 @@ inverse_label_map = {0: 'fake', 1: 'real'}
 with torch.no_grad():
     for i, idx in enumerate(random_indices):
         row = test_data.iloc[idx]
-        img_column = 'path' if dataset_mode == '140k' else 'images_id'
+        img_column = 'images_id'  # برای rvf10k
         img_name = row[img_column]
         label = row['label']
-        img_path = os.path.join(data_dir, 'real_vs_fake', 'real-vs-fake', img_name) if dataset_mode == '140k' else os.path.join(data_dir, img_name)
+        img_path = os.path.join(data_dir, img_name)  # مسیر اصلاح‌شده برای rvf10k
         
         if not os.path.exists(img_path):
             print(f"Warning: Image not found: {img_path}")
