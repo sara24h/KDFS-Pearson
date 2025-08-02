@@ -139,6 +139,10 @@ else:
 model = model.to(device)
 model.ticket = True  # فعال کردن حالت پرونینگ
 
+total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"Trainable Parameters: {total_params / 1e6:.2f} M")
+total_params_all = sum(p.numel() for p in model.parameters())
+print(f"Total Parameters: {total_params_all / 1e6:.2f} M")
 # Calculate active parameters
 total_params = 0
 for name, module in model.named_modules():
