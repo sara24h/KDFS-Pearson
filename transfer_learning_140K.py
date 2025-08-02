@@ -13,6 +13,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from IPython.display import Image as IPImage, display
 from thop import profile
+
+# فرض می‌کنیم این کلاس‌ها در فایل‌های جداگانه تعریف شده‌اند
+# در صورت نیاز، مسیر درست را وارد کنید
 from model.student.ResNet_sparse import ResNet_50_sparse_rvf10k, SoftMaskedConv2d
 from data.dataset import FaceDataset, Dataset_selector
 
@@ -112,13 +115,13 @@ test_loader = dataset.loader_test
 
 # Initialize student model
 model = ResNet_50_sparse_rvf10k(
-    gumbel_start_temperature=1.0,  # مقادیر پیش‌فرض، در صورت نیاز تنظیم کنید
+    gumbel_start_temperature=1.0,
     gumbel_end_temperature=0.1,
     num_epochs=epochs
 )
-model.dataset_type = 'rvf10k'
+model.dataset_type = dataset_mode  # تنظیم dataset_type به دیتاست انتخاب‌شده
 num_ftrs = model.fc.in_features
-model.fc = nn.Linear(num_ftrs, 1)
+model.fc = nn.Linear(num_ftrs, 1)  # تنظیم برای طبقه‌بندی باینری
 
 # Load checkpoint
 checkpoint_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt'
@@ -128,7 +131,6 @@ checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
 
 if 'student' in checkpoint:
     state_dict = checkpoint['student']
-    # فیلتر کردن کلیدهای اضافی
     filtered_state_dict = {k: v for k, v in state_dict.items() if not k.startswith('feat')}
     missing, unexpected = model.load_state_dict(filtered_state_dict, strict=False)
     print(f"Missing keys: {missing}")
@@ -139,49 +141,50 @@ else:
 model = model.to(device)
 model.ticket = True  # فعال کردن حالت پرونینگ
 
-total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print(f"Trainable Parameters: {total_params / 1e6:.2f} M")
+# Freeze all parameters except layer4 and fc
+for param in model.parameters():
+    param.requires_grad = False
+for param in model.layer4.parameters():
+    param.requires_grad = True
+for param in model.fc.parameters():
+    param.requires_grad = True
+
+# محاسبه تعداد پارامترها
 total_params_all = sum(p.numel() for p in model.parameters())
 print(f"Total Parameters: {total_params_all / 1e6:.2f} M")
-# Calculate active parameters
-total_params = 0
+trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"Trainable Parameters: {trainable_params / 1e6:.2f} M")
+
+# محاسبه پارامترهای فعال (با اعمال ماسک)
+active_params = 0
 for name, module in model.named_modules():
     if isinstance(module, SoftMaskedConv2d):
         weight = module.weight
         mask_key = name + '.mask_weight'
         if mask_key in state_dict:
-            mask = state_dict[mask_key].to(device)  # انتقال ماسک به دستگاه
-            # بررسی ساختار ماسک
+            mask = state_dict[mask_key].to(device)
             print(f"{mask_key} shape: {mask.shape}, Sample values: {mask.flatten()[:10]}")
-            # تبدیل ماسک به باینری
-            if len(mask.shape) >= 2:  # فرض می‌کنیم ماسک‌ها دوبعدی هستند (مانند [64, 2, 1, 1])
-                mask_binary = torch.argmax(mask, dim=1)  # انتخاب کانال‌های فعال
-                mask_binary = (mask_binary != 0).float()  # تبدیل به 0/1
-                mask_binary = mask_binary.view(-1, 1, 1, 1)  # تنظیم شکل برای ضرب
-                # بررسی تطابق ابعاد
-                if mask_binary.shape[0] != weight.shape[0]:
-                    print(f"Dimension mismatch: mask_binary {mask_binary.shape[0]} vs weight {weight.shape[0]} for {name}")
-                    active_params = weight.count_nonzero().item()  # استفاده از تمام وزن‌ها
-                else:
-                    active_params = (weight * mask_binary).abs().count_nonzero().item()
+            if len(mask.shape) >= 2:
+                mask_binary = torch.argmax(mask, dim=1).float().view(-1, 1, 1, 1)
+                if mask_binary.shape[0] == weight.shape[0]:
+                    active_params += (weight * mask_binary).abs().count_nonzero().item()
                     print(f"{name}.weight: {int(mask_binary.sum().item())}/{weight.shape[0]} channels kept")
+                else:
+                    print(f"Dimension mismatch: mask_binary {mask_binary.shape[0]} vs weight {weight.shape[0]} for {name}")
+                    active_params += weight.count_nonzero().item()
             else:
-                # اگر ماسک تک‌بعدی است
                 print(f"Unexpected mask shape for {mask_key}: {mask.shape}")
-                mask_binary = (mask > 0.5).float().view(-1, 1, 1, 1)
-                active_params = (weight * mask_binary).abs().count_nonzero().item()
-                print(f"{name}.weight: {int(mask_binary.sum().item())}/{weight.shape[0]} channels kept")
+                active_params += weight.count_nonzero().item()
         else:
             print(f"{name}.weight: No mask available, using all {weight.shape[0]} channels")
-            active_params = weight.count_nonzero().item()
-        total_params += active_params
+            active_params += weight.count_nonzero().item()
     elif isinstance(module, nn.Linear):
-        total_params += module.weight.count_nonzero().item()
+        active_params += module.weight.count_nonzero().item()
         if module.bias is not None:
-            total_params += module.bias.count_nonzero().item()
-print(f"Active Parameters: {total_params / 1e6:.2f} M")
+            active_params += module.bias.count_nonzero().item()
+print(f"Active Parameters: {active_params / 1e6:.2f} M")
 
-# Calculate FLOPs
+# محاسبه فلاپس
 try:
     flops = model.get_flops()  # بدون input_shape
     print(f"Pruned FLOPs: {flops / 1e9:.2f} GMac")
@@ -192,13 +195,10 @@ except (AttributeError, TypeError) as e:
     print(f"THOP FLOPs: {flops / 1e9:.2f} GMac")
     print(f"THOP Parameters: {params / 1e6:.2f} M")
 
-# Freeze all parameters except layer4 and fc
-for param in model.parameters():
-    param.requires_grad = False
-for param in model.layer4.parameters():
-    param.requires_grad = True
-for param in model.fc.parameters():
-    param.requires_grad = True
+# بررسی requires_grad برای اطمینان
+print("\nChecking requires_grad status:")
+for name, param in model.named_parameters():
+    print(f"{name}: requires_grad = {param.requires_grad}")
 
 # Initialize optimizer
 optimizer = optim.Adam([
@@ -325,7 +325,8 @@ with torch.no_grad():
         preds = (torch.sigmoid(outputs) > 0.5).float()
         correct += (preds == labels).sum().item()
         total += labels.size(0)
-print(f'Test Loss: {test_loss / len(test_loader):.4f}, Test Accuracy: {100 * correct / total:.2f}%')
+test_accuracy = 100 * correct / total
+print(f'Test Loss: {test_loss / len(test_loader):.4f}, Test Accuracy: {test_accuracy:.2f}%')
 
 # Visualize test samples
 test_data = dataset.loader_test.dataset.data
@@ -370,3 +371,4 @@ plt.tight_layout()
 file_path = os.path.join(teacher_dir, 'test_samples.png')
 plt.savefig(file_path)
 display(IPImage(filename=file_path))
+plt.close()
