@@ -80,21 +80,21 @@ def apply_pruning_to_state_dict(state_dict, masks, layer_names):
     for name, param in state_dict.items():
         if name in layer_names:
             # پیدا کردن ماسک مربوطه
-            mask = masks[mask_idx]
-            # اگر ماسک تک‌بعدی است، مستقیماً از آن استفاده می‌کنیم
+            mask = masks[mask_idx].to("cpu")  # اطمینان از اینکه ماسک روی CPU است
+            # اگر ماسک تک‌بعدی است
             if mask.dim() == 1:
-                indices = mask.nonzero(as_tuple=True)[0]
+                indices = mask.nonzero(as_tuple=True)[0].to("cpu")
             else:
                 # اگر ماسک چند‌بعدی است (مثل [C, 1] یا [C, 1, 1])
-                indices = torch.argmax(mask, dim=0).nonzero(as_tuple=True)[0]
+                indices = torch.argmax(mask, dim=0).nonzero(as_tuple=True)[0].to("cpu")
             
             # برای وزن‌های conv (شکل: [out_channels, in_channels, k, k])
             if "conv" in name and "weight" in name:
                 pruned_param = param[indices]
                 # برای لایه‌های conv2 و conv3، ورودی‌ها نیز باید فیلتر شوند
                 if "conv2" in name or "conv3" in name:
-                    prev_mask = masks[mask_idx-1]
-                    prev_indices = prev_mask.nonzero(as_tuple=True)[0] if prev_mask.dim() == 1 else torch.argmax(prev_mask, dim=0).nonzero(as_tuple=True)[0]
+                    prev_mask = masks[mask_idx-1].to("cpu")
+                    prev_indices = prev_mask.nonzero(as_tuple=True)[0].to("cpu") if prev_mask.dim() == 1 else torch.argmax(prev_mask, dim=0).nonzero(as_tuple=True)[0].to("cpu")
                     pruned_param = pruned_param[:, prev_indices]
                 pruned_state_dict[name] = pruned_param
                 mask_idx += 1
@@ -130,13 +130,22 @@ def main():
     student = ResNet_50_sparse_rvf10k().to(device)
     ckpt_student = torch.load(args.checkpoint_path, map_location="cpu")
     student.load_state_dict(ckpt_student["student"])
-    mask_weights = [m.mask_weight for m in student.mask_modules]
-    masks = [mask_weight if mask_weight.dim() == 1 else torch.argmax(mask_weight, dim=0).squeeze() for mask_weight in mask_weights]
+    mask_weights = [m.mask_weight.to("cpu") for m in student.mask_modules]  # اطمینان از اینکه ماسک‌ها روی CPU هستند
+    
+    # استخراج شاخص‌های کانال‌های حفظ‌شده
+    masks = []
+    for mask_weight in mask_weights:
+        if mask_weight.dim() == 1:
+            masks.append(mask_weight)
+        else:
+            masks.append(torch.argmax(mask_weight, dim=0).squeeze())
 
     # بررسی تعداد کانال‌های حفظ‌شده
     layer_names = [f"layer{i}.{j}.conv{k}.weight" for i in range(1, 5) for j in range([3, 4, 6, 3][i-1]) for k in range(1, 4)]
     for i, mask in enumerate(masks):
-        print(f"Mask {i} ({layer_names[i]}): {mask.sum().item()}/{mask.numel()} channels kept")
+        kept_channels = mask.sum().item() if mask.dim() == 1 else mask.numel()
+        total_channels = mask.numel()
+        print(f"Mask {i} ({layer_names[i]}): {kept_channels}/{total_channels} channels kept")
 
     # بارگذاری مدل هرس‌شده
     model = ResNet_50_pruned_hardfakevsreal(masks=masks).to(device)
