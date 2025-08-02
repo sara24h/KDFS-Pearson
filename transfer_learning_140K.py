@@ -149,75 +149,101 @@ for param in model.fc.parameters():
     param.requires_grad = True
 
 # محاسبه تعداد پارامترها با اعمال ماسک‌ها
-total_params_all = 0
-trainable_params = 0
-active_params = 0
-for name, module in model.named_modules():
-    if isinstance(module, SoftMaskedConv2d):
-        weight = module.weight
-        mask_key = name + '.mask_weight'
-        if mask_key in state_dict:
-            mask = state_dict[mask_key].to(device)
-            print(f"{mask_key} shape: {mask.shape}, Sample values: {mask.flatten()[:10]}")
-            if len(mask.shape) >= 2:
-                mask_binary = torch.argmax(mask, dim=1).float().view(-1, 1, 1, 1)
-                if mask_binary.shape[0] == weight.shape[0]:
-                    active_params += (weight * mask_binary).abs().count_nonzero().item()
-                    total_params_all += weight.numel()
-                    if weight.requires_grad:
-                        trainable_params += (weight * mask_binary).abs().count_nonzero().item()
-                    print(f"{name}.weight: {int(mask_binary.sum().item())}/{weight.shape[0]} channels kept")
+def count_parameters(model, state_dict):
+    total_params = 0
+    trainable_params = 0
+    active_params = 0
+    for name, module in model.named_modules():
+        if isinstance(module, SoftMaskedConv2d):
+            weight = module.weight
+            mask_key = name + '.mask_weight'
+            if mask_key in state_dict:
+                mask = state_dict[mask_key].to(device)
+                print(f"{mask_key} shape: {mask.shape}, Sample values: {mask.flatten()[:10]}")
+                if len(mask.shape) >= 2:
+                    mask_binary = torch.argmax(mask, dim=1).float().view(-1, 1, 1, 1)
+                    if mask_binary.shape[0] == weight.shape[0]:
+                        active_count = (weight * mask_binary).abs().count_nonzero().item()
+                        total_count = weight.numel()
+                        trainable_count = active_count if weight.requires_grad else 0
+                        active_params += active_count
+                        total_params += total_count
+                        trainable_params += trainable_count
+                        print(f"{name}.weight: {int(mask_binary.sum().item())}/{weight.shape[0]} channels kept")
+                    else:
+                        print(f"Dimension mismatch: mask_binary {mask_binary.shape[0]} vs weight {weight.shape[0]} for {name}")
+                        active_params += weight.count_nonzero().item()
+                        total_params += weight.numel()
+                        trainable_params += weight.count_nonzero().item() if weight.requires_grad else 0
                 else:
-                    print(f"Dimension mismatch: mask_binary {mask_binary.shape[0]} vs weight {weight.shape[0]} for {name}")
+                    print(f"Unexpected mask shape for {mask_key}: {mask.shape}")
                     active_params += weight.count_nonzero().item()
-                    total_params_all += weight.numel()
-                    if weight.requires_grad:
-                        trainable_params += weight.count_nonzero().item()
+                    total_params += weight.numel()
+                    trainable_params += weight.count_nonzero().item() if weight.requires_grad else 0
             else:
-                print(f"Unexpected mask shape for {mask_key}: {mask.shape}")
+                print(f"{name}.weight: No mask available, using all {weight.shape[0]} channels")
                 active_params += weight.count_nonzero().item()
-                total_params_all += weight.numel()
-                if weight.requires_grad:
-                    trainable_params += weight.count_nonzero().item()
-        else:
-            print(f"{name}.weight: No mask available, using all {weight.shape[0]} channels")
-            active_params += weight.count_nonzero().item()
-            total_params_all += weight.numel()
-            if weight.requires_grad:
-                trainable_params += weight.count_nonzero().item()
-    elif isinstance(module, nn.Linear):
-        active_params += module.weight.count_nonzero().item()
-        total_params_all += module.weight.numel()
-        if module.weight.requires_grad:
-            trainable_params += module.weight.count_nonzero().item()
-        if module.bias is not None:
-            active_params += module.bias.count_nonzero().item()
-            total_params_all += module.bias.numel()
-            if module.bias.requires_grad:
-                trainable_params += module.bias.count_nonzero().item()
-    elif isinstance(module, nn.BatchNorm2d):
-        total_params_all += module.weight.numel() + module.bias.numel()
-        if module.weight.requires_grad:
-            trainable_params += module.weight.count_nonzero().item()
-            trainable_params += module.bias.count_nonzero().item()
+                total_params += weight.numel()
+                trainable_params += weight.count_nonzero().item() if weight.requires_grad else 0
+        elif isinstance(module, nn.Linear):
+            active_params += module.weight.count_nonzero().item()
+            total_params += module.weight.numel()
+            trainable_params += module.weight.count_nonzero().item() if module.weight.requires_grad else 0
+            if module.bias is not None:
+                active_params += module.bias.count_nonzero().item()
+                total_params += module.bias.numel()
+                trainable_params += module.bias.count_nonzero().item() if module.bias.requires_grad else 0
+        elif isinstance(module, nn.BatchNorm2d):
+            total_params += module.weight.numel() + module.bias.numel()
+            active_params += module.weight.count_nonzero().item() + module.bias.count_nonzero().item()
+            if module.weight.requires_grad:
+                trainable_params += module.weight.count_nonzero().item() + module.bias.count_nonzero().item()
+    
+    return total_params, trainable_params, active_params
 
-print(f"Total Parameters: {total_params_all / 1e6:.2f} M")
+total_params, trainable_params, active_params = count_parameters(model, state_dict)
+print(f"Total Parameters: {total_params / 1e6:.2f} M")
 print(f"Trainable Parameters: {trainable_params / 1e6:.2f} M")
 print(f"Active Parameters: {active_params / 1e6:.2f} M")
 
-# محاسبه فلاپس با thop
+# محاسبه فلاپس با thop و اعمال ماسک‌ها
+def count_flops(model, input_size, state_dict):
+    flops = 0
+    for name, module in model.named_modules():
+        if isinstance(module, SoftMaskedConv2d):
+            weight = module.weight
+            mask_key = name + '.mask_weight'
+            if mask_key in state_dict:
+                mask = state_dict[mask_key].to(device)
+                if len(mask.shape) >= 2 and mask.shape[0] == weight.shape[0]:
+                    active_channels = int(torch.argmax(mask, dim=1).sum().item())
+                    if active_channels > 0:
+                        # محاسبه فلاپس برای کانال‌های فعال
+                        flops += active_channels * weight.shape[1] * weight.shape[2] * weight.shape[3] * input_size[2] * input_size[3]
+            else:
+                flops += weight.shape[0] * weight.shape[1] * weight.shape[2] * weight.shape[3] * input_size[2] * input_size[3]
+        elif isinstance(module, nn.Linear):
+            flops += module.weight.numel()
+            if module.bias is not None:
+                flops += module.bias.numel()
+    
+    return flops
+
 input_tensor_rvf10k = torch.randn(1, 3, 256, 256).to(device)
-flops_rvf10k, params_rvf10k = profile(model, inputs=(input_tensor_rvf10k,), verbose=False)
+flops_rvf10k = count_flops(model, (1, 3, 256, 256), state_dict)
 print(f"rvf10k FLOPs: {flops_rvf10k / 1e9:.2f} GMac")
-print(f"rvf10k Parameters: {params_rvf10k / 1e6:.2f} M")
 
 if dataset_mode == 'hardfake':
     input_tensor_hardfake = torch.randn(1, 3, 300, 300).to(device)
-    flops_hardfake, params_hardfake = profile(model, inputs=(input_tensor_hardfake,), verbose=False)
+    flops_hardfake = count_flops(model, (1, 3, 300, 300), state_dict)
     print(f"hardfake FLOPs: {flops_hardfake / 1e9:.2f} GMac")
-    print(f"hardfake Parameters: {params_hardfake / 1e6:.2f} M")
 
-# بررسی requires_grad برای اطمینان
+# محاسبه فلاپس با thop برای مقایسه
+flops_thop_rvf10k, params_thop_rvf10k = profile(model, inputs=(input_tensor_rvf10k,), verbose=False)
+print(f"thop rvf10k FLOPs: {flops_thop_rvf10k / 1e9:.2f} GMac")
+print(f"thop rvf10k Parameters: {params_thop_rvf10k / 1e6:.2f} M")
+
+# بررسی requires_grad
 print("\nChecking requires_grad status:")
 for name, param in model.named_parameters():
     print(f"{name}: requires_grad = {param.requires_grad}")
@@ -366,7 +392,7 @@ with torch.no_grad():
         img_column = 'images_id'  # برای rvf10k
         img_name = row[img_column]
         label = row['label']
-        img_path = os.path.join(data_dir, img_name)  # مسیر اصلاح‌شده برای rvf10k
+        img_path = os.path.join(data_dir, img_name)
         
         if not os.path.exists(img_path):
             print(f"Warning: Image not found: {img_path}")
