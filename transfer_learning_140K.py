@@ -146,6 +146,7 @@ for name, module in model.named_modules():
         weight = module.weight
         mask = module.mask
         if mask is not None:
+            mask = mask.to(device)  # انتقال ماسک به دستگاه
             # تبدیل ماسک به باینری با استفاده از argmax
             mask_binary = torch.argmax(mask, dim=1).squeeze(1).squeeze(1)
             mask_binary = (mask_binary != 0).float()
@@ -154,6 +155,7 @@ for name, module in model.named_modules():
             print(f"{name}.weight: {int(mask_binary.sum().item())}/{weight.shape[0]} channels kept")
         else:
             active_params = weight.count_nonzero().item()
+            print(f"{name}.weight: No mask available, using all {weight.shape[0]} channels")
         total_params += active_params
     elif isinstance(module, nn.Linear):
         total_params += module.weight.count_nonzero().item()
@@ -162,8 +164,15 @@ for name, module in model.named_modules():
 print(f"Active Parameters: {total_params / 1e6:.2f} M")
 
 # Calculate FLOPs using model's get_flops method
-flops = model.get_flops(input_shape=(3, img_height, img_width))
-print(f"Pruned FLOPs: {flops / 1e9:.2f} GMac")
+try:
+    flops = model.get_flops(input_shape=(3, img_height, img_width))
+    print(f"Pruned FLOPs: {flops / 1e9:.2f} GMac")
+except AttributeError:
+    print("Warning: get_flops method not found, using thop for FLOPs calculation")
+    input_tensor = torch.randn(1, 3, img_height, img_width).to(device)
+    flops, params = profile(model, inputs=(input_tensor,))
+    print(f"THOP FLOPs: {flops / 1e9:.2f} GMac")
+    print(f"THOP Parameters: {params / 1e6:.2f} M")
 
 # Freeze all parameters except layer4 and fc
 for param in model.parameters():
