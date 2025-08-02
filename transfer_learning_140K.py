@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from IPython.display import Image as IPImage, display
 from ptflops import get_model_complexity_info
-from data.dataset import FaceDataset, Dataset_selector
+import torch_pruning as tp  # برای پرونینگ سخت‌افزاری
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train a ResNet50 model for fake vs real face classification.')
@@ -116,7 +116,9 @@ model.fc = nn.Linear(num_ftrs, 1)
 
 # Load checkpoint
 checkpoint_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt'
-checkpoint = torch.load(checkpoint_path)
+if not os.path.exists(checkpoint_path):
+    raise FileNotFoundError(f"Checkpoint file {checkpoint_path} not found!")
+checkpoint = torch.load(checkpoint_path, map_location='cpu')
 
 if 'student' in checkpoint:
     state_dict = checkpoint['student']
@@ -128,6 +130,82 @@ else:
     raise KeyError("'student' key not found in checkpoint")
 
 model = model.to(device)
+
+# Calculate active parameters considering pruning masks
+total_params = 0
+for name, param in model.named_parameters():
+    mask_key = name.replace('.weight', '.mask_weight').replace('.bias', '.mask_weight')
+    if mask_key in state_dict:
+        mask = state_dict[mask_key].to(device)
+        active_params = (param * mask).count_nonzero().item()
+    else:
+        active_params = param.count_nonzero().item()
+    total_params += active_params
+print(f"Active Parameters: {total_params / 1e6:.2f} M")
+
+# Custom FLOPs calculation considering pruning masks
+def calculate_flops_pruned(model, state_dict, input_shape=(3, 256, 256)):
+    flops = 0
+    input_size = input_shape[1:]  # (height, width)
+
+    def conv_flops(module, input_size, mask=None):
+        if isinstance(module, nn.Conv2d):
+            in_channels = module.in_channels
+            out_channels = module.out_channels
+            if mask is not None:
+                out_channels = int(mask.sum().item())  # تعداد کانال‌های فعال
+            k_h, k_w = module.kernel_size
+            stride_h, stride_w = module.stride
+            padding_h, padding_w = module.padding
+            groups = module.groups
+
+            # محاسبه اندازه خروجی
+            out_h = (input_size[0] + 2 * padding_h - k_h) // stride_h + 1
+            out_w = (input_size[1] + 2 * padding_w - k_w) // stride_w + 1
+
+            # FLOPs برای یک لایه کانولوشنی
+            flops_per_instance = k_h * k_w * in_channels * out_channels / groups
+            total_flops = flops_per_instance * out_h * out_w
+            return total_flops, (out_h, out_w)
+        return 0, input_size
+
+    for name, module in model.named_modules():
+        mask_key = f"{name}.mask_weight"
+        mask = state_dict.get(mask_key, None)
+        if isinstance(module, nn.Conv2d):
+            module_flops, input_size = conv_flops(module, input_size, mask)
+            flops += module_flops
+        elif isinstance(module, nn.Linear):
+            # FLOPs برای لایه fc
+            flops += module.in_features * module.out_features
+    return flops / 1e9  # تبدیل به گیگا فلاپس
+
+flops = calculate_flops_pruned(model, state_dict, input_shape=(3, img_height, img_width))
+print(f"Pruned FLOPs: {flops:.2f} GMac")
+
+# Apply hard pruning (optional, for comparison)
+def apply_hard_pruning(model, state_dict):
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Conv2d):
+            mask_key = f"{name}.mask_weight"
+            if mask_key in state_dict:
+                mask = state_dict[mask_key]
+                kept_channels = int(mask.sum().item())
+                if kept_channels == 0:
+                    continue  # جلوگیری از پرونینگ کامل
+                pruner = tp.pruner.MagnitudePruner(
+                    module,
+                    sparsity=1 - kept_channels / module.out_channels
+                )
+                pruner.step()
+    return model
+
+# Uncomment below to apply hard pruning and recalculate FLOPs
+# model = apply_hard_pruning(model, state_dict)
+# model = model.to(device)
+# flops, params = get_model_complexity_info(model, (3, img_height, img_width), as_strings=True, print_per_layer_stat=True)
+# print(f'Hard Pruned FLOPs: {flops}')
+# print(f'Hard Pruned Parameters: {params}')
 
 # Freeze all parameters except layer4 and fc
 for param in model.parameters():
@@ -300,12 +378,3 @@ plt.tight_layout()
 file_path = os.path.join(teacher_dir, 'test_samples.png')
 plt.savefig(file_path)
 display(IPImage(filename=file_path))
-
-# Unfreeze all parameters for FLOPs calculation
-for param in model.parameters():
-    param.requires_grad = True
-
-# Calculate FLOPs and parameters
-flops, params = get_model_complexity_info(model, (3, img_height, img_width), as_strings=True, print_per_layer_stat=True)
-print(f'FLOPs: {flops}')
-print(f'Parameters: {params}')
