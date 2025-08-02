@@ -16,7 +16,7 @@ def get_data_loaders(data_dir, batch_size, img_size=224):
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     
-    # بررسی وجود دایرکتوری دیتاست
+    # به‌روزرسانی مسیر دیتاست
     train_dir = f"{data_dir}/train"
     val_dir = f"{data_dir}/valid"
     if not os.path.exists(train_dir):
@@ -117,7 +117,7 @@ def apply_pruning_to_state_dict(state_dict, masks, layer_names):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--checkpoint_path', type=str, required=True, help='Path to the student checkpoint')
-    parser.add_argument('--data_dir', type=str, required=True, help='Path to rvf10k dataset')
+    parser.add_argument('--data_dir', type=str, required=True, help='Path to dataset')
     parser.add_argument('--dataset_mode', type=str, default='rvf10k', help='Dataset mode')
     parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
     parser.add_argument('--lr', type=float, default=0.0005, help='Learning rate for most layers')
@@ -141,10 +141,14 @@ def main():
     masks = []
     for mask_weight in mask_weights:
         if mask_weight.dim() > 1:
-            mask = torch.any(mask_weight != 0, dim=(1, 2, 3)).float()
+            # برای ماسک‌های چند‌بعدی، به صورت باینری تبدیل می‌کنیم
+            mask = (mask_weight.squeeze() != 0).float()
+            indices = mask.nonzero(as_tuple=True)[0]
+            binary_mask = torch.zeros(mask_weight.size(0), device="cpu")
+            binary_mask[indices] = 1
+            masks.append(binary_mask)
         else:
-            mask = mask_weight
-        masks.append(mask)
+            masks.append(mask_weight)
 
     # بررسی تعداد کانال‌های نگه‌داری‌شده
     layer_names = [f"layer{i}.{j}.conv{k}.weight" for i in range(1, 5) for j in range([3, 4, 6, 3][i-1]) for k in range(1, 4)]
