@@ -12,7 +12,7 @@ import random
 import matplotlib.pyplot as plt
 import numpy as np
 from IPython.display import Image as IPImage, display
-from ptflops import get_model_complexity_info
+from thop import profile  # استفاده از thop به جای ptflops
 from data.dataset import FaceDataset, Dataset_selector
 
 def parse_args():
@@ -27,15 +27,15 @@ def parse_args():
                         help='Height of input images (default: 300 for hardfake, 256 for rvf10k/140k)')
     parser.add_argument('--img_width', type=int, default=300,
                         help='Width of input images (default: 300 for hardfake, 256 for rvf10k/140k)')
-    parser.add_argument('--batch_size', type=int, default=32,
+    parser.add_argument('--batch_size', type=int, default=64,
                         help='Batch size for training')
-    parser.add_argument('--epochs', type=int, default=15,
+    parser.add_argument('--epochs', type=int, default=3,
                         help='Number of training epochs')
-    parser.add_argument('--lr', type=float, default=0.0001,
+    parser.add_argument('--lr', type=float, default=0.0005,
                         help='Learning rate for the optimizer (fc layer)')
-    parser.add_argument('--lr_layer4', type=float, default=1e-5,
+    parser.add_argument('--lr_layer4', type=float, default=1e-4,
                         help='Learning rate for layer4 parameters')
-    parser.add_argument('--weight_decay', type=float, default=1e-4,
+    parser.add_argument('--weight_decay', type=float, default=5e-5,
                         help='Weight decay for the optimizer')
     return parser.parse_args()
 
@@ -134,10 +134,29 @@ model = model.to(device)
 # Calculate active parameters considering pruning masks
 total_params = 0
 for name, param in model.named_parameters():
-    mask_key = name.replace('.weight', '.mask_weight').replace('.bias', '.mask_weight')
-    if mask_key in state_dict:
-        mask = state_dict[mask_key].to(device)
-        active_params = (param * mask).count_nonzero().item()
+    if '.weight' in name:  # فقط وزن‌ها را بررسی می‌کنیم، نه بایاس‌ها
+        mask_key = name.replace('.weight', '.mask_weight')
+        if mask_key in state_dict:
+            mask = state_dict[mask_key].to(device)
+            # تبدیل ماسک به باینری (0 یا 1) در صورت غیرباینری بودن
+            mask = (mask != 0).float()
+            # بررسی تطابق ابعاد
+            if mask.shape[0] == param.shape[0]:  # اطمینان از تطابق تعداد کانال‌های خروجی
+                # برای لایه‌های کانولوشنی، ماسک را به ابعاد وزن گسترش می‌دهیم
+                if len(param.shape) == 4:  # [out_channels, in_channels, kernel_h, kernel_w]
+                    mask = mask.view(-1, 1, 1, 1)  # [out_channels, 1, 1, 1]
+                elif len(param.shape) == 2:  # برای لایه fc
+                    mask = mask.view(-1, 1)  # [out_features, 1]
+                try:
+                    active_params = (param * mask).abs().count_nonzero().item()
+                except RuntimeError as e:
+                    print(f"Error in applying mask for {name}: {e}")
+                    active_params = param.count_nonzero().item()
+            else:
+                print(f"Dimension mismatch for {name}: param.shape={param.shape}, mask.shape={mask.shape}")
+                active_params = param.count_nonzero().item()
+        else:
+            active_params = param.count_nonzero().item()
     else:
         active_params = param.count_nonzero().item()
     total_params += active_params
@@ -172,12 +191,21 @@ def calculate_flops_pruned(model, state_dict, input_shape=(3, 256, 256)):
     for name, module in model.named_modules():
         mask_key = f"{name}.mask_weight"
         mask = state_dict.get(mask_key, None)
+        if mask is not None:
+            mask = (mask != 0).float()  # تبدیل به باینری
         if isinstance(module, nn.Conv2d):
             module_flops, input_size = conv_flops(module, input_size, mask)
             flops += module_flops
         elif isinstance(module, nn.Linear):
             # FLOPs برای لایه fc
-            flops += module.in_features * module.out_features
+            mask_key = 'fc.mask_weight'
+            if mask_key in state_dict:
+                mask = state_dict[mask_key].to(device)
+                mask = (mask != 0).float()
+                out_features = int(mask.sum().item())
+            else:
+                out_features = module.out_features
+            flops += module.in_features * out_features
     return flops / 1e9  # تبدیل به گیگا فلاپس
 
 flops = calculate_flops_pruned(model, state_dict, input_shape=(3, img_height, img_width))
