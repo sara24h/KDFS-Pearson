@@ -15,14 +15,61 @@ from IPython.display import Image as IPImage, display
 from ptflops import get_model_complexity_info
 from data.dataset import FaceDataset, Dataset_selector
 
+# تعریف مدل سفارشی برای پشتیبانی از feat1 تا feat4 و هرس
+class SparseResNet50(nn.Module):
+    def __init__(self, num_classes=1):
+        super(SparseResNet50, self).__init__()
+        # بارگذاری ResNet-50 بدون وزن‌های از پیش آموزش‌دیده
+        self.resnet = models.resnet50(weights=None)
+        
+        # اضافه کردن لایه‌های feat1 تا feat4 (کانولوشنی 1x1)
+        self.feat1 = nn.Conv2d(256, 256, kernel_size=1, stride=1, padding=0)
+        self.feat2 = nn.Conv2d(512, 512, kernel_size=1, stride=1, padding=0)
+        self.feat3 = nn.Conv2d(1024, 1024, kernel_size=1, stride=1, padding=0)
+        self.feat4 = nn.Conv2d(2048, 2048, kernel_size=1, stride=1, padding=0)
+        
+        # تنظیم لایه نهایی برای طبقه‌بندی باینری
+        num_ftrs = self.resnet.fc.in_features
+        self.resnet.fc = nn.Linear(num_ftrs, num_classes)
+        
+        # ثبت ماسک‌ها برای هرس
+        for name, module in self.named_modules():
+            if isinstance(module, nn.Conv2d):
+                self.register_buffer(f"{name}.mask_weight", torch.ones_like(module.weight))
+    
+    def forward(self, x):
+        for name, module in self.named_modules():
+            if isinstance(module, nn.Conv2d) and hasattr(self, f"{name}.mask_weight"):
+                module.weight.data = module.weight.data * getattr(self, f"{name}.mask_weight")
+        
+        # فوروارد ResNet با لایه‌های feat
+        x = self.resnet.conv1(x)
+        x = self.resnet.bn1(x)
+        x = self.resnet.relu(x)
+        x = self.resnet.maxpool(x)
+        x = self.resnet.layer1(x)
+        x = self.feat1(x)  # اضافه کردن feat1 بعد از layer1
+        x = self.resnet.layer2(x)
+        x = self.feat2(x)  # اضافه کردن feat2 بعد از layer2
+        x = self.resnet.layer3(x)
+        x = self.feat3(x)  # اضافه کردن feat3 بعد از layer3
+        x = self.resnet.layer4(x)
+        x = self.feat4(x)  # اضافه کردن feat4 بعد از layer4
+        x = self.resnet.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.resnet.fc(x)
+        return x
+
 def parse_args():
-    parser = argparse.ArgumentParser(description='Train a ResNet50 model with single output for fake vs real face classification.')
+    parser = argparse.ArgumentParser(description='Train a sparse ResNet50 model with single output for fake vs real face classification.')
     parser.add_argument('--dataset_mode', type=str, required=True, choices=['hardfake', 'rvf10k', '140k'],
                         help='Dataset to use: hardfake, rvf10k, or 140k')
     parser.add_argument('--data_dir', type=str, required=True,
                         help='Path to the dataset directory containing images and CSV file(s)')
     parser.add_argument('--teacher_dir', type=str, default='teacher_dir',
                         help='Directory to save the trained model and outputs')
+    parser.add_argument('--student_model_path', type=str, default='/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt',
+                        help='Path to the student model weights (ResNet_50_sparse_best.pt)')
     parser.add_argument('--img_height', type=int, default=300,
                         help='Height of input images (default: 300 for hardfake, 256 for rvf10k and 140k)')
     parser.add_argument('--img_width', type=int, default=300,
@@ -38,12 +85,13 @@ def parse_args():
 args = parse_args()
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-torch.backends.cudnn.benchmark = True  
+torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.enabled = True
 
 dataset_mode = args.dataset_mode
 data_dir = args.data_dir
 teacher_dir = args.teacher_dir
+student_model_path = args.student_model_path
 img_height = 256 if dataset_mode in ['rvf10k', '140k'] else args.img_height
 img_width = 256 if dataset_mode in ['rvf10k', '140k'] else args.img_width
 batch_size = args.batch_size
@@ -55,6 +103,8 @@ if not os.path.exists(data_dir):
     raise FileNotFoundError(f"Directory {data_dir} not found!")
 if not os.path.exists(teacher_dir):
     os.makedirs(teacher_dir)
+if not os.path.exists(student_model_path):
+    raise FileNotFoundError(f"Student model file {student_model_path} not found!")
 
 if dataset_mode == 'hardfake':
     dataset = Dataset_selector(
@@ -99,24 +149,34 @@ train_loader = dataset.loader_train
 val_loader = dataset.loader_val
 test_loader = dataset.loader_test
 
-model = models.resnet50(weights='IMAGENET1K_V1')
-num_ftrs = model.fc.in_features
-model.fc = nn.Linear(num_ftrs, 1)
-model = model.to(device)
+model = SparseResNet50(num_classes=1).to(device)
+state_dict = torch.load(student_model_path, map_location=device)
+model.load_state_dict(state_dict)
 
-print("Skipping torch.compile due to incompatible GPU (Tesla P100, CUDA capability 6.0)")
-
+# تنظیم لایه‌های قابل آموزش برای fine-tuning
 for param in model.parameters():
     param.requires_grad = False
-for param in model.layer4.parameters():
+for param in model.resnet.layer4.parameters():
     param.requires_grad = True
-for param in model.fc.parameters():
+for param in model.resnet.fc.parameters():
+    param.requires_grad = True
+for param in model.feat1.parameters():
+    param.requires_grad = True
+for param in model.feat2.parameters():
+    param.requires_grad = True
+for param in model.feat3.parameters():
+    param.requires_grad = True
+for param in model.feat4.parameters():
     param.requires_grad = True
 
 criterion = nn.BCEWithLogitsLoss()
 optimizer = optim.Adam([
-    {'params': model.layer4.parameters(), 'lr': 1e-5},
-    {'params': model.fc.parameters(), 'lr': lr}
+    {'params': model.resnet.layer4.parameters(), 'lr': 1e-5},
+    {'params': model.resnet.fc.parameters(), 'lr': lr},
+    {'params': model.feat1.parameters(), 'lr': lr},
+    {'params': model.feat2.parameters(), 'lr': lr},
+    {'params': model.feat3.parameters(), 'lr': lr},
+    {'params': model.feat4.parameters(), 'lr': lr}
 ], weight_decay=1e-4)
 
 scaler = torch.amp.GradScaler('cuda') if device.type == 'cuda' else None
@@ -239,10 +299,8 @@ file_path = os.path.join(teacher_dir, 'test_samples.png')
 plt.savefig(file_path)
 display(IPImage(filename=file_path))
 
-
 for param in model.parameters():
     param.requires_grad = True
-
 
 flops, params = get_model_complexity_info(model, (3, img_height, img_width), as_strings=True, print_per_layer_stat=True)
 print('FLOPs:', flops)
