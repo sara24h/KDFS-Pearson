@@ -5,18 +5,27 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from thop import profile
 import argparse
+import os
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
 from model.student.ResNet_sparse import ResNet_50_sparse_rvf10k
 
-def get_data_loaders(data_dir, batch_size, img_size=256):
+def get_data_loaders(data_dir, batch_size, img_size=224):
     transform = transforms.Compose([
         transforms.Resize((img_size, img_size)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     
-    train_dataset = datasets.ImageFolder(root=f"{data_dir}/train", transform=transform)
-    val_dataset = datasets.ImageFolder(root=f"{data_dir}/valid", transform=transform)
+    # بررسی وجود دایرکتوری دیتاست
+    train_dir = f"{data_dir}/train"
+    val_dir = f"{data_dir}/valid"
+    if not os.path.exists(train_dir):
+        raise FileNotFoundError(f"پوشه آموزشی {train_dir} وجود ندارد. لطفاً مسیر دیتاست را بررسی کنید.")
+    if not os.path.exists(val_dir):
+        raise FileNotFoundError(f"پوشه اعتبارسنجی {val_dir} وجود ندارد. لطفاً مسیر دیتاست را بررسی کنید.")
+    
+    train_dataset = datasets.ImageFolder(root=train_dir, transform=transform)
+    val_dataset = datasets.ImageFolder(root=val_dir, transform=transform)
     
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
@@ -61,12 +70,12 @@ def train(model, train_loader, val_loader, criterion, optimizer, device, epochs,
         
         avg_train_loss = running_loss / len(train_loader)
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
-        print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_acc:.2f}%")
+        print(f"دوره {epoch+1}/{epochs}, خطای آموزشی: {avg_train_loss:.4f}, خطای اعتبارسنجی: {val_loss:.4f}, دقت اعتبارسنجی: {val_acc:.2f}%")
         
         if val_acc > best_acc:
             best_acc = val_acc
             torch.save(model.state_dict(), best_model_path)
-            print(f"Saved best model with accuracy {val_acc:.2f}% at {best_model_path}")
+            print(f"بهترین مدل با دقت {val_acc:.2f}% در {best_model_path} ذخیره شد")
     
     return best_acc
 
@@ -78,20 +87,19 @@ def apply_pruning_to_state_dict(state_dict, masks, layer_names):
     mask_idx = 0
     
     for name, param in state_dict.items():
-        # فقط کلیدهایی که در مدل هرس‌شده انتظار می‌روند را نگه می‌داریم
+        # فقط کلیدهای مورد انتظار را پردازش می‌کنیم
         if name in layer_names or "bn" in name or "fc" in name:
             if name in layer_names:
                 mask = masks[mask_idx].to("cpu")
-                # استخراج شاخص‌های کانال‌های حفظ‌شده
-                indices = mask.nonzero(as_tuple=True)[0].to("cpu") if mask.dim() == 1 else mask.nonzero(as_tuple=True)[0].to("cpu")
+                indices = mask.nonzero(as_tuple=True)[0].to("cpu")
                 
-                # برای وزن‌های conv
+                # پردازش وزن‌های کانولوشنی
                 if "conv" in name and "weight" in name:
                     pruned_param = param[indices]
                     # برای conv2 و conv3، ورودی‌ها را با ماسک لایه قبلی فیلتر می‌کنیم
                     if "conv2" in name or "conv3" in name:
                         prev_mask = masks[mask_idx-1].to("cpu")
-                        prev_indices = prev_mask.nonzero(as_tuple=True)[0].to("cpu") if prev_mask.dim() == 1 else prev_mask.nonzero(as_tuple=True)[0].to("cpu")
+                        prev_indices = prev_mask.nonzero(as_tuple=True)[0].to("cpu")
                         pruned_param = pruned_param[:, prev_indices]
                     pruned_state_dict[name] = pruned_param
                     mask_idx += 1
@@ -121,7 +129,7 @@ def main():
 
     # تنظیم دستگاه
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    print(f"استفاده از دستگاه: {device}")
 
     # بارگذاری مدل دانش‌آموز برای استخراج ماسک‌ها
     student = ResNet_50_sparse_rvf10k().to(device)
@@ -129,24 +137,21 @@ def main():
     student.load_state_dict(ckpt_student["student"])
     mask_weights = [m.mask_weight.to("cpu") for m in student.mask_modules]
     
-    # استخراج شاخص‌های کانال‌های حفظ‌شده
+    # استخراج شاخص‌های کانال‌های نگه‌داری‌شده
     masks = []
     for mask_weight in mask_weights:
-        if mask_weight.dim() == 1:
-            masks.append(mask_weight)
+        if mask_weight.dim() > 1:
+            mask = torch.any(mask_weight != 0, dim=(1, 2, 3)).float()
         else:
-            # برای ماسک‌های چند‌بعدی، از nonzero به جای argmax استفاده می‌کنیم
-            indices = mask_weight.squeeze().nonzero(as_tuple=True)[0]
-            mask = torch.zeros(mask_weight.size(0), device="cpu")
-            mask[indices] = 1
-            masks.append(mask)
+            mask = mask_weight
+        masks.append(mask)
 
-    # بررسی تعداد کانال‌های حفظ‌شده
+    # بررسی تعداد کانال‌های نگه‌داری‌شده
     layer_names = [f"layer{i}.{j}.conv{k}.weight" for i in range(1, 5) for j in range([3, 4, 6, 3][i-1]) for k in range(1, 4)]
     for i, mask in enumerate(masks):
         kept_channels = mask.sum().item()
         total_channels = mask.numel()
-        print(f"Mask {i} ({layer_names[i]}): {kept_channels}/{total_channels} channels kept")
+        print(f"ماسک {i} ({layer_names[i]}): {kept_channels}/{total_channels} کانال نگه‌داری‌شده")
 
     # بارگذاری مدل هرس‌شده
     model = ResNet_50_pruned_hardfakevsreal(masks=masks).to(device)
@@ -165,13 +170,13 @@ def main():
     model.load_state_dict(model_dict, strict=True)
 
     # محاسبه فلاپس و پارامترها
-    input = torch.rand([1, 3, 256, 256]).to(device)
+    input = torch.rand([1, 3, 224, 224]).to(device)
     flops, params = profile(model, inputs=(input,), verbose=True)
     print(f"FLOPs: {flops / (10**9):.2f} GMac")
     print(f"Parameters: {params / (10**6):.2f} M")
 
     # بارگذاری داده‌ها
-    train_loader, val_loader = get_data_loaders(args.data_dir, args.batch_size, img_size=256)
+    train_loader, val_loader = get_data_loaders(args.data_dir, args.batch_size, img_size=224)
 
     # تعریف معیار و بهینه‌ساز
     criterion = nn.CrossEntropyLoss()
@@ -185,7 +190,7 @@ def main():
     
     # ارزیابی نهایی روی مجموعه تست
     final_loss, final_acc = evaluate(model, val_loader, criterion, device)
-    print(f"Final Test Loss: {final_loss:.4f}, Final Test Accuracy: {final_acc:.2f}%")
+    print(f"خطای تست نهایی: {final_loss:.4f}, دقت تست نهایی: {final_acc:.2f}%")
 
     # ذخیره نتایج
     with open(f"{args.output_dir}/results.txt", "w") as f:
