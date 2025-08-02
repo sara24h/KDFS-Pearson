@@ -146,20 +146,27 @@ for name, module in model.named_modules():
         weight = module.weight
         mask_key = name + '.mask_weight'
         if mask_key in state_dict:
-            mask = state_dict[mask_key].to(device)  # استفاده از state_dict برای ماسک
+            mask = state_dict[mask_key].to(device)  # انتقال ماسک به دستگاه
             # بررسی ساختار ماسک
             print(f"{mask_key} shape: {mask.shape}, Sample values: {mask.flatten()[:10]}")
             # تبدیل ماسک به باینری
-            if len(mask.shape) == 2:  # فرض می‌کنیم ماسک‌ها دو بعدی هستند (مانند [128, 2])
-                mask_binary = torch.argmax(mask, dim=1)
-                mask_binary = (mask_binary != 0).float()
-                mask_binary = mask_binary.view(-1, 1, 1, 1)
+            if len(mask.shape) >= 2:  # فرض می‌کنیم ماسک‌ها دوبعدی هستند (مانند [64, 2, 1, 1])
+                mask_binary = torch.argmax(mask, dim=1)  # انتخاب کانال‌های فعال
+                mask_binary = (mask_binary != 0).float()  # تبدیل به 0/1
+                mask_binary = mask_binary.view(-1, 1, 1, 1)  # تنظیم شکل برای ضرب
+                # بررسی تطابق ابعاد
+                if mask_binary.shape[0] != weight.shape[0]:
+                    print(f"Dimension mismatch: mask_binary {mask_binary.shape[0]} vs weight {weight.shape[0]} for {name}")
+                    active_params = weight.count_nonzero().item()  # استفاده از تمام وزن‌ها
+                else:
+                    active_params = (weight * mask_binary).abs().count_nonzero().item()
+                    print(f"{name}.weight: {int(mask_binary.sum().item())}/{weight.shape[0]} channels kept")
             else:
-                # اگر ماسک تک‌بعدی یا ساختار دیگری دارد
-                mask_binary = (mask > 0.5).float()
-                mask_binary = mask_binary.view(-1, 1, 1, 1)
-            active_params = (weight * mask_binary).abs().count_nonzero().item()
-            print(f"{name}.weight: {int(mask_binary.sum().item())}/{weight.shape[0]} channels kept")
+                # اگر ماسک تک‌بعدی است
+                print(f"Unexpected mask shape for {mask_key}: {mask.shape}")
+                mask_binary = (mask > 0.5).float().view(-1, 1, 1, 1)
+                active_params = (weight * mask_binary).abs().count_nonzero().item()
+                print(f"{name}.weight: {int(mask_binary.sum().item())}/{weight.shape[0]} channels kept")
         else:
             print(f"{name}.weight: No mask available, using all {weight.shape[0]} channels")
             active_params = weight.count_nonzero().item()
@@ -174,8 +181,8 @@ print(f"Active Parameters: {total_params / 1e6:.2f} M")
 try:
     flops = model.get_flops()  # بدون input_shape
     print(f"Pruned FLOPs: {flops / 1e9:.2f} GMac")
-except (AttributeError, TypeError):
-    print("Warning: get_flops method not found or failed, using thop for FLOPs calculation")
+except (AttributeError, TypeError) as e:
+    print(f"Warning: get_flops method failed ({e}), using thop for FLOPs calculation")
     input_tensor = torch.randn(1, 3, img_height, img_width).to(device)
     flops, params = profile(model, inputs=(input_tensor,), verbose=False)
     print(f"THOP FLOPs: {flops / 1e9:.2f} GMac")
