@@ -9,14 +9,12 @@ from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
 from model.student.ResNet_sparse import ResNet_50_sparse_rvf10k
 
 def get_data_loaders(data_dir, batch_size, img_size=256):
-    # تعریف تبدیل‌های داده
     transform = transforms.Compose([
         transforms.Resize((img_size, img_size)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
     
-    # بارگذاری مجموعه‌داده rvf10k
     train_dataset = datasets.ImageFolder(root=f"{data_dir}/train", transform=transform)
     val_dataset = datasets.ImageFolder(root=f"{data_dir}/valid", transform=transform)
     
@@ -65,13 +63,46 @@ def train(model, train_loader, val_loader, criterion, optimizer, device, epochs,
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
         print(f"Epoch {epoch+1}/{epochs}, Train Loss: {avg_train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Accuracy: {val_acc:.2f}%")
         
-        # ذخیره بهترین مدل
         if val_acc > best_acc:
             best_acc = val_acc
             torch.save(model.state_dict(), best_model_path)
             print(f"Saved best model with accuracy {val_acc:.2f}% at {best_model_path}")
     
     return best_acc
+
+def apply_pruning_to_state_dict(state_dict, masks, layer_names):
+    """
+    فیلتر کردن وزن‌های state_dict بر اساس ماسک‌های هرس
+    """
+    pruned_state_dict = {}
+    mask_idx = 0
+    
+    for name, param in state_dict.items():
+        if name in layer_names:
+            # پیدا کردن ماسک مربوطه
+            mask = masks[mask_idx]
+            selected_channels = torch.argmax(mask, dim=1).squeeze(1).squeeze(1)
+            indices = selected_channels.nonzero(as_tuple=True)[0]
+            
+            # برای وزن‌های conv (شکل: [out_channels, in_channels, k, k])
+            if "conv" in name and "weight" in name:
+                pruned_param = param[indices]
+                # برای لایه‌های conv2 و conv3، ورودی‌ها نیز باید فیلتر شوند
+                if "conv2" in name or "conv3" in name:
+                    prev_indices = masks[mask_idx-1].nonzero(as_tuple=True)[0]
+                    pruned_param = pruned_param[:, prev_indices]
+                pruned_state_dict[name] = pruned_param
+                mask_idx += 1
+            
+            # برای bn (weight, bias, running_mean, running_var)
+            elif "bn" in name:
+                pruned_state_dict[name] = param[indices]
+            
+        else:
+            # وزن‌هایی که نیازی به هرس ندارند (مثل fc.weight)
+            pruned_state_dict[name] = param
+    
+    return pruned_state_dict
 
 def main():
     parser = argparse.ArgumentParser()
@@ -98,14 +129,19 @@ def main():
     masks = [torch.argmax(mask_weight, dim=1).squeeze(1).squeeze(1) for mask_weight in mask_weights]
 
     # بررسی تعداد کانال‌های حفظ‌شده
+    layer_names = [f"layer{i}.{j}.conv{k}.weight" for i in range(1, 5) for j in range([3, 4, 6, 3][i-1]) for k in range(1, 4)]
     for i, mask in enumerate(masks):
-        print(f"Mask {i}: {mask.sum().item()}/{mask.numel()} channels kept")
+        print(f"Mask {i} ({layer_names[i]}): {mask.sum().item()}/{mask.numel()} channels kept")
 
     # بارگذاری مدل هرس‌شده
     model = ResNet_50_pruned_hardfakevsreal(masks=masks).to(device)
+    
+    # فیلتر کردن state_dict بر اساس ماسک‌ها
+    pruned_state_dict = apply_pruning_to_state_dict(ckpt_student["student"], masks, layer_names)
+    
+    # بارگذاری state_dict هرس‌شده
     model_dict = model.state_dict()
-    state_dict = {k: v for k, v in ckpt_student["student"].items() if k in model_dict}
-    model_dict.update(state_dict)
+    model_dict.update(pruned_state_dict)
     model.load_state_dict(model_dict)
 
     # محاسبه فلاپس و پارامترها
