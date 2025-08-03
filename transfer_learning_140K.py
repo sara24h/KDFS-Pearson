@@ -17,6 +17,7 @@ def prune_weights(state_dict, masks):
     mask_idx = 0
     block_mask_indices = []  # ذخیره اندیس‌های ماسک برای هر بلوک
     current_block = None
+    pruned_channels = {}  # ذخیره تعداد کانال‌های پرون‌شده برای هر لایه
 
     for name, param in state_dict.items():
         print(f"Processing layer: {name}, mask_idx: {mask_idx}, block_mask_indices: {block_mask_indices}, current_block: {current_block}")
@@ -28,9 +29,11 @@ def prune_weights(state_dict, masks):
         # کپی مستقیم لایه‌های conv1 و bn1 (لایه‌های ابتدایی بدون ماسک)
         if 'conv1' in name and 'layer' not in name:
             pruned_state_dict[name] = param
+            pruned_channels[name] = param.shape[0]
             continue
         if 'bn1' in name and 'layer' not in name:
             pruned_state_dict[name] = param
+            pruned_channels[name] = param.shape[0] if 'num_batches_tracked' not in name else 0
             continue
 
         # شناسایی بلوک فعلی (مثل layer1.0, layer1.1, ...)
@@ -47,7 +50,10 @@ def prune_weights(state_dict, masks):
                     raise ValueError(f"mask_idx {mask_idx} out of range for masks with length {len(masks)}")
                 if param.shape[0] != masks[mask_idx].shape[0]:
                     raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[mask_idx].shape[0]}")
-                pruned_state_dict[name] = param[masks[mask_idx] == 1]
+                pruned_param = param[masks[mask_idx] == 1]
+                pruned_state_dict[name] = pruned_param
+                pruned_channels[name] = pruned_param.shape[0]
+                print(f"Pruned {name} to {pruned_param.shape}")
                 block_mask_indices.append(mask_idx)
                 mask_idx += 1
             elif 'conv2' in name:
@@ -55,7 +61,10 @@ def prune_weights(state_dict, masks):
                     raise ValueError(f"mask_idx {mask_idx} out of range for masks with length {len(masks)}")
                 if param.shape[0] != masks[mask_idx].shape[0] or param.shape[1] != masks[mask_idx - 1].shape[0]:
                     raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape}, mask shape {masks[mask_idx].shape[0]}x{masks[mask_idx - 1].shape[0]}")
-                pruned_state_dict[name] = param[masks[mask_idx] == 1][:, masks[mask_idx - 1] == 1]
+                pruned_param = param[masks[mask_idx] == 1][:, masks[mask_idx - 1] == 1]
+                pruned_state_dict[name] = pruned_param
+                pruned_channels[name] = pruned_param.shape[0]
+                print(f"Pruned {name} to {pruned_param.shape}")
                 block_mask_indices.append(mask_idx)
                 mask_idx += 1
             elif 'conv3' in name:
@@ -63,7 +72,10 @@ def prune_weights(state_dict, masks):
                     raise ValueError(f"mask_idx {mask_idx} out of range for masks with length {len(masks)}")
                 if param.shape[0] != masks[mask_idx].shape[0] or param.shape[1] != masks[mask_idx - 1].shape[0]:
                     raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape}, mask shape {masks[mask_idx].shape[0]}x{masks[mask_idx - 1].shape[0]}")
-                pruned_state_dict[name] = param[masks[mask_idx] == 1][:, masks[mask_idx - 1] == 1]
+                pruned_param = param[masks[mask_idx] == 1][:, masks[mask_idx - 1] == 1]
+                pruned_state_dict[name] = pruned_param
+                pruned_channels[name] = pruned_param.shape[0]
+                print(f"Pruned {name} to {pruned_param.shape}")
                 block_mask_indices.append(mask_idx)
                 mask_idx += 1
         # پرون کردن لایه‌های bn و downsample
@@ -87,20 +99,26 @@ def prune_weights(state_dict, masks):
                 raise ValueError(f"Unexpected layer name: {name}")
             # بررسی اینکه آیا param یک تنسور با ابعاد معتبر است
             if 'num_batches_tracked' in name:
-                pruned_state_dict[name] = param  # کپی مستقیم num_batches_tracked
+                pruned_state_dict[name] = param
+                pruned_channels[name] = 0
             else:
                 if prev_mask_idx >= len(masks):
                     raise ValueError(f"prev_mask_idx {prev_mask_idx} out of range for masks with length {len(masks)}")
                 if param.shape[0] != masks[prev_mask_idx].shape[0]:
                     raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[prev_mask_idx].shape[0]}")
-                pruned_state_dict[name] = param[masks[prev_mask_idx] == 1]
+                pruned_param = param[masks[prev_mask_idx] == 1]
+                pruned_state_dict[name] = pruned_param
+                pruned_channels[name] = pruned_param.shape[0]
+                print(f"Pruned {name} to {pruned_param.shape}")
         # کپی مستقیم سایر لایه‌ها (مثل fc)
         else:
             pruned_state_dict[name] = param
+            pruned_channels[name] = param.shape[0] if len(param.shape) > 0 else 0
+            print(f"Copied {name} with shape {param.shape}")
 
     if mask_idx != len(masks):
         print(f"Warning: mask_idx {mask_idx} does not match total number of masks {len(masks)}")
-    return pruned_state_dict
+    return pruned_state_dict, pruned_channels
 
 # تعریف مدل sparse برای استخراج ماسک‌ها
 sparse_model = ResNet_50_sparse_hardfakevsreal()
@@ -128,7 +146,7 @@ masks = [torch.argmax(mask_weight, dim=1).squeeze(1).squeeze(1) for mask_weight 
 # بررسی تعداد و ابعاد ماسک‌ها
 print(f"Number of masks: {len(masks)}")
 for i, mask in enumerate(masks):
-    print(f"Mask {i} shape: {mask.shape}")
+    print(f"Mask {i} shape: {mask.shape}, kept channels: {(masks[i] == 1).sum().item()}")
 
 # تعریف مدل پرون‌شده
 pruned_model = ResNet_50_pruned_hardfakevsreal(masks=masks)
@@ -136,10 +154,20 @@ pruned_model.dataset_type = 'rvf10k'
 
 # پرون کردن وزن‌ها
 try:
-    pruned_state_dict = prune_weights(checkpoint['student'], masks)
+    pruned_state_dict, pruned_channels = prune_weights(checkpoint['student'], masks)
 except ValueError as e:
     print(f"Error in pruning weights: {e}")
     raise
+
+# چاپ تعداد کانال‌های پرون‌شده برای دیباگ
+print("Pruned channels for each layer:")
+for name, num_channels in pruned_channels.items():
+    print(f"{name}: {num_channels} channels")
+
+# بررسی ابعاد مدل پرون‌شده
+print("Expected shapes in pruned model:")
+for name, param in pruned_model.state_dict().items():
+    print(f"{name}: {param.shape}")
 
 # بارگذاری وزن‌های پرون‌شده به مدل
 missing, unexpected = pruned_model.load_state_dict(pruned_state_dict, strict=True)
