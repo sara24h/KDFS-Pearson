@@ -85,17 +85,18 @@ def adjust_weights_for_pruned_model(sparse_state_dict, pruned_model, masks):
         ('layer3', 6, [256, 256, 1024]),
         ('layer4', 3, [512, 512, 2048]),
     ]
-    mask_idx = 1  # شروع از اندیس 1، زیرا اندیس 0 برای conv1 است
+    mask_idx = 0
     
     # تنظیم وزن‌های conv1
     if 'conv1.weight' in sparse_state_dict:
-        out_mask = masks[0]
+        out_mask = masks[mask_idx]
         pruned_state_dict['conv1.weight'] = sparse_state_dict['conv1.weight'][out_mask]
         print(f"  Adjusted conv1.weight: {pruned_state_dict['conv1.weight'].shape}")
         for bn_param in ['weight', 'bias', 'running_mean', 'running_var']:
             bn_key = f'bn1.{bn_param}'
             if bn_key in sparse_state_dict:
                 pruned_state_dict[bn_key] = sparse_state_dict[bn_key][out_mask]
+        mask_idx += 1
     
     # تنظیم وزن‌های لایه‌های Bottleneck
     for layer_name, num_blocks, channels in layer_patterns:
@@ -107,11 +108,18 @@ def adjust_weights_for_pruned_model(sparse_state_dict, pruned_model, masks):
                     out_mask = masks[mask_idx]
                     out_channels = out_mask.sum().item()
                     
-                    # تنظیم ورودی‌ها برای conv2 و conv3
-                    if conv_idx > 1:
-                        prev_mask = masks[mask_idx - 1]
+                    # تنظیم ورودی‌ها برای conv1, conv2, conv3
+                    if conv_idx == 1:
+                        # برای conv1 در اولین بلوک، ورودی از لایه قبلی (conv1 یا downsample)
+                        if block_idx == 0:
+                            if layer_name == 'layer1':
+                                prev_mask = masks[0]  # ماسک conv1
+                            else:
+                                prev_mask = masks[mask_idx - 3]  # ماسک conv3 از بلوک قبلی
+                        else:
+                            prev_mask = masks[mask_idx - 3]  # ماسک conv3 از بلوک قبلی
                     else:
-                        prev_mask = masks[mask_idx - 3] if block_idx > 0 or layer_name != 'layer1' else slice(None)
+                        prev_mask = masks[mask_idx - 1]  # ماسک لایه قبلی (conv1 یا conv2)
                     
                     # انتخاب وزن‌های فعال
                     weight = sparse_state_dict[conv_key]
@@ -132,7 +140,7 @@ def adjust_weights_for_pruned_model(sparse_state_dict, pruned_model, masks):
                 downsample_key = f"{layer_name}.{block_idx}.downsample.0.weight"
                 if downsample_key in sparse_state_dict:
                     out_mask = masks[mask_idx - 1]  # ماسک conv3
-                    in_mask = masks[mask_idx - 3] if layer_name != 'layer1' else slice(None)
+                    in_mask = masks[0] if layer_name == 'layer1' else masks[mask_idx - 4]  # ماسک conv1 یا conv3 قبلی
                     pruned_state_dict[downsample_key] = sparse_state_dict[downsample_key][out_mask][:, in_mask]
                     for bn_param in ['weight', 'bias', 'running_mean', 'running_var']:
                         bn_key = f"{layer_name}.{block_idx}.downsample.1.{bn_param}"
