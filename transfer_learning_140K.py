@@ -7,7 +7,7 @@ import pickle
 import os
 
 # Import از فایل‌های موجود شما
-from dataset import Dataset_selector
+from data.dataset import Dataset_selector
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
 # یا اگر از student model استفاده می‌کنید:
 # from model.student.ResNet_sparse import ResNet_50_pruned_hardfakevsreal
