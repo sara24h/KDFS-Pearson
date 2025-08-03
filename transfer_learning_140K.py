@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from sklearn.metrics import precision_score, recall_score, f1_score
 import numpy as np
-
+from model.pruned_model.ResNet_pruned import  ResNet_50_pruned_hardfakevsreal
 # تابع ارزیابی مدل
 def evaluate_model(model, test_loader, device, dataset_name):
     model.eval()
@@ -51,16 +51,13 @@ model_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/r
 # لود checkpoint
 checkpoint = torch.load(model_path, map_location='cpu')
 
-# بررسی کلیدها
-print("Keys in checkpoint:", list(checkpoint.keys()))
-
-# فرض می‌کنیم کلید ماسک‌ها 'prune_masks' است (بعد از بررسی تغییر دهید)
-masks = checkpoint.get('prune_masks', [])  # اگر کلید وجود نداشت، لیست خالی
-state_dict = checkpoint['state_dict']
+# استخراج ماسک‌ها و وزن‌ها
+masks = checkpoint['optim_mask']  # ماسک‌های هرس
+state_dict = checkpoint['student']  # وزن‌های مدل
 
 # تعریف مدل
 model = ResNet_50_pruned_hardfakevsreal(masks=masks)
-model.load_state_dict(state_dict, strict=False)
+model.load_state_dict(state_dict, strict=True)
 
 # انتقال مدل به دستگاه
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
