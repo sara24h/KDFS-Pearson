@@ -80,10 +80,7 @@ def evaluate_model(dataset_mode):
 
     # تنظیمات دیتاست‌ها بر اساس __main__ در data/dataset.py
     dataset_configs = {
-        'hardfake': {
-            'hardfake_csv_file': '/kaggle/input/hardfakevsrealfaces/data.csv',
-            'hardfake_root_dir': '/kaggle/input/hardfakevsrealfaces',
-        },
+ 
         'rvf10k': {
             'rvf10k_train_csv': '/kaggle/input/rvf10k/train.csv',
             'rvf10k_valid_csv': '/kaggle/input/rvf10k/valid.csv',
