@@ -15,6 +15,9 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 def prune_weights(state_dict, masks):
     pruned_state_dict = {}
     mask_idx = 0
+    block_mask_indices = []  # ذخیره اندیس‌های ماسک برای هر بلوک
+    current_block = None
+
     for name, param in state_dict.items():
         # نادیده گرفتن کلیدهای feat و mask_weight
         if 'feat' in name or 'mask_weight' in name:
@@ -26,6 +29,13 @@ def prune_weights(state_dict, masks):
         if 'bn1' in name and 'layer' not in name:
             pruned_state_dict[name] = param
             continue
+
+        # شناسایی بلوک فعلی (مثل layer1.0, layer1.1, ...)
+        block_name = '.'.join(name.split('.')[:2]) if 'layer' in name else None
+        if block_name and block_name != current_block:
+            current_block = block_name
+            block_mask_indices = []  # ریست کردن اندیس‌های ماسک برای بلوک جدید
+
         # پرون کردن لایه‌های conv در layer1 تا layer4
         if 'conv' in name and 'layer' in name:
             if 'conv1' in name:
@@ -34,6 +44,7 @@ def prune_weights(state_dict, masks):
                 if param.shape[0] != masks[mask_idx].shape[0]:
                     raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[mask_idx].shape[0]}")
                 pruned_state_dict[name] = param[masks[mask_idx] == 1]
+                block_mask_indices.append(mask_idx)
                 mask_idx += 1
             elif 'conv2' in name:
                 if mask_idx >= len(masks):
@@ -41,6 +52,7 @@ def prune_weights(state_dict, masks):
                 if param.shape[0] != masks[mask_idx].shape[0] or param.shape[1] != masks[mask_idx - 1].shape[0]:
                     raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape}, mask shape {masks[mask_idx].shape[0]}x{masks[mask_idx - 1].shape[0]}")
                 pruned_state_dict[name] = param[masks[mask_idx] == 1][:, masks[mask_idx - 1] == 1]
+                block_mask_indices.append(mask_idx)
                 mask_idx += 1
             elif 'conv3' in name:
                 if mask_idx >= len(masks):
@@ -48,28 +60,28 @@ def prune_weights(state_dict, masks):
                 if param.shape[0] != masks[mask_idx].shape[0] or param.shape[1] != masks[mask_idx - 1].shape[0]:
                     raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape}, mask shape {masks[mask_idx].shape[0]}x{masks[mask_idx - 1].shape[0]}")
                 pruned_state_dict[name] = param[masks[mask_idx] == 1][:, masks[mask_idx - 1] == 1]
+                block_mask_indices.append(mask_idx)
                 mask_idx += 1
         # پرون کردن لایه‌های bn و downsample
         elif ('bn' in name or 'downsample' in name) and 'layer' in name:
-            # استفاده از ماسک لایه conv قبلی (معمولاً conv3 در همان بلوک)
+            if not block_mask_indices:
+                raise ValueError(f"No mask indices available for {name} in block {current_block}")
+            # انتخاب ماسک مناسب بر اساس نوع لایه
             if 'bn1' in name:
-                prev_mask_idx = mask_idx - 3  # conv1 در همان بلوک
+                prev_mask_idx = block_mask_indices[0]  # ماسک conv1
             elif 'bn2' in name:
-                prev_mask_idx = mask_idx - 2  # conv2 در همان بلوک
+                prev_mask_idx = block_mask_indices[1]  # ماسک conv2
             elif 'bn3' in name or 'downsample' in name:
-                prev_mask_idx = mask_idx - 1  # conv3 در همان بلوک
+                prev_mask_idx = block_mask_indices[2]  # ماسک conv3
             else:
                 raise ValueError(f"Unexpected layer name: {name}")
-            if prev_mask_idx < 0:
-                raise ValueError(f"prev_mask_idx {prev_mask_idx} is negative for {name}")
-            if prev_mask_idx >= len(masks):
-                raise ValueError(f"prev_mask_idx {prev_mask_idx} out of range for masks with length {len(masks)}")
             if param.shape[0] != masks[prev_mask_idx].shape[0]:
                 raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[prev_mask_idx].shape[0]}")
             pruned_state_dict[name] = param[masks[prev_mask_idx] == 1]
         # کپی مستقیم سایر لایه‌ها (مثل fc)
         else:
             pruned_state_dict[name] = param
+
     if mask_idx != len(masks):
         print(f"Warning: mask_idx {mask_idx} does not match total number of masks {len(masks)}")
     return pruned_state_dict
