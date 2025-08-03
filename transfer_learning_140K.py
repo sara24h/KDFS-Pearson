@@ -16,46 +16,49 @@ def prune_weights(state_dict, masks):
     pruned_state_dict = {}
     mask_idx = 0
     for name, param in state_dict.items():
-        # نادیده گرفتن کلیدهای مربوط به feat و mask_weight
+        # نادیده گرفتن کلیدهای feat و mask_weight
         if 'feat' in name or 'mask_weight' in name:
             continue
-        # پرون کردن وزن‌های لایه‌های conv و bn در layer1 تا layer4
-        if 'conv' in name and 'layer' in name:
+        # کپی مستقیم لایه‌های conv1 و bn1 (لایه‌های ابتدایی بدون ماسک)
+        if 'conv1' in name and 'layer' not in name:
+            pruned_state_dict[name] = param
+        elif 'bn1' in name and 'layer' not in name:
+            pruned_state_dict[name] = param
+        # پرون کردن لایه‌های conv در layer1 تا layer4
+        elif 'conv' in name and 'layer' in name:
             if 'conv1' in name:
+                if mask_idx >= len(masks):
+                    raise ValueError(f"mask_idx {mask_idx} out of range for masks with length {len(masks)}")
                 if param.shape[0] != masks[mask_idx].shape[0]:
-                    print(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[mask_idx].shape[0]}")
-                    raise ValueError(f"Mask dimension does not match for {name}")
+                    raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[mask_idx].shape[0]}")
                 pruned_state_dict[name] = param[masks[mask_idx] == 1]
                 mask_idx += 1
             elif 'conv2' in name:
+                if mask_idx >= len(masks):
+                    raise ValueError(f"mask_idx {mask_idx} out of range for masks with length {len(masks)}")
                 if param.shape[0] != masks[mask_idx].shape[0] or param.shape[1] != masks[mask_idx - 1].shape[0]:
-                    print(f"Dimension mismatch for {name}: weight shape {param.shape}, mask shape {masks[mask_idx].shape[0]}x{masks[mask_idx - 1].shape[0]}")
-                    raise ValueError(f"Mask dimension does not match for {name}")
+                    raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape}, mask shape {masks[mask_idx].shape[0]}x{masks[mask_idx - 1].shape[0]}")
                 pruned_state_dict[name] = param[masks[mask_idx] == 1][:, masks[mask_idx - 1] == 1]
                 mask_idx += 1
             elif 'conv3' in name:
+                if mask_idx >= len(masks):
+                    raise ValueError(f"mask_idx {mask_idx} out of range for masks with length {len(masks)}")
                 if param.shape[0] != masks[mask_idx].shape[0] or param.shape[1] != masks[mask_idx - 1].shape[0]:
-                    print(f"Dimension mismatch for {name}: weight shape {param.shape}, mask shape {masks[mask_idx].shape[0]}x{masks[mask_idx - 1].shape[0]}")
-                    raise ValueError(f"Mask dimension does not match for {name}")
+                    raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape}, mask shape {masks[mask_idx].shape[0]}x{masks[mask_idx - 1].shape[0]}")
                 pruned_state_dict[name] = param[masks[mask_idx] == 1][:, masks[mask_idx - 1] == 1]
                 mask_idx += 1
-        elif 'bn' in name and 'layer' in name:
+        # پرون کردن لایه‌های bn و downsample
+        elif ('bn' in name or 'downsample' in name) and 'layer' in name:
+            if mask_idx == 0:
+                raise ValueError(f"mask_idx is 0 for {name}, no previous conv layer found")
             if param.shape[0] != masks[mask_idx - 1].shape[0]:
-                print(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[mask_idx - 1].shape[0]}")
-                raise ValueError(f"Mask dimension does not match for {name}")
+                raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[mask_idx - 1].shape[0]}")
             pruned_state_dict[name] = param[masks[mask_idx - 1] == 1]
-        elif 'downsample.0' in name:
-            if param.shape[0] != masks[mask_idx - 1].shape[0]:
-                print(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[mask_idx - 1].shape[0]}")
-                raise ValueError(f"Mask dimension does not match for {name}")
-            pruned_state_dict[name] = param[masks[mask_idx - 1] == 1]
-        elif 'downsample.1' in name:
-            if param.shape[0] != masks[mask_idx - 1].shape[0]:
-                print(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[mask_idx - 1].shape[0]}")
-                raise ValueError(f"Mask dimension does not match for {name}")
-            pruned_state_dict[name] = param[masks[mask_idx - 1] == 1]
+        # کپی مستقیم سایر لایه‌ها (مثل fc)
         else:
             pruned_state_dict[name] = param
+    if mask_idx != len(masks):
+        print(f"Warning: mask_idx {mask_idx} does not match total number of masks {len(masks)}")
     return pruned_state_dict
 
 # تعریف مدل sparse برای استخراج ماسک‌ها
