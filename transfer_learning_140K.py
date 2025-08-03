@@ -85,17 +85,17 @@ def adjust_weights_for_pruned_model(sparse_state_dict, pruned_model, masks):
         ('layer3', 6, [256, 256, 1024]),
         ('layer4', 3, [512, 512, 2048]),
     ]
-    mask_idx = 0
+    mask_idx = 1  # شروع از اندیس 1، زیرا اندیس 0 برای conv1 است
     
     # تنظیم وزن‌های conv1
     if 'conv1.weight' in sparse_state_dict:
         out_mask = masks[0]
         pruned_state_dict['conv1.weight'] = sparse_state_dict['conv1.weight'][out_mask]
+        print(f"  Adjusted conv1.weight: {pruned_state_dict['conv1.weight'].shape}")
         for bn_param in ['weight', 'bias', 'running_mean', 'running_var']:
             bn_key = f'bn1.{bn_param}'
             if bn_key in sparse_state_dict:
                 pruned_state_dict[bn_key] = sparse_state_dict[bn_key][out_mask]
-        mask_idx += 1
     
     # تنظیم وزن‌های لایه‌های Bottleneck
     for layer_name, num_blocks, channels in layer_patterns:
@@ -110,10 +110,8 @@ def adjust_weights_for_pruned_model(sparse_state_dict, pruned_model, masks):
                     # تنظیم ورودی‌ها برای conv2 و conv3
                     if conv_idx > 1:
                         prev_mask = masks[mask_idx - 1]
-                        in_channels = prev_mask.sum().item()
                     else:
-                        in_channels = sparse_state_dict[conv_key].shape[1]
-                        prev_mask = slice(None)
+                        prev_mask = masks[mask_idx - 3] if block_idx > 0 or layer_name != 'layer1' else slice(None)
                     
                     # انتخاب وزن‌های فعال
                     weight = sparse_state_dict[conv_key]
@@ -178,7 +176,7 @@ def main():
     sparse_model = ResNet_50_sparse_hardfakevsreal()
     checkpoint = torch.load(args.checkpoint_path, map_location='cpu', weights_only=True)
     if 'student' in checkpoint:
-        sparse_model.load_state_dict(checkpoint['student'], strict=True)
+        sparse_model.load_state_dict(checkpoint['student'], strict=False)  # strict=False برای نادیده گرفتن feat1, feat2, ...
         print("✓ Sparse model loaded successfully")
     else:
         raise KeyError("'student' key not found in checkpoint")
