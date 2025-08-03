@@ -13,43 +13,28 @@ import matplotlib.pyplot as plt
 import numpy as np
 from IPython.display import Image as IPImage, display
 from thop import profile
-
-# فرض می‌کنیم این کلاس‌ها در فایل‌های جداگانه تعریف شده‌اند
 from model.student.ResNet_sparse import SoftMaskedConv2d
 from data.dataset import FaceDataset, Dataset_selector
-
-import os
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-from torch.amp import autocast
 from data.dataset import Dataset_selector
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 
-# تنظیم دستگاه
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-# تعریف مدل دانش‌آموز
-model = ResNet_50_sparse_hardfakevsreal(
-    gumbel_start_temperature=1.0,
-    gumbel_end_temperature=0.1,
-    num_epochs=3
-)
-model.dataset_type = 'rvf10k'  # تنظیم برای دیتاست جدید
+model = ResNet_50_sparse_hardfakevsreal()
+model.dataset_type = 'rvf10k'  
 num_ftrs = model.fc.in_features
-model.fc = nn.Linear(num_ftrs, 1)  # تنظیم لایه fc برای طبقه‌بندی باینری
+model.fc = nn.Linear(num_ftrs, 1)
 
-# مسیر فایل وزن‌ها
+
 checkpoint_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt'
 
-# بارگذاری وزن‌ها
 if not os.path.exists(checkpoint_path):
     raise FileNotFoundError(f"Checkpoint file {checkpoint_path} not found!")
 checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
 
 if 'student' in checkpoint:
     state_dict = checkpoint['student']
-    # فیلتر کردن کلیدهای اضافی (مانند feat1.weight)
+
     filtered_state_dict = {k: v for k, v in state_dict.items() if not k.startswith('feat')}
     missing, unexpected = model.load_state_dict(filtered_state_dict, strict=False)
     print(f"Missing keys: {missing}")
