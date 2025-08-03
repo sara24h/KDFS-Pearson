@@ -85,11 +85,15 @@ def prune_weights(state_dict, masks):
                 prev_mask_idx = block_mask_indices[2]  # ماسک conv3
             else:
                 raise ValueError(f"Unexpected layer name: {name}")
-            if prev_mask_idx >= len(masks):
-                raise ValueError(f"prev_mask_idx {prev_mask_idx} out of range for masks with length {len(masks)}")
-            if param.shape[0] != masks[prev_mask_idx].shape[0]:
-                raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[prev_mask_idx].shape[0]}")
-            pruned_state_dict[name] = param[masks[prev_mask_idx] == 1]
+            # بررسی اینکه آیا param یک تنسور با ابعاد معتبر است
+            if 'num_batches_tracked' in name:
+                pruned_state_dict[name] = param  # کپی مستقیم num_batches_tracked
+            else:
+                if prev_mask_idx >= len(masks):
+                    raise ValueError(f"prev_mask_idx {prev_mask_idx} out of range for masks with length {len(masks)}")
+                if param.shape[0] != masks[prev_mask_idx].shape[0]:
+                    raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[prev_mask_idx].shape[0]}")
+                pruned_state_dict[name] = param[masks[prev_mask_idx] == 1]
         # کپی مستقیم سایر لایه‌ها (مثل fc)
         else:
             pruned_state_dict[name] = param
