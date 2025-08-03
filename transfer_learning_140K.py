@@ -119,5 +119,3 @@ except Exception as e:
 with open('evaluation_results.txt', 'w') as f:
     f.write(f'Accuracy: {accuracy:.4f}\nPrecision: {precision:.4f}\nRecall: {recall:.4f}\nF1-Score: {f1:.4f}\nAUC-ROC: {auc:.4f}\n')
     f.write(f'Params: {params/1e6:.2f}M\nFLOPs: {flops/1e6:.2f}M\n')
-
-4. **خطاهای احتمالی**: اگر هنگام اجرای کد خطایی
