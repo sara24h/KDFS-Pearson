@@ -48,6 +48,17 @@ model = model.to(device)
 model.ticket = True  # اعمال ماسک‌های هرس
 model.eval()
 
+# محاسبه تعداد پارامترها و FLOPs
+total_params = sum(p.numel() for p in model.parameters())
+pruned_params = sum(m.mask.sum().item() for m in model.mask_modules if hasattr(m, 'mask'))
+pruning_ratio = (total_params - pruned_params) / total_params * 100 if total_params > 0 else 0
+flops = model.get_flops()
+
+print(f"Total parameters: {total_params:,}")
+print(f"Active (non-pruned) parameters: {pruned_params:,}")
+print(f"Pruning ratio: {pruning_ratio:.2f}%")
+print(f"Total FLOPs: {flops.item():,.0f}")
+
 # بارگذاری دیتاست
 data_dir = '/kaggle/input/rvf10k'
 dataset = Dataset_selector(
@@ -84,6 +95,4 @@ with torch.no_grad():
 
 # چاپ نتایج
 print(f'Test Loss on rvf10k: {test_loss / len(test_loader):.4f}, Test Accuracy: {100 * correct / total:.2f}%')
-
-# بررسی شکل خروجی‌های feature_list
 print("Feature list shapes:", [f.shape for f in feature_list])
