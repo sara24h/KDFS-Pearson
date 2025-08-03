@@ -19,19 +19,40 @@ def prune_weights(state_dict, masks):
         # نادیده گرفتن کلیدهای مربوط به feat و mask_weight
         if 'feat' in name or 'mask_weight' in name:
             continue
+        # پرون کردن وزن‌های لایه‌های conv و bn در layer1 تا layer4
         if 'conv' in name and 'layer' in name:
             if 'conv1' in name:
+                if param.shape[0] != masks[mask_idx].shape[0]:
+                    print(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[mask_idx].shape[0]}")
+                    raise ValueError(f"Mask dimension does not match for {name}")
                 pruned_state_dict[name] = param[masks[mask_idx] == 1]
-                mask_idx += 1 if 'conv3' in name else 0
+                mask_idx += 1
             elif 'conv2' in name:
+                if param.shape[0] != masks[mask_idx].shape[0] or param.shape[1] != masks[mask_idx - 1].shape[0]:
+                    print(f"Dimension mismatch for {name}: weight shape {param.shape}, mask shape {masks[mask_idx].shape[0]}x{masks[mask_idx - 1].shape[0]}")
+                    raise ValueError(f"Mask dimension does not match for {name}")
                 pruned_state_dict[name] = param[masks[mask_idx] == 1][:, masks[mask_idx - 1] == 1]
-                mask_idx += 1 if 'conv3' in name else 0
+                mask_idx += 1
             elif 'conv3' in name:
+                if param.shape[0] != masks[mask_idx].shape[0] or param.shape[1] != masks[mask_idx - 1].shape[0]:
+                    print(f"Dimension mismatch for {name}: weight shape {param.shape}, mask shape {masks[mask_idx].shape[0]}x{masks[mask_idx - 1].shape[0]}")
+                    raise ValueError(f"Mask dimension does not match for {name}")
                 pruned_state_dict[name] = param[masks[mask_idx] == 1][:, masks[mask_idx - 1] == 1]
                 mask_idx += 1
         elif 'bn' in name and 'layer' in name:
+            if param.shape[0] != masks[mask_idx - 1].shape[0]:
+                print(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[mask_idx - 1].shape[0]}")
+                raise ValueError(f"Mask dimension does not match for {name}")
             pruned_state_dict[name] = param[masks[mask_idx - 1] == 1]
         elif 'downsample.0' in name:
+            if param.shape[0] != masks[mask_idx - 1].shape[0]:
+                print(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[mask_idx - 1].shape[0]}")
+                raise ValueError(f"Mask dimension does not match for {name}")
+            pruned_state_dict[name] = param[masks[mask_idx - 1] == 1]
+        elif 'downsample.1' in name:
+            if param.shape[0] != masks[mask_idx - 1].shape[0]:
+                print(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[mask_idx - 1].shape[0]}")
+                raise ValueError(f"Mask dimension does not match for {name}")
             pruned_state_dict[name] = param[masks[mask_idx - 1] == 1]
         else:
             pruned_state_dict[name] = param
@@ -60,12 +81,21 @@ print("feat1 weight shape in checkpoint:", checkpoint['student']['feat1.weight']
 mask_weights = [m.mask_weight for m in sparse_model.mask_modules]
 masks = [torch.argmax(mask_weight, dim=1).squeeze(1).squeeze(1) for mask_weight in mask_weights]
 
+# بررسی تعداد و ابعاد ماسک‌ها
+print(f"Number of masks: {len(masks)}")
+for i, mask in enumerate(masks):
+    print(f"Mask {i} shape: {mask.shape}")
+
 # تعریف مدل پرون‌شده
 pruned_model = ResNet_50_pruned_hardfakevsreal(masks=masks)
 pruned_model.dataset_type = 'rvf10k'
 
 # پرون کردن وزن‌ها
-pruned_state_dict = prune_weights(checkpoint['student'], masks)
+try:
+    pruned_state_dict = prune_weights(checkpoint['student'], masks)
+except ValueError as e:
+    print(f"Error in pruning weights: {e}")
+    raise
 
 # بارگذاری وزن‌های پرون‌شده به مدل
 missing, unexpected = pruned_model.load_state_dict(pruned_state_dict, strict=True)
