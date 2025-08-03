@@ -1,10 +1,9 @@
 import os
-import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.amp import autocast
-from model.student.ResNet_sparse import SoftMaskedConv2d, ResNet_50_sparse_hardfakevsreal
+from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 from data.dataset import Dataset_selector
 
 # تنظیم دستگاه
@@ -22,17 +21,27 @@ checkpoint_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/resu
 # بررسی وجود فایل وزن‌ها
 if not os.path.exists(checkpoint_path):
     raise FileNotFoundError(f"Checkpoint file {checkpoint_path} not found!")
-checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
 
 # بارگذاری وزن‌ها
-if 'student' in checkpoint:
-    state_dict = checkpoint['student']
-    filtered_state_dict = {k: v for k, v in state_dict.items() if not k.startswith('feat')}
-    missing, unexpected = model.load_state_dict(filtered_state_dict, strict=False)
-    print(f"Missing keys: {missing}")
-    print(f"Unexpected keys: {unexpected}")
-else:
+checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+
+if 'student' not in checkpoint:
     raise KeyError("'student' key not found in checkpoint")
+
+# لود وزن‌ها بدون فیلتر کردن
+state_dict = checkpoint['student']
+missing, unexpected = model.load_state_dict(state_dict, strict=True)
+
+# بررسی کلیدهای گم‌شده و غیرمنتظره
+print(f"Missing keys: {missing}")
+print(f"Unexpected keys: {unexpected}")
+
+if missing or unexpected:
+    print("Warning: There are missing or unexpected keys. Please verify checkpoint compatibility with the model architecture.")
+
+# بررسی نمونه‌ای از وزن‌ها برای اطمینان از لود صحیح
+print("Sample weights from conv1:", model.conv1.weight[0, 0, :3, :3])
+print("Sample weights from feat1:", model.feat1.weight[0, 0, :3, :3])
 
 # انتقال مدل به دستگاه و فعال کردن پرونینگ
 model = model.to(device)
@@ -65,7 +74,7 @@ with torch.no_grad():
     for images, labels in test_loader:
         images, labels = images.to(device), labels.to(device).float()
         with torch.amp.autocast('cuda', enabled=device.type == 'cuda'):
-            outputs, _ = model(images)
+            outputs, feature_list = model(images)
             outputs = outputs.squeeze(1)
             loss = criterion(outputs, labels)
         test_loss += loss.item()
@@ -73,4 +82,8 @@ with torch.no_grad():
         correct += (preds == labels).sum().item()
         total += labels.size(0)
 
+# چاپ نتایج
 print(f'Test Loss on rvf10k: {test_loss / len(test_loader):.4f}, Test Accuracy: {100 * correct / total:.2f}%')
+
+# بررسی شکل خروجی‌های feature_list
+print("Feature list shapes:", [f.shape for f in feature_list])
