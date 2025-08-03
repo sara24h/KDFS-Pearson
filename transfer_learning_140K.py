@@ -9,131 +9,191 @@ import os
 # Import از فایل‌های موجود شما
 from data.dataset import Dataset_selector
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
-# یا اگر از student model استفاده می‌کنید:
-# from model.student.ResNet_sparse import ResNet_50_pruned_hardfakevsreal
 
-def extract_masks_from_checkpoint(checkpoint):
+def inspect_checkpoint_structure(checkpoint_path):
     """
-    ماسک‌ها را از checkpoint استخراج می‌کند
+    ساختار checkpoint را بررسی می‌کند تا ماسک‌ها را پیدا کند
+    """
+    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    
+    print("=== Checkpoint Structure Analysis ===")
+    print(f"Total keys in checkpoint: {len(checkpoint)}")
+    
+    # نمایش تمام کلیدها
+    for key in sorted(checkpoint.keys()):
+        if hasattr(checkpoint[key], 'shape'):
+            print(f"{key}: {checkpoint[key].shape}")
+        else:
+            print(f"{key}: {type(checkpoint[key])}")
+    
+    # جستجو برای ماسک‌ها
+    mask_keys = [key for key in checkpoint.keys() if 'mask' in key.lower()]
+    print(f"\nFound {len(mask_keys)} potential mask keys:")
+    for key in mask_keys:
+        print(f"  {key}")
+    
+    return checkpoint
+
+def extract_masks_from_student_checkpoint(checkpoint):
+    """
+    ماسک‌ها را از checkpoint مدل student استخراج می‌کند
     """
     masks = []
     
-    # ترتیب layers در ResNet50: layer1, layer2, layer3, layer4
-    layer_names = ['layer1', 'layer2', 'layer3', 'layer4']
-    block_counts = [3, 4, 6, 3]  # تعداد blocks در هر layer
+    # بررسی انواع مختلف کلیدهای ممکن برای ماسک‌ها
+    possible_mask_patterns = [
+        'masks',  # مستقیم
+        'pruning_masks',  # الگوی دیگر
+        'model.masks',  # اگر در model state قرار دارد
+        'student_masks',  # خاص مدل student
+    ]
     
-    for layer_idx, (layer_name, num_blocks) in enumerate(zip(layer_names, block_counts)):
-        for block_idx in range(num_blocks):
-            # هر Bottleneck block دارای 3 conv layer است
-            for conv_idx in [1, 2, 3]:  # conv1, conv2, conv3
-                mask_key = f"{layer_name}.{block_idx}.conv{conv_idx}.mask_weight"
-                
-                if mask_key in checkpoint:
-                    mask_tensor = checkpoint[mask_key]
-                    # تبدیل mask tensor به boolean mask
-                    # معمولاً mask_weight برای فیلترهای فعال 1 و برای غیرفعال 0 دارد
-                    mask_bool = (mask_tensor.abs().sum(dim=[1,2,3]) > 1e-8)  # فیلترهای غیرصفر
-                    masks.append(mask_bool)
-                    print(f"Extracted mask for {mask_key}: {mask_bool.sum()}/{len(mask_bool)} filters preserved")
-                else:
-                    print(f"Warning: {mask_key} not found in checkpoint")
-                    # ایجاد mask پیش‌فرض (همه فیلترها فعال)
-                    if conv_idx == 1:
-                        num_filters = [64, 128, 256, 512][layer_idx]
-                    elif conv_idx == 2:
-                        num_filters = [64, 128, 256, 512][layer_idx]
-                    else:  # conv3
-                        num_filters = [64, 128, 256, 512][layer_idx] * 4
+    # جستجو برای ماسک‌ها
+    found_masks = None
+    for pattern in possible_mask_patterns:
+        if pattern in checkpoint:
+            found_masks = checkpoint[pattern]
+            print(f"Found masks with key: {pattern}")
+            break
+    
+    if found_masks is not None:
+        if isinstance(found_masks, list):
+            masks = found_masks
+        elif isinstance(found_masks, dict):
+            # اگر ماسک‌ها در dictionary هستند
+            mask_keys = sorted([k for k in found_masks.keys() if 'mask' in k])
+            masks = [found_masks[k] for k in mask_keys]
+    
+    # اگر ماسک پیدا نشد، از state_dict جستجو کن
+    if not masks:
+        print("Searching for individual mask tensors in state_dict...")
+        
+        # الگوهای مختلف نام‌گذاری برای ماسک‌ها
+        layer_names = ['layer1', 'layer2', 'layer3', 'layer4']
+        block_counts = [3, 4, 6, 3]
+        
+        for layer_idx, (layer_name, num_blocks) in enumerate(zip(layer_names, block_counts)):
+            for block_idx in range(num_blocks):
+                for conv_idx in [1, 2, 3]:
+                    # الگوهای مختلف نام‌گذاری
+                    possible_keys = [
+                        f"{layer_name}.{block_idx}.conv{conv_idx}.mask",
+                        f"{layer_name}.{block_idx}.conv{conv_idx}.mask_weight",
+                        f"module.{layer_name}.{block_idx}.conv{conv_idx}.mask",
+                        f"backbone.{layer_name}.{block_idx}.conv{conv_idx}.mask",
+                        f"model.{layer_name}.{block_idx}.conv{conv_idx}.mask",
+                    ]
                     
-                    mask_bool = torch.ones(num_filters, dtype=torch.bool)
-                    masks.append(mask_bool)
+                    mask_found = False
+                    for key in possible_keys:
+                        if key in checkpoint:
+                            mask_tensor = checkpoint[key]
+                            if len(mask_tensor.shape) == 4:  # Conv weight mask
+                                mask_bool = (mask_tensor.abs().sum(dim=[1,2,3]) > 1e-8)
+                            elif len(mask_tensor.shape) == 1:  # Already boolean or 1D
+                                mask_bool = mask_tensor.bool()
+                            else:
+                                mask_bool = mask_tensor.bool()
+                            
+                            masks.append(mask_bool)
+                            print(f"Found mask: {key} -> {mask_bool.sum()}/{len(mask_bool)} filters preserved")
+                            mask_found = True
+                            break
+                    
+                    if not mask_found:
+                        print(f"Warning: No mask found for {layer_name}.{block_idx}.conv{conv_idx}")
     
-    print(f"Total masks extracted: {len(masks)}")
+    if not masks:
+        print("ERROR: No masks found in checkpoint!")
+        print("Available keys in checkpoint:")
+        for key in sorted(checkpoint.keys()):
+            print(f"  {key}")
+        return None
+    
+    print(f"Successfully extracted {len(masks)} masks")
+    
+    # بررسی تعداد پارامترهای باقی‌مانده
+    total_preserved = sum(mask.sum().item() for mask in masks)
+    print(f"Total preserved filters across all layers: {total_preserved}")
+    
     return masks
 
-def create_dummy_masks_for_resnet50():
+def load_student_model_properly(model_path):
     """
-    ماسک‌های dummy برای ResNet50 ایجاد می‌کند (همه فیلترها فعال)
-    """
-    masks = []
-    block_configs = [3, 4, 6, 3]  # تعداد blocks در هر layer
-    channels = [64, 128, 256, 512]  # تعداد کانال‌های خروجی هر layer
-    
-    for layer_idx, (num_blocks, base_channels) in enumerate(zip(block_configs, channels)):
-        for block_idx in range(num_blocks):
-            # هر Bottleneck block دارای 3 conv layer است
-            mask1 = torch.ones(base_channels, dtype=torch.bool)  # Conv1
-            mask2 = torch.ones(base_channels, dtype=torch.bool)  # Conv2
-            mask3 = torch.ones(base_channels * 4, dtype=torch.bool)  # Conv3
-            
-            masks.extend([mask1, mask2, mask3])
-    
-    print(f"Created {len(masks)} dummy masks (all filters preserved)")
-    return masks
-
-def load_pruned_model(model_path, masks_path=None, use_dummy_masks=True):
-    """
-    مدل pruned شده را بارگذاری می‌کند
+    مدل student را با ماسک‌های درست بارگذاری می‌کند
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
+    # ابتدا ساختار checkpoint را بررسی کن
+    print("Inspecting checkpoint structure...")
+    checkpoint = inspect_checkpoint_structure(model_path)
+    
+    # استخراج ماسک‌ها
+    print("\nExtracting masks...")
+    masks = extract_masks_from_student_checkpoint(checkpoint)
+    
+    if masks is None:
+        print("CRITICAL ERROR: Could not extract masks from checkpoint!")
+        print("The student model requires proper pruning masks to work correctly.")
+        return None, None
+    
+    # ایجاد مدل با ماسک‌های استخراج شده
+    print(f"\nCreating pruned model with {len(masks)} masks...")
+    model = ResNet_50_pruned_hardfakevsreal(masks)
+    
+    # بارگذاری وزن‌ها
     try:
-        # بارگذاری checkpoint
-        checkpoint = torch.load(model_path, map_location=device)
-        print("Checkpoint loaded successfully")
-        print(f"Checkpoint contains {len(checkpoint)} keys")
-        
-        # استخراج masks از checkpoint
-        masks = None
-        if 'masks' in checkpoint:
-            masks = checkpoint['masks']
-            print("Masks found in checkpoint")
-        elif any('mask_weight' in key for key in checkpoint.keys()):
-            print("Found mask_weight tensors in checkpoint, extracting masks...")
-            masks = extract_masks_from_checkpoint(checkpoint)
-        elif masks_path and os.path.exists(masks_path):
-            with open(masks_path, 'rb') as f:
-                masks = pickle.load(f)
-            print("Masks loaded from separate file")
-        elif use_dummy_masks:
-            print("Warning: No masks found. Creating dummy masks (all filters preserved)")
-            masks = create_dummy_masks_for_resnet50()
-        else:
-            print("Error: No masks found and dummy masks disabled")
-            return None, None
-        
-        # ایجاد مدل
-        model = ResNet_50_pruned_hardfakevsreal(masks)
-        
-        # حذف mask_weight keys از checkpoint برای بارگذاری وزن‌ها
+        # حذف کلیدهای مربوط به ماسک برای بارگذاری وزن‌ها
         state_dict = {}
         for key, value in checkpoint.items():
-            if 'mask_weight' not in key:
-                state_dict[key] = value
+            if not any(pattern in key.lower() for pattern in ['mask', 'pruning']):
+                # حذف پیشوند module. اگر وجود دارد
+                clean_key = key.replace('module.', '').replace('model.', '')
+                state_dict[clean_key] = value
         
-        # بارگذاری وزن‌ها
-        try:
-            model.load_state_dict(state_dict, strict=False)
-            print("Model weights loaded successfully")
-        except Exception as e:
-            print(f"Warning: Could not load all weights: {e}")
-            print("Continuing with partially loaded model...")
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
         
-        model.to(device)
-        model.eval()
+        if missing_keys:
+            print(f"Missing keys: {len(missing_keys)}")
+            for key in missing_keys[:5]:  # نمایش 5 کلید اول
+                print(f"  {key}")
         
-        print(f"Model loaded successfully on {device}")
-        print(f"Model has {sum(p.numel() for p in model.parameters())} parameters")
+        if unexpected_keys:
+            print(f"Unexpected keys: {len(unexpected_keys)}")
+            for key in unexpected_keys[:5]:  # نمایش 5 کلید اول
+                print(f"  {key}")
         
-        return model, device
+        print("Model state loaded successfully")
         
     except Exception as e:
-        print(f"Error loading model: {e}")
+        print(f"Error loading model state: {e}")
         return None, None
+    
+    model.to(device)
+    model.eval()
+    
+    # نمایش آمار مدل
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    
+    print(f"\n=== Model Statistics ===")
+    print(f"Total parameters: {total_params:,}")
+    print(f"Trainable parameters: {trainable_params:,}")
+    print(f"Model size (MB): {total_params * 4 / 1024 / 1024:.2f}")
+    
+    # بررسی اینکه آیا این واقعاً مدل pruned است
+    if total_params > 10_000_000:  # اگر بیش از 10 میلیون پارامتر دارد
+        print("WARNING: Model seems to have too many parameters for a pruned student model!")
+        print("Expected: ~3 million parameters")
+        print("Current: {:.1f} million parameters".format(total_params / 1_000_000))
+    else:
+        print("✓ Model parameter count looks correct for a pruned student model")
+    
+    return model, device
 
 def evaluate_model(model, test_loader, device):
     """
-    مدل را ارزیابی می‌کند و معیارهای مختلف generalization محاسبه می‌کند
+    مدل را ارزیابی می‌کند
     """
     model.eval()
     all_predictions = []
@@ -164,7 +224,7 @@ def evaluate_model(model, test_loader, device):
     try:
         auc = roc_auc_score(all_labels, all_probabilities)
     except:
-        auc = 0.0  # در صورت مشکل در محاسبه AUC
+        auc = 0.0
     
     return {
         'accuracy': accuracy,
@@ -177,32 +237,11 @@ def evaluate_model(model, test_loader, device):
         'probabilities': all_probabilities
     }
 
-def calculate_generalization_metrics(train_acc, test_results):
-    """
-    معیارهای generalization را محاسبه می‌کند
-    """
-    test_acc = test_results['accuracy']
-    
-    # Generalization Gap
-    generalization_gap = train_acc - test_acc
-    
-    # Generalization Ratio
-    if train_acc > 0:
-        generalization_ratio = test_acc / train_acc
-    else:
-        generalization_ratio = 0
-    
-    return {
-        'generalization_gap': generalization_gap,
-        'generalization_ratio': generalization_ratio,
-        'overfitting_indicator': 'High' if generalization_gap > 0.1 else 'Low'
-    }
-
 def main():
     # مسیرها و تنظیمات
     MODEL_PATH = "/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt"
     
-    # تنظیمات دیتاست - برای دیتاست 140k
+    # تنظیمات دیتاست
     dataset_config = {
         'dataset_mode': '140k',
         'realfake140k_train_csv': '/kaggle/input/140k-real-and-fake-faces/train.csv',
@@ -217,63 +256,51 @@ def main():
     
     print("=== Evaluating Pruned ResNet50 Student Model ===")
     
-    # 1. بارگذاری مدل
-    print("Loading pruned model...")
-    model, device = load_pruned_model(MODEL_PATH)
+    # 1. بارگذاری مدل با ماسک‌های درست
+    print("Loading student model with proper masks...")
+    model, device = load_student_model_properly(MODEL_PATH)
     
     if model is None:
-        print("Failed to load model. Please check the model path and masks.")
+        print("FAILED: Could not load the student model properly!")
+        print("\nTroubleshooting suggestions:")
+        print("1. Check if the checkpoint contains the pruning masks")
+        print("2. Verify the checkpoint was saved correctly during training")
+        print("3. Make sure you're using the correct student model checkpoint")
         return
     
     # 2. آماده‌سازی دیتا
-    print("Preparing test data...")
+    print("\nPreparing test data...")
     try:
-        # ایجاد دیتاست
         dataset = Dataset_selector(**dataset_config)
         test_loader = dataset.loader_test
-        
-        print(f"Test dataset loaded successfully")
-        print(f"Test loader batches: {len(test_loader)}")
-        
-        # تست یک batch
-        sample_batch = next(iter(test_loader))
-        print(f"Sample batch shape: {sample_batch[0].shape}")
-        print(f"Sample labels: {sample_batch[1][:5]}")  # نمایش 5 label اول
+        print(f"Test dataset loaded: {len(test_loader)} batches")
         
     except Exception as e:
         print(f"Error loading dataset: {e}")
-        print("Please make sure the dataset paths are correct and files exist.")
         return
     
     # 3. ارزیابی مدل
-    print("Evaluating model on test set...")
+    print("\nEvaluating model...")
     test_results = evaluate_model(model, test_loader, device)
     
     # 4. نمایش نتایج
-    print("\n=== Test Results ===")
-    print(f"Accuracy: {test_results['accuracy']:.4f}")
-    print(f"Precision: {test_results['precision']:.4f}")
-    print(f"Recall: {test_results['recall']:.4f}")
-    print(f"F1-Score: {test_results['f1_score']:.4f}")
-    print(f"AUC: {test_results['auc']:.4f}")
+    print("\n=== Final Results ===")
+    print(f"Test Accuracy: {test_results['accuracy']:.4f}")
+    print(f"Test Precision: {test_results['precision']:.4f}")
+    print(f"Test Recall: {test_results['recall']:.4f}")
+    print(f"Test F1-Score: {test_results['f1_score']:.4f}")
+    print(f"Test AUC: {test_results['auc']:.4f}")
     
-    # 5. محاسبه معیارهای generalization
-    # اگر accuracy روی train set دارید، این خط را فعال کنید
-    train_accuracy = 0.95  # مقدار واقعی accuracy روی train set را وارد کنید
-    gen_metrics = calculate_generalization_metrics(train_accuracy, test_results)
-    print(f"\n=== Generalization Metrics ===")
-    print(f"Generalization Gap: {gen_metrics['generalization_gap']:.4f}")
-    print(f"Generalization Ratio: {gen_metrics['generalization_ratio']:.4f}")
-    print(f"Overfitting Indicator: {gen_metrics['overfitting_indicator']}")
+    # محاسبه compression ratio
+    original_resnet50_params = 25_557_032  # تعداد پارامترهای ResNet-50 اصلی
+    current_params = sum(p.numel() for p in model.parameters())
+    compression_ratio = original_resnet50_params / current_params
     
-    # 6. ارزیابی روی validation set نیز
-    print("\n=== Validation Set Evaluation ===")
-    val_results = evaluate_model(model, dataset.loader_val, device)
-    print(f"Validation Accuracy: {val_results['accuracy']:.4f}")
-    print(f"Validation F1-Score: {val_results['f1_score']:.4f}")
-    print(f"Validation AUC: {val_results['auc']:.4f}")
-    
-    print("\nEvaluation completed!")
+    print(f"\n=== Compression Statistics ===")
+    print(f"Original ResNet-50 parameters: {original_resnet50_params:,}")
+    print(f"Pruned model parameters: {current_params:,}")
+    print(f"Compression ratio: {compression_ratio:.1f}x")
+    print(f"Parameter reduction: {(1 - current_params/original_resnet50_params)*100:.1f}%")
 
 if __name__ == "__main__":
     main()
