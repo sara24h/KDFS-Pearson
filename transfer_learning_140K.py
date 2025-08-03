@@ -7,8 +7,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # Import your classes
-# from data.dataset import Dataset_selector
-# from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
+from data.dataset import Dataset_selector
+from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
 
 def analyze_student_checkpoint(checkpoint_path):
     """Analyze the specific checkpoint structure"""
