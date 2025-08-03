@@ -67,8 +67,10 @@ def evaluate_model(dataset_mode):
             if mask is not None:
                 # کپی تنسور با clone().detach() و انتقال به دستگاه
                 mask = mask.clone().detach().to(device)
-                # گسترش ماسک به ابعاد [1, C, 64, 64]
-                mask = mask.expand(1, -1, maxpool_h, maxpool_h)  # [1, C, 64, 64]
+                # تغییر شکل ماسک به [C, 64, 64]
+                mask = mask.squeeze(-1).squeeze(-1)  # حذف ابعاد واحد: [C, 1, 1, 1] -> [C]
+                mask = mask.unsqueeze(-1).unsqueeze(-1)  # اضافه کردن ابعاد مکانی: [C, 1, 1]
+                mask = mask.expand(-1, maxpool_h, maxpool_h)  # گسترش به [C, 64, 64]
                 masks.append(mask)
             else:
                 print(f"هشدار: ماسک برای لایه {module} None است")
@@ -83,7 +85,7 @@ def evaluate_model(dataset_mode):
     # تابع کمکی برای تنظیم تعداد کانال‌های downsample
     def adjust_downsample(pruned_model, masks):
         def get_preserved_filter_num(mask):
-            return int(mask.sum(dim=(1, 2, 3)))  # جمع تعداد فیلترهای حفظ‌شده
+            return int(mask.sum(dim=(1, 2)))  # جمع تعداد فیلترهای حفظ‌شده (ابعاد [C, 64, 64])
 
         mask_idx = 0
         for layer_name, layer in pruned_model.named_children():
