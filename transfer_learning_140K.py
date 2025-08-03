@@ -1,21 +1,47 @@
 import os
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.amp import autocast
+from thop import profile
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
-from data.dataset import Dataset_selector
-from thop import profile
 
 # تنظیم دستگاه
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# تابع برای پرون کردن وزن‌ها
+def prune_weights(state_dict, masks):
+    pruned_state_dict = {}
+    mask_idx = 0
+    for name, param in state_dict.items():
+        # نادیده گرفتن کلیدهای مربوط به feat و mask_weight
+        if 'feat' in name or 'mask_weight' in name:
+            continue
+        if 'conv' in name and 'layer' in name:
+            if 'conv1' in name:
+                pruned_state_dict[name] = param[masks[mask_idx] == 1]
+                mask_idx += 1 if 'conv3' in name else 0
+            elif 'conv2' in name:
+                pruned_state_dict[name] = param[masks[mask_idx] == 1][:, masks[mask_idx - 1] == 1]
+                mask_idx += 1 if 'conv3' in name else 0
+            elif 'conv3' in name:
+                pruned_state_dict[name] = param[masks[mask_idx] == 1][:, masks[mask_idx - 1] == 1]
+                mask_idx += 1
+        elif 'bn' in name and 'layer' in name:
+            pruned_state_dict[name] = param[masks[mask_idx - 1] == 1]
+        elif 'downsample.0' in name:
+            pruned_state_dict[name] = param[masks[mask_idx - 1] == 1]
+        else:
+            pruned_state_dict[name] = param
+    return pruned_state_dict
 
 # تعریف مدل sparse برای استخراج ماسک‌ها
 sparse_model = ResNet_50_sparse_hardfakevsreal()
 sparse_model.dataset_type = 'rvf10k'
 
-# بارگذاری وزن‌ها
+# بارگذاری چک‌پوینت
 checkpoint_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt'
 checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
 
@@ -24,13 +50,9 @@ if 'student' not in checkpoint:
 
 # لود وزن‌ها به مدل sparse
 sparse_model.load_state_dict(checkpoint['student'], strict=True)
+sparse_model.eval()
 
-# بررسی کلیدهای گم‌شده و غیرمنتظره
-missing, unexpected = sparse_model.load_state_dict(checkpoint['student'], strict=True)
-print(f"Missing keys: {missing}")
-print(f"Unexpected keys: {unexpected}")
-
-# بررسی وزن‌های feat1
+# بررسی وزن‌های feat1 (برای دیباگ)
 print("Sample weights from feat1 in checkpoint:", checkpoint['student']['feat1.weight'][0, 0, :3, :3])
 print("feat1 weight shape in checkpoint:", checkpoint['student']['feat1.weight'].shape)
 
@@ -42,12 +64,11 @@ masks = [torch.argmax(mask_weight, dim=1).squeeze(1).squeeze(1) for mask_weight 
 pruned_model = ResNet_50_pruned_hardfakevsreal(masks=masks)
 pruned_model.dataset_type = 'rvf10k'
 
-# انتقال وزن‌های غیر پرون‌شده به مدل پرون‌شده
-state_dict_pruned = {}
-for key, value in checkpoint['student'].items():
-    if 'mask_weight' not in key:  # نادیده گرفتن ماسک‌ها
-        state_dict_pruned[key] = value
-missing, unexpected = pruned_model.load_state_dict(state_dict_pruned, strict=True)
+# پرون کردن وزن‌ها
+pruned_state_dict = prune_weights(checkpoint['student'], masks)
+
+# بارگذاری وزن‌های پرون‌شده به مدل
+missing, unexpected = pruned_model.load_state_dict(pruned_state_dict, strict=True)
 print(f"Missing keys in pruned model: {missing}")
 print(f"Unexpected keys in pruned model: {unexpected}")
 
@@ -76,6 +97,7 @@ dataset = Dataset_selector(
     dataset_mode='rvf10k',
     rvf10k_train_csv=os.path.join(data_dir, 'train.csv'),
     rvf10k_valid_csv=os.path.join(data_dir, 'valid.csv'),
+    rvf10k_test_csv=os.path.join(data_dir, 'test.csv'),
     rvf10k_root_dir=data_dir,
     train_batch_size=64,
     eval_batch_size=64,
@@ -92,16 +114,20 @@ criterion = nn.BCEWithLogitsLoss()
 test_loss = 0.0
 correct = 0
 total = 0
+feature_list_shapes = []
 with torch.no_grad():
     for images, labels in test_loader:
         images, labels = images.to(device), labels.to(device).float()
         with torch.amp.autocast('cuda', enabled=device.type == 'cuda'):
-            outputs = pruned_model(images).squeeze(1)  # مدل پرون‌شده feature_list ندارد
+            outputs, feature_list = pruned_model(images)
+            outputs = outputs.squeeze(1)
             loss = criterion(outputs, labels)
         test_loss += loss.item()
         preds = (torch.sigmoid(outputs) > 0.5).float()
         correct += (preds == labels).sum().item()
         total += labels.size(0)
+        feature_list_shapes.append([f.shape for f in feature_list])
 
-# چاپ نتایج
-print(f'Test Loss on rvf10k: {test_loss / len(test_loader):.4f}, Test Accuracy: {100 * correct / total:.2f}%')
+print(f'Test Loss on rvf10k: {test_loss / len(test_loader):.4f}')
+print(f'Test Accuracy on rvf10k: {100 * correct / total:.2f}%')
+print(f"Feature list shapes: {feature_list_shapes[-1]}")
