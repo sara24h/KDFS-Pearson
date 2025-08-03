@@ -9,7 +9,15 @@ from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc
 import numpy as np
 from thop import profile
 
-from model.pruned_model.ResNet_pruned import Bottleneck_pruned
+# افزودن مسیر فایل ResNet_pruned.py به sys.path
+sys.path.append('/model/pruned_model')
+
+# ایمپورت کلاس‌های لازم از ResNet_pruned.py
+try:
+    from ResNet_pruned import ResNet_pruned, Bottleneck_pruned
+except ImportError as e:
+    print(f"Error importing ResNet_pruned or Bottleneck_pruned: {e}")
+    raise
 
 # تابع برای محاسبه تعداد فیلترهای نگه‌داشته‌شده
 def get_preserved_filter_num(mask):
