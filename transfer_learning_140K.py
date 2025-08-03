@@ -10,7 +10,7 @@ import numpy as np
 from thop import profile
 
 # افزودن مسیر فایل ResNet_pruned.py به sys.path
-sys.path.append('/model/pruned_model')
+sys.path.append('/kaggle/working/KDFS-Pearson/model/pruned_model')
 
 # ایمپورت کلاس‌های لازم از ResNet_pruned.py
 try:
