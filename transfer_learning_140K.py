@@ -22,10 +22,12 @@ def prune_weights(state_dict, masks):
         # کپی مستقیم لایه‌های conv1 و bn1 (لایه‌های ابتدایی بدون ماسک)
         if 'conv1' in name and 'layer' not in name:
             pruned_state_dict[name] = param
-        elif 'bn1' in name and 'layer' not in name:
+            continue
+        if 'bn1' in name and 'layer' not in name:
             pruned_state_dict[name] = param
+            continue
         # پرون کردن لایه‌های conv در layer1 تا layer4
-        elif 'conv' in name and 'layer' in name:
+        if 'conv' in name and 'layer' in name:
             if 'conv1' in name:
                 if mask_idx >= len(masks):
                     raise ValueError(f"mask_idx {mask_idx} out of range for masks with length {len(masks)}")
@@ -49,11 +51,22 @@ def prune_weights(state_dict, masks):
                 mask_idx += 1
         # پرون کردن لایه‌های bn و downsample
         elif ('bn' in name or 'downsample' in name) and 'layer' in name:
-            if mask_idx == 0:
-                raise ValueError(f"mask_idx is 0 for {name}, no previous conv layer found")
-            if param.shape[0] != masks[mask_idx - 1].shape[0]:
-                raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[mask_idx - 1].shape[0]}")
-            pruned_state_dict[name] = param[masks[mask_idx - 1] == 1]
+            # استفاده از ماسک لایه conv قبلی (معمولاً conv3 در همان بلوک)
+            if 'bn1' in name:
+                prev_mask_idx = mask_idx - 3  # conv1 در همان بلوک
+            elif 'bn2' in name:
+                prev_mask_idx = mask_idx - 2  # conv2 در همان بلوک
+            elif 'bn3' in name or 'downsample' in name:
+                prev_mask_idx = mask_idx - 1  # conv3 در همان بلوک
+            else:
+                raise ValueError(f"Unexpected layer name: {name}")
+            if prev_mask_idx < 0:
+                raise ValueError(f"prev_mask_idx {prev_mask_idx} is negative for {name}")
+            if prev_mask_idx >= len(masks):
+                raise ValueError(f"prev_mask_idx {prev_mask_idx} out of range for masks with length {len(masks)}")
+            if param.shape[0] != masks[prev_mask_idx].shape[0]:
+                raise ValueError(f"Dimension mismatch for {name}: weight shape {param.shape[0]}, mask shape {masks[prev_mask_idx].shape[0]}")
+            pruned_state_dict[name] = param[masks[prev_mask_idx] == 1]
         # کپی مستقیم سایر لایه‌ها (مثل fc)
         else:
             pruned_state_dict[name] = param
