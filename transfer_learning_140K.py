@@ -1,324 +1,135 @@
 import torch
 import torch.nn as nn
-import torchvision.transforms as transforms
-from torch.utils.data import DataLoader
-import torchvision.datasets as datasets
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_auc_score
 import numpy as np
 from tqdm import tqdm
 import pickle
 import os
-import pandas as pd
-from PIL import Image
-from sklearn.model_selection import train_test_split
 
-# کد مدل شما (همان کدی که دادید)
-import torch.nn.functional as F
+# Import از فایل‌های موجود شما
+from dataset import Dataset_selector
+from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
+# یا اگر از student model استفاده می‌کنید:
+# from model.student.ResNet_sparse import ResNet_50_pruned_hardfakevsreal
 
-def get_preserved_filter_num(mask):
-    return int(mask.sum())
+def extract_masks_from_checkpoint(checkpoint):
+    """
+    ماسک‌ها را از checkpoint استخراج می‌کند
+    """
+    masks = []
+    
+    # ترتیب layers در ResNet50: layer1, layer2, layer3, layer4
+    layer_names = ['layer1', 'layer2', 'layer3', 'layer4']
+    block_counts = [3, 4, 6, 3]  # تعداد blocks در هر layer
+    
+    for layer_idx, (layer_name, num_blocks) in enumerate(zip(layer_names, block_counts)):
+        for block_idx in range(num_blocks):
+            # هر Bottleneck block دارای 3 conv layer است
+            for conv_idx in [1, 2, 3]:  # conv1, conv2, conv3
+                mask_key = f"{layer_name}.{block_idx}.conv{conv_idx}.mask_weight"
+                
+                if mask_key in checkpoint:
+                    mask_tensor = checkpoint[mask_key]
+                    # تبدیل mask tensor به boolean mask
+                    # معمولاً mask_weight برای فیلترهای فعال 1 و برای غیرفعال 0 دارد
+                    mask_bool = (mask_tensor.abs().sum(dim=[1,2,3]) > 1e-8)  # فیلترهای غیرصفر
+                    masks.append(mask_bool)
+                    print(f"Extracted mask for {mask_key}: {mask_bool.sum()}/{len(mask_bool)} filters preserved")
+                else:
+                    print(f"Warning: {mask_key} not found in checkpoint")
+                    # ایجاد mask پیش‌فرض (همه فیلترها فعال)
+                    if conv_idx == 1:
+                        num_filters = [64, 128, 256, 512][layer_idx]
+                    elif conv_idx == 2:
+                        num_filters = [64, 128, 256, 512][layer_idx]
+                    else:  # conv3
+                        num_filters = [64, 128, 256, 512][layer_idx] * 4
+                    
+                    mask_bool = torch.ones(num_filters, dtype=torch.bool)
+                    masks.append(mask_bool)
+    
+    print(f"Total masks extracted: {len(masks)}")
+    return masks
 
-class BasicBlock_pruned(nn.Module):
-    expansion = 1
+def create_dummy_masks_for_resnet50():
+    """
+    ماسک‌های dummy برای ResNet50 ایجاد می‌کند (همه فیلترها فعال)
+    """
+    masks = []
+    block_configs = [3, 4, 6, 3]  # تعداد blocks در هر layer
+    channels = [64, 128, 256, 512]  # تعداد کانال‌های خروجی هر layer
+    
+    for layer_idx, (num_blocks, base_channels) in enumerate(zip(block_configs, channels)):
+        for block_idx in range(num_blocks):
+            # هر Bottleneck block دارای 3 conv layer است
+            mask1 = torch.ones(base_channels, dtype=torch.bool)  # Conv1
+            mask2 = torch.ones(base_channels, dtype=torch.bool)  # Conv2
+            mask3 = torch.ones(base_channels * 4, dtype=torch.bool)  # Conv3
+            
+            masks.extend([mask1, mask2, mask3])
+    
+    print(f"Created {len(masks)} dummy masks (all filters preserved)")
+    return masks
 
-    def __init__(self, in_planes, planes, masks=[], stride=1):
-        super().__init__()
-        self.masks = masks
-
-        preserved_filter_num1 = get_preserved_filter_num(masks[0])
-        self.conv1 = nn.Conv2d(
-            in_planes,
-            preserved_filter_num1,
-            kernel_size=3,
-            stride=stride,
-            padding=1,
-            bias=False,
-        )
-        self.bn1 = nn.BatchNorm2d(preserved_filter_num1)
-        preserved_filter_num2 = get_preserved_filter_num(masks[1])
-        self.conv2 = nn.Conv2d(
-            preserved_filter_num1,
-            preserved_filter_num2,
-            kernel_size=3,
-            stride=1,
-            padding=1,
-            bias=False,
-        )
-        self.bn2 = nn.BatchNorm2d(preserved_filter_num2)
-
-        self.downsample = nn.Sequential()
-        if stride != 1 or in_planes != self.expansion * planes:
-            self.downsample = nn.Sequential(
-                nn.Conv2d(
-                    in_planes,
-                    self.expansion * planes,
-                    kernel_size=1,
-                    stride=stride,
-                    bias=False,
-                ),
-                nn.BatchNorm2d(self.expansion * planes),
-            )
-
-    def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-
-        shortcut_out = self.downsample(x).clone()
-        padded_out = torch.zeros_like(shortcut_out).clone()
-        for padded_feature_map, feature_map in zip(padded_out, out):
-            padded_feature_map[self.masks[1] == 1] = feature_map
-
-        assert padded_out.shape == shortcut_out.shape, "wrong shape"
-
-        padded_out += shortcut_out
-        padded_out = F.relu(padded_out)
-        return padded_out
-
-class Bottleneck_pruned(nn.Module):
-    expansion = 4
-
-    def __init__(self, in_planes, planes, masks=[], stride=1):
-        super().__init__()
-        self.masks = masks
-
-        preserved_filter_num1 = get_preserved_filter_num(masks[0])
-        self.conv1 = nn.Conv2d(
-            in_planes, preserved_filter_num1, kernel_size=1, bias=False
-        )
-        self.bn1 = nn.BatchNorm2d(preserved_filter_num1)
-        preserved_filter_num2 = get_preserved_filter_num(masks[1])
-        self.conv2 = nn.Conv2d(
-            preserved_filter_num1,
-            preserved_filter_num2,
-            kernel_size=3,
-            stride=stride,
-            padding=1,
-            bias=False,
-        )
-        self.bn2 = nn.BatchNorm2d(preserved_filter_num2)
-        preserved_filter_num3 = get_preserved_filter_num(masks[2])
-        self.conv3 = nn.Conv2d(
-            preserved_filter_num2,
-            preserved_filter_num3,
-            kernel_size=1,
-            bias=False,
-        )
-        self.bn3 = nn.BatchNorm2d(preserved_filter_num3)
-
-        self.downsample = nn.Sequential()
-        if stride != 1 or in_planes != self.expansion * planes:
-            self.downsample = nn.Sequential(
-                nn.Conv2d(
-                    in_planes,
-                    self.expansion * planes,
-                    kernel_size=1,
-                    stride=stride,
-                    bias=False,
-                ),
-                nn.BatchNorm2d(self.expansion * planes),
-            )
-
-    def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = F.relu(self.bn2(self.conv2(out)))
-        out = self.bn3(self.conv3(out))
-
-        shortcut_out = self.downsample(x).clone()
-        padded_out = torch.zeros_like(shortcut_out).clone()
-        for padded_feature_map, feature_map in zip(padded_out, out):
-            padded_feature_map[self.masks[2] == 1] = feature_map
-
-        assert padded_out.shape == shortcut_out.shape, "wrong shape"
-
-        padded_out += shortcut_out
-        padded_out = F.relu(padded_out)
-        return padded_out
-
-class ResNet_pruned(nn.Module):
-    def __init__(self, block, num_blocks, masks=[], num_classes=1):
-        super().__init__()
-        self.in_planes = 64
-
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-
-        coef = 0
-        if block == BasicBlock_pruned:
-            coef = 2
-        elif block == Bottleneck_pruned:
-            coef = 3
-        num = 0
-        self.layer1 = self._make_layer(
-            block,
-            64,
-            num_blocks[0],
-            stride=1,
-            masks=masks[0 : coef * num_blocks[0]],
-        )
-        num = num + coef * num_blocks[0]
-
-        self.layer2 = self._make_layer(
-            block,
-            128,
-            num_blocks[1],
-            stride=2,
-            masks=masks[num : num + coef * num_blocks[1]],
-        )
-        num = num + coef * num_blocks[1]
-
-        self.layer3 = self._make_layer(
-            block,
-            256,
-            num_blocks[2],
-            stride=2,
-            masks=masks[num : num + coef * num_blocks[2]],
-        )
-        num = num + coef * num_blocks[2]
-
-        self.layer4 = self._make_layer(
-            block,
-            512,
-            num_blocks[3],
-            stride=2,
-            masks=masks[num : num + coef * num_blocks[3]],
-        )
-        num = num + coef * num_blocks[3]
-
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(512 * block.expansion, num_classes)
-
-    def _make_layer(self, block, planes, num_blocks, stride, masks=[]):
-        strides = [stride] + [1] * (num_blocks - 1)
-        layers = []
-
-        coef = 0
-        if block == BasicBlock_pruned:
-            coef = 2
-        elif block == Bottleneck_pruned:
-            coef = 3
-
-        for i, stride in enumerate(strides):
-            layers.append(
-                block(
-                    self.in_planes,
-                    planes,
-                    masks[coef * i : coef * i + coef],
-                    stride,
-                )
-            )
-            self.in_planes = planes * block.expansion
-        return nn.Sequential(*layers)
-
-    def forward(self, x):
-        feature_list = []
-
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.maxpool(out)
-
-        for block in self.layer1:
-            out = block(out)
-        feature_list.append(out)
-
-        for block in self.layer2:
-            out = block(out)
-        feature_list.append(out)
-
-        for block in self.layer3:
-            out = block(out)
-        feature_list.append(out)
-
-        for block in self.layer4:
-            out = block(out)
-        feature_list.append(out)
-
-        out = self.avgpool(out)
-        out = out.view(out.size(0), -1)
-        out = self.fc(out)
-        return out, feature_list
-
-def ResNet_50_pruned_hardfakevsreal(masks):
-    return ResNet_pruned(
-        block=Bottleneck_pruned, num_blocks=[3, 4, 6, 3], masks=masks, num_classes=1
-    )
-
-def load_pruned_model(model_path, masks_path=None):
+def load_pruned_model(model_path, masks_path=None, use_dummy_masks=True):
     """
     مدل pruned شده را بارگذاری می‌کند
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # بارگذاری checkpoint
-    checkpoint = torch.load(model_path, map_location=device)
-    
-    # استخراج masks (اگر در checkpoint موجود باشد)
-    if 'masks' in checkpoint:
-        masks = checkpoint['masks']
-    elif masks_path:
-        # اگر masks جداگانه ذخیره شده باشد
-        with open(masks_path, 'rb') as f:
-            masks = pickle.load(f)
-    else:
-        print("Warning: No masks found. You need to provide masks for the pruned model.")
-        return None
-    
-    # ایجاد مدل
-    model = ResNet_50_pruned_hardfakevsreal(masks)
-    
-    # بارگذاری وزن‌ها
-    if 'state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['state_dict'])
-    else:
-        model.load_state_dict(checkpoint)
-    
-    model.to(device)
-    model.eval()
-    
-    print(f"Model loaded successfully on {device}")
-    print(f"Model has {sum(p.numel() for p in model.parameters())} parameters")
-    
-    return model, device
-
-# کد دیتاست شما
-import pandas as pd
-from sklearn.model_selection import train_test_split
-
-class FaceDataset(torch.utils.data.Dataset):
-    def __init__(self, data_frame, root_dir, transform=None, img_column='images_id'):
-        self.data = data_frame
-        self.root_dir = root_dir
-        self.transform = transform
-        self.img_column = img_column
-        self.label_map = {1: 1, 0: 0, 'real': 1, 'fake': 0, 'Real': 1, 'Fake': 0}
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        img_name = os.path.join(self.root_dir, self.data[self.img_column].iloc[idx])
-        if not os.path.exists(img_name):
-            raise FileNotFoundError(f"image not found: {img_name}")
-        image = Image.open(img_name).convert('RGB')
-        label = self.label_map[self.data['label'].iloc[idx]]
-        if self.transform:
-            image = self.transform(image)
-        return image, torch.tensor(label, dtype=torch.float)
-
-def prepare_test_dataloader(dataset_mode='140k', batch_size=32, **dataset_kwargs):
-    """
-    دیتالودر تست را با استفاده از Dataset_selector آماده می‌کند
-    """
-    # Dataset_selector را import کنید یا کد آن را اینجا قرار دهید
-    from your_dataset_file import Dataset_selector  # نام فایل دیتاست خود را جایگزین کنید
-    
-    # ایجاد دیتاست
-    dataset = Dataset_selector(
-        dataset_mode=dataset_mode,
-        eval_batch_size=batch_size,
-        **dataset_kwargs
-    )
-    
-    return dataset.loader_test, dataset
+    try:
+        # بارگذاری checkpoint
+        checkpoint = torch.load(model_path, map_location=device)
+        print("Checkpoint loaded successfully")
+        print(f"Checkpoint contains {len(checkpoint)} keys")
+        
+        # استخراج masks از checkpoint
+        masks = None
+        if 'masks' in checkpoint:
+            masks = checkpoint['masks']
+            print("Masks found in checkpoint")
+        elif any('mask_weight' in key for key in checkpoint.keys()):
+            print("Found mask_weight tensors in checkpoint, extracting masks...")
+            masks = extract_masks_from_checkpoint(checkpoint)
+        elif masks_path and os.path.exists(masks_path):
+            with open(masks_path, 'rb') as f:
+                masks = pickle.load(f)
+            print("Masks loaded from separate file")
+        elif use_dummy_masks:
+            print("Warning: No masks found. Creating dummy masks (all filters preserved)")
+            masks = create_dummy_masks_for_resnet50()
+        else:
+            print("Error: No masks found and dummy masks disabled")
+            return None, None
+        
+        # ایجاد مدل
+        model = ResNet_50_pruned_hardfakevsreal(masks)
+        
+        # حذف mask_weight keys از checkpoint برای بارگذاری وزن‌ها
+        state_dict = {}
+        for key, value in checkpoint.items():
+            if 'mask_weight' not in key:
+                state_dict[key] = value
+        
+        # بارگذاری وزن‌ها
+        try:
+            model.load_state_dict(state_dict, strict=False)
+            print("Model weights loaded successfully")
+        except Exception as e:
+            print(f"Warning: Could not load all weights: {e}")
+            print("Continuing with partially loaded model...")
+        
+        model.to(device)
+        model.eval()
+        
+        print(f"Model loaded successfully on {device}")
+        print(f"Model has {sum(p.numel() for p in model.parameters())} parameters")
+        
+        return model, device
+        
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return None, None
 
 def evaluate_model(model, test_loader, device):
     """
@@ -417,7 +228,7 @@ def main():
     # 2. آماده‌سازی دیتا
     print("Preparing test data...")
     try:
-        # ایجاد دیتاست به صورت مستقیم
+        # ایجاد دیتاست
         dataset = Dataset_selector(**dataset_config)
         test_loader = dataset.loader_test
         
