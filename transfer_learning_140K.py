@@ -1,4 +1,4 @@
-from data import Dataset_selector  # Replace with actual import
+from data.dataset import Dataset_selector  # Replace with actual import
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal  # Replace with actual import
 import torch
 import torch.nn as nn
