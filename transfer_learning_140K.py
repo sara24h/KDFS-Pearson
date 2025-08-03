@@ -1,367 +1,279 @@
+import os
 import torch
 import torch.nn as nn
-import numpy as np
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_auc_score, confusion_matrix
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-import seaborn as sns
+from torch.utils.data import DataLoader
 from thop import profile
-
-# فرض می‌کنیم این ماژول‌ها در پروژه شما وجود دارند
-from data.dataset import Dataset_selector
-from model.student.ResNet_sparse import ResNet_50_sparse_140k
+import argparse
+import pandas as pd
+from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, SoftMaskedConv2d
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
+from data.dataset import Dataset_selector
 
-def analyze_student_checkpoint(checkpoint_path):
-    """Analyze the specific checkpoint structure"""
-    print("="*60)
-    print("ANALYZING STUDENT CHECKPOINT")
-    print("="*60)
-    
-    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
-    
-    print(f"Checkpoint keys: {list(checkpoint.keys())}")
-    print(f"Best precision: {checkpoint.get('best_prec1', 'N/A')}")
-    print(f"Start epoch: {checkpoint.get('start_epoch', 'N/A')}")
-    
-    if 'student' in checkpoint:
-        student_state = checkpoint['student']
-        print(f"\nStudent model has {len(student_state)} parameters")
-        
-        conv_layers = {}
-        for key, value in student_state.items():
-            if 'conv' in key and 'weight' in key and 'mask_weight' not in key:
-                conv_layers[key] = value.shape
-        
-        print(f"\nConv layers found: {len(conv_layers)}")
-        for key, shape in list(conv_layers.items())[:10]:
-            print(f"  {key}: {shape}")
-        
-        return student_state, conv_layers
-    else:
-        print("No 'student' key found!")
-        return None, None
+# تنظیمات پایه برای فلاپس و پارامترها
+Flops_baselines = {
+    "ResNet_50": {
+        "hardfakevsreal": 7700.0,
+        "rvf10k": 5390.0,
+        "140k": 5390.0,
+        "190k": 5390.0,
+        "200k": 5390.0,
+        "330k": 5390.0,
+        "125k": 2100.0,
+    }
+}
+Params_baselines = {
+    "ResNet_50": {
+        "hardfakevsreal": 14.97,
+        "rvf10k": 23.51,
+        "140k": 23.51,
+        "190k": 23.51,
+        "200k": 23.51,
+        "330k": 23.51,
+        "125k": 23.51,
+    }
+}
+image_sizes = {
+    "hardfakevsreal": 300,
+    "rvf10k": 256,
+    "140k": 256,
+    "190k": 256,
+    "200k": 256,
+    "330k": 256,
+    "125k": 160,
+}
 
-def extract_masks_from_conv_layers(student_state):
-    """Extract masks from mask_weight in the sparse model"""
+def parse_args():
+    parser = argparse.ArgumentParser(description='Evaluate generalization of pruned ResNet50 student model.')
+    parser.add_argument('--dataset_modes', type=str, nargs='+', default=['hardfake', 'rvf10k', '140k'],
+                        choices=['hardfake', 'rvf10k', '140k', '190k', '200k', '330k', '125k'],
+                        help='Datasets to evaluate generalization on')
+    parser.add_argument('--data_dir', type=str, required=True,
+                        help='Path to the dataset directory')
+    parser.add_argument('--output_dir', type=str, default='output_dir',
+                        help='Directory to save evaluation results')
+    parser.add_argument('--checkpoint_path', type=str, 
+                        default='/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt',
+                        help='Path to the sparse student checkpoint')
+    return parser.parse_args()
+
+def extract_masks_from_sparse_model(sparse_model):
+    """Extract binary masks from sparse model's mask_weight"""
     print("\n" + "="*60)
-    print("EXTRACTING MASKS FROM CONV LAYERS")
+    print("EXTRACTING MASKS FROM SPARSE MODEL")
     print("="*60)
     
     masks = []
-    layer_patterns = [
-        ('layer1', 3),  # 3 blocks
-        ('layer2', 4),  # 4 blocks
-        ('layer3', 6),  # 6 blocks
-        ('layer4', 3),  # 3 blocks
-    ]
-    
-    for layer_name, num_blocks in layer_patterns:
-        for block_idx in range(num_blocks):
-            for conv_idx in [1, 2, 3]:
-                key = f"{layer_name}.{block_idx}.conv{conv_idx}.mask_weight"
-                if key in student_state:
-                    mask = student_state[key][:, 0, 0, 0]  # تبدیل به ماسک باینری
-                    masks.append(mask > 0)
-                    print(f"  {key}: {mask.shape[0]} filters -> mask created ({mask.sum().item()} preserved)")
-                else:
-                    print(f"  Warning: {key} not found")
+    mask_weights = [m.mask_weight for m in sparse_model.mask_modules]
+    for i, mask_weight in enumerate(mask_weights):
+        mask = torch.argmax(mask_weight, dim=1).squeeze(1).squeeze(1) > 0
+        masks.append(mask)
+        print(f"  Mask {i}: {mask.sum().item()} filters preserved out of {len(mask)}")
     
     print(f"\nTotal masks created: {len(masks)}")
     return masks
 
-def create_default_resnet50_masks():
-    """Create default masks for ResNet50"""
-    print("Creating default ResNet50 masks...")
-    
-    masks = []
-    for _ in range(3):  # Layer 1: 3 blocks, [64, 64, 256]
-        masks.extend([torch.ones(64, dtype=torch.bool), torch.ones(64, dtype=torch.bool), torch.ones(256, dtype=torch.bool)])
-    for _ in range(4):  # Layer 2: 4 blocks, [128, 128, 512]
-        masks.extend([torch.ones(128, dtype=torch.bool), torch.ones(128, dtype=torch.bool), torch.ones(512, dtype=torch.bool)])
-    for _ in range(6):  # Layer 3: 6 blocks, [256, 256, 1024]
-        masks.extend([torch.ones(256, dtype=torch.bool), torch.ones(256, dtype=torch.bool), torch.ones(1024, dtype=torch.bool)])
-    for _ in range(3):  # Layer 4: 3 blocks, [512, 512, 2048]
-        masks.extend([torch.ones(512, dtype=torch.bool), torch.ones(512, dtype=torch.bool), torch.ones(2048, dtype=torch.bool)])
-    
-    print(f"Created {len(masks)} default masks")
-    return masks
-
-def create_and_load_student_model(checkpoint_path, device='cuda'):
-    """Create and load the student model with proper error handling"""
-    print("="*60)
-    print("CREATING AND LOADING STUDENT MODEL")
+def adjust_weights_for_pruned_model(sparse_state_dict, pruned_model, masks):
+    """Adjust weights from sparse model to match pruned model's reduced dimensions"""
+    print("\n" + "="*60)
+    print("ADJUSTING WEIGHTS FOR PRUNED MODEL")
     print("="*60)
     
-    # Step 1: Analyze checkpoint
-    student_state, conv_layers = analyze_student_checkpoint(checkpoint_path)
-    if student_state is None:
-        print("Failed to extract student state")
-        return None
+    pruned_state_dict = pruned_model.state_dict()
+    layer_patterns = [
+        ('layer1', 3, [64, 64, 256]),
+        ('layer2', 4, [128, 128, 512]),
+        ('layer3', 6, [256, 256, 1024]),
+        ('layer4', 3, [512, 512, 2048]),
+    ]
+    mask_idx = 0
     
-    # Step 2: Load sparse model to extract masks
-    try:
-        sparse_model = ResNet_50_sparse_140k()
-        sparse_model.load_state_dict(student_state, strict=True)
-        print("✓ Sparse model loaded successfully")
-    except Exception as e:
-        print(f"✗ Error loading sparse model: {e}")
-        return None
+    # تنظیم وزن‌های conv1
+    if 'conv1.weight' in sparse_state_dict:
+        out_mask = masks[0]
+        pruned_state_dict['conv1.weight'] = sparse_state_dict['conv1.weight'][out_mask]
+        for bn_param in ['weight', 'bias', 'running_mean', 'running_var']:
+            bn_key = f'bn1.{bn_param}'
+            if bn_key in sparse_state_dict:
+                pruned_state_dict[bn_key] = sparse_state_dict[bn_key][out_mask]
+        mask_idx += 1
     
-    # Step 3: Extract masks
-    masks = extract_masks_from_conv_layers(student_state)
-    if not masks:
-        print("Failed to extract masks, using defaults")
-        masks = create_default_resnet50_masks()
+    # تنظیم وزن‌های لایه‌های Bottleneck
+    for layer_name, num_blocks, channels in layer_patterns:
+        for block_idx in range(num_blocks):
+            for conv_idx in range(1, 4):
+                conv_key = f"{layer_name}.{block_idx}.conv{conv_idx}.weight"
+                bn_key = f"{layer_name}.{block_idx}.bn{conv_idx}.weight"
+                if conv_key in sparse_state_dict and conv_key in pruned_state_dict:
+                    out_mask = masks[mask_idx]
+                    out_channels = out_mask.sum().item()
+                    
+                    # تنظیم ورودی‌ها برای conv2 و conv3
+                    if conv_idx > 1:
+                        prev_mask = masks[mask_idx - 1]
+                        in_channels = prev_mask.sum().item()
+                    else:
+                        in_channels = sparse_state_dict[conv_key].shape[1]
+                        prev_mask = slice(None)
+                    
+                    # انتخاب وزن‌های فعال
+                    weight = sparse_state_dict[conv_key]
+                    weight = weight[out_mask][:, prev_mask]
+                    pruned_state_dict[conv_key] = weight
+                    print(f"  Adjusted {conv_key}: {weight.shape}")
+                    
+                    # تنظیم پارامترهای BatchNorm
+                    for bn_param in ['weight', 'bias', 'running_mean', 'running_var']:
+                        bn_key_full = f"{layer_name}.{block_idx}.bn{conv_idx}.{bn_param}"
+                        if bn_key_full in sparse_state_dict:
+                            pruned_state_dict[bn_key_full] = sparse_state_dict[bn_key_full][out_mask]
+                    
+                    mask_idx += 1
+            
+            # تنظیم لایه‌های downsample
+            if block_idx == 0:
+                downsample_key = f"{layer_name}.{block_idx}.downsample.0.weight"
+                if downsample_key in sparse_state_dict:
+                    out_mask = masks[mask_idx - 1]  # ماسک conv3
+                    in_mask = masks[mask_idx - 3] if layer_name != 'layer1' else slice(None)
+                    pruned_state_dict[downsample_key] = sparse_state_dict[downsample_key][out_mask][:, in_mask]
+                    for bn_param in ['weight', 'bias', 'running_mean', 'running_var']:
+                        bn_key = f"{layer_name}.{block_idx}.downsample.1.{bn_param}"
+                        if bn_key in sparse_state_dict:
+                            pruned_state_dict[bn_key] = sparse_state_dict[bn_key][out_mask]
     
-    # Step 4: Create pruned model
-    try:
-        print(f"\nCreating ResNet50 pruned model with {len(masks)} masks...")
-        pruned_model = ResNet_50_pruned_hardfakevsreal(masks=masks)
-        print("✓ Pruned model created successfully")
-        
-        # Step 5: Load weights (ignore incompatible keys)
-        state_dict = {k: v for k, v in student_state.items() if k in pruned_model.state_dict()}
-        pruned_model.load_state_dict(state_dict, strict=False)
-        print("✓ Pruned model weights loaded with ignored keys")
-        
-        total_params = sum(p.numel() for p in pruned_model.parameters())
-        print(f"✓ Total parameters: {total_params:,}")
-        
-        # Step 6: Calculate FLOPs
-        input_size = 256  # برای دیتاست 140k
-        input = torch.randn(1, 3, input_size, input_size).to(device)
-        flops, params = profile(pruned_model, inputs=(input,), verbose=False)
-        print(f"Total FLOPs: {flops / 1e6:.2f} MFLOPs")
-        print(f"Total Parameters: {params / 1e6:.2f}M")
-    except Exception as e:
-        print(f"✗ Error creating/loading pruned model: {e}")
-        return None
+    # تنظیم لایه fc
+    fc_key = 'fc.weight'
+    if fc_key in sparse_state_dict and fc_key in pruned_state_dict:
+        in_mask = masks[-1]  # ماسک آخرین لایه conv
+        pruned_state_dict[fc_key] = sparse_state_dict[fc_key][:, in_mask]
+        pruned_state_dict['fc.bias'] = sparse_state_dict['fc.bias']
+        print(f"  Adjusted {fc_key}: {pruned_state_dict[fc_key].shape}")
     
-    # Step 7: Prepare for inference
-    pruned_model.to(device)
-    pruned_model.eval()
-    print(f"✓ Model ready on {device}")
-    
-    return pruned_model
+    return pruned_state_dict
 
-def evaluate_student_model(model, dataloader, device='cuda'):
-    """Evaluate the student model"""
-    print("="*50)
-    print("EVALUATING STUDENT MODEL")
-    print("="*50)
-    
+def evaluate_model(model, loader, criterion, device):
+    """Evaluate model on a given data loader"""
     model.eval()
-    all_predictions = []
-    all_labels = []
-    all_probabilities = []
-    total_loss = 0.0
-    
-    criterion = nn.BCEWithLogitsLoss()
-    
+    loss = 0.0
+    correct = 0
+    total = 0
     with torch.no_grad():
-        for batch_idx, (images, labels) in enumerate(tqdm(dataloader, desc="Evaluating")):
-            try:
-                images = images.to(device)
-                labels = labels.to(device).float()
-                
-                outputs, _ = model(images)
-                outputs = outputs.squeeze()
-                
-                if outputs.dim() == 0:
-                    outputs = outputs.unsqueeze(0)
-                if labels.dim() == 0:
-                    labels = labels.unsqueeze(0)
-                
-                loss = criterion(outputs, labels)
-                total_loss += loss.item()
-                
-                probabilities = torch.sigmoid(outputs)
-                predictions = (probabilities > 0.5).float()
-                
-                all_predictions.extend(predictions.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
-                all_probabilities.extend(probabilities.cpu().numpy())
-                
-            except Exception as e:
-                print(f"Error in batch {batch_idx}: {e}")
-                continue
-    
-    if len(all_predictions) == 0:
-        print("No predictions made!")
-        return None
-    
-    all_predictions = np.array(all_predictions)
-    all_labels = np.array(all_labels)
-    all_probabilities = np.array(all_probabilities)
-    
-    accuracy = accuracy_score(all_labels, all_predictions)
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        all_labels, all_predictions, average='binary', zero_division=0
-    )
-    
-    try:
-        auc = roc_auc_score(all_labels, all_probabilities)
-    except:
-        auc = 0.0
-    
-    avg_loss = total_loss / len(dataloader)
-    
-    cm = confusion_matrix(all_labels, all_predictions)
-    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-    
-    results = {
-        'accuracy': accuracy,
-        'precision': precision,
-        'recall': recall,
-        'f1_score': f1,
-        'auc': auc,
-        'loss': avg_loss,
-        'confusion_matrix': cm,
-        'total_samples': len(all_labels),
-        'tn': tn, 'fp': fp, 'fn': fn, 'tp': tp
-    }
-    
-    print(f"\nEVALUATION RESULTS:")
-    print(f"Total Samples: {len(all_labels)}")
-    print(f"Accuracy:      {accuracy:.4f}")
-    print(f"Precision:     {precision:.4f}")
-    print(f"Recall:        {recall:.4f}")
-    print(f"F1-Score:      {f1:.4f}")
-    print(f"AUC:           {auc:.4f}")
-    print(f"Loss:          {avg_loss:.4f}")
-    print(f"\nConfusion Matrix:")
-    print(f"              Predicted")
-    print(f"              Fake  Real")
-    print(f"Actual Fake   {tn:4d}  {fp:4d}")
-    print(f"       Real   {fn:4d}  {tp:4d}")
-    
-    return results
+        for images, labels in loader:
+            images, labels = images.to(device), labels.to(device).float()
+            with torch.amp.autocast('cuda', enabled=device.type == 'cuda'):
+                outputs = model(images)
+                outputs = outputs.squeeze(1)
+                loss += criterion(outputs, labels).item()
+                preds = (torch.sigmoid(outputs) > 0.5).float()
+                correct += (preds == labels).sum().item()
+                total += labels.size(0)
+    return loss / len(loader), 100 * correct / total
 
-def plot_comparison(val_results, test_results):
-    """Plot validation vs test results"""
-    if not val_results or not test_results:
-        return
-    
-    metrics = ['accuracy', 'precision', 'recall', 'f1_score', 'auc']
-    val_values = [val_results[m] for m in metrics]
-    test_values = [test_results[m] for m in metrics]
-    
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-    
-    x = np.arange(len(metrics))
-    width = 0.35
-    
-    ax1.bar(x - width/2, val_values, width, label='Validation', alpha=0.8, color='skyblue')
-    ax1.bar(x + width/2, test_values, width, label='Test', alpha=0.8, color='lightcoral')
-    
-    ax1.set_xlabel('Metrics')
-    ax1.set_ylabel('Score')
-    ax1.set_title('Student Model: Validation vs Test Performance')
-    ax1.set_xticks(x)
-    ax1.set_xticklabels([m.replace('_', ' ').title() for m in metrics], rotation=45)
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-    ax1.set_ylim(0, 1.1)
-    
-    for i, (val, test) in enumerate(zip(val_values, test_values)):
-        ax1.text(i - width/2, val + 0.01, f'{val:.3f}', ha='center', va='bottom', fontsize=9)
-        ax1.text(i + width/2, test + 0.01, f'{test:.3f}', ha='center', va='bottom', fontsize=9)
-    
-    cm_val = val_results['confusion_matrix']
-    cm_test = test_results['confusion_matrix']
-    
-    ax2.text(0.25, 0.8, 'Validation', transform=ax2.transAxes, ha='center', fontsize=12, weight='bold')
-    ax2.text(0.25, 0.7, f"Acc: {val_results['accuracy']:.3f}", transform=ax2.transAxes, ha='center', fontsize=10)
-    ax2.text(0.25, 0.6, f"F1: {val_results['f1_score']:.3f}", transform=ax2.transAxes, ha='center', fontsize=10)
-    
-    ax2.text(0.75, 0.8, 'Test', transform=ax2.transAxes, ha='center', fontsize=12, weight='bold')
-    ax2.text(0.75, 0.7, f"Acc: {test_results['accuracy']:.3f}", transform=ax2.transAxes, ha='center', fontsize=10)
-    ax2.text(0.75, 0.6, f"F1: {test_results['f1_score']:.3f}", transform=ax2.transAxes, ha='center', fontsize=10)
-    
-    ax2.text(0.25, 0.4, f"TN: {val_results['tn']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    ax2.text(0.25, 0.3, f"FP: {val_results['fp']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    ax2.text(0.25, 0.2, f"FN: {val_results['fn']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    ax2.text(0.25, 0.1, f"TP: {val_results['tp']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    
-    ax2.text(0.75, 0.4, f"TN: {test_results['tn']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    ax2.text(0.75, 0.3, f"FP: {test_results['fp']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    ax2.text(0.75, 0.2, f"FN: {test_results['fn']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    ax2.text(0.75, 0.1, f"TP: {test_results['tp']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    
-    ax2.set_xlim(0, 1)
-    ax2.set_ylim(0, 1)
-    ax2.set_title('Confusion Matrix Summary')
-    ax2.axis('off')
-    
-    plt.tight_layout()
-    plt.savefig('student_generalization_results.png', dpi=300, bbox_inches='tight')
-    plt.show()
+def main():
+    args = parse_args()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    os.makedirs(args.output_dir, exist_ok=True)
 
-def test_student_generalization():
-    """Main function to test student model generalization"""
-    print("STUDENT MODEL GENERALIZATION TEST")
-    print("="*60)
-    
-    checkpoint_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt'
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    
-    # Step 1: Create and load model
-    model = create_and_load_student_model(checkpoint_path, device)
-    if model is None:
-        print("Failed to load student model!")
-        return None, None
-    
-    # Step 2: Create dataset
-    try:
-        print("\nCreating 140k dataset...")
-        dataset = Dataset_selector(
-            dataset_mode='140k',
-            realfake140k_train_csv='/kaggle/input/140k-real-and-fake-faces/train.csv',
-            realfake140k_valid_csv='/kaggle/input/140k-real-and-fake-faces/valid.csv',
-            realfake140k_test_csv='/kaggle/input/140k-real-and-fake-faces/test.csv',
-            realfake140k_root_dir='/kaggle/input/140k-real-and-fake-faces',
-            train_batch_size=16,
-            eval_batch_size=16,
-            num_workers=2,
-            ddp=False,
-        )
-        print("✓ Dataset created successfully")
-        
-    except Exception as e:
-        print(f"Error creating dataset: {e}")
-        return None, None
-    
-    # Step 3: Evaluate on validation set
-    print("\n" + "="*60)
-    print("TESTING ON VALIDATION SET")
-    print("="*60)
-    val_results = evaluate_student_model(model, dataset.loader_val, device)
-    
-    # Step 4: Evaluate on test set
-    print("\n" + "="*60)
-    print("TESTING ON TEST SET")
-    print("="*60)
-    test_results = evaluate_student_model(model, dataset.loader_test, device)
-    
-    # Step 5: Plot results
-    if val_results and test_results:
-        print("\n" + "="*60)
-        print("FINAL SUMMARY")
-        print("="*60)
-        print(f"Validation Accuracy: {val_results['accuracy']:.4f}")
-        print(f"Test Accuracy:       {test_results['accuracy']:.4f}")
-        print(f"Validation F1:       {val_results['f1_score']:.4f}")
-        print(f"Test F1:             {test_results['f1_score']:.4f}")
-        print(f"Generalization Gap:  {abs(val_results['accuracy'] - test_results['accuracy']):.4f}")
-        
-        plot_comparison(val_results, test_results)
-        
-        print("\n✓ Student model generalization test completed!")
+    # Load sparse student model
+    sparse_model = ResNet_50_sparse_hardfakevsreal()
+    checkpoint = torch.load(args.checkpoint_path, map_location='cpu', weights_only=True)
+    if 'student' in checkpoint:
+        sparse_model.load_state_dict(checkpoint['student'], strict=True)
+        print("✓ Sparse model loaded successfully")
     else:
-        print("\n✗ Generalization test failed!")
+        raise KeyError("'student' key not found in checkpoint")
+
+    # Extract masks
+    masks = extract_masks_from_sparse_model(sparse_model)
+
+    # Initialize pruned model
+    pruned_model = ResNet_50_pruned_hardfakevsreal(masks=masks)
+    num_ftrs = pruned_model.fc.in_features
+    pruned_model.fc = nn.Linear(num_ftrs, 1)
+
+    # Adjust weights
+    pruned_state_dict = adjust_weights_for_pruned_model(checkpoint['student'], pruned_model, masks)
+    pruned_model.load_state_dict(pruned_state_dict, strict=True)
+    pruned_model = pruned_model.to(device)
+    print("✓ Pruned model weights loaded successfully")
+
+    # Calculate FLOPs and parameters
+    dataset_type = {'hardfake': 'hardfakevsreal', 'rvf10k': 'rvf10k', '140k': '140k'}.get(args.dataset_modes[0], '140k')
+    input = torch.rand([1, 3, image_sizes[dataset_type], image_sizes[dataset_type]]).to(device)
+    flops, params = profile(pruned_model, inputs=(input,), verbose=False)
+    print(f"Total Parameters: {params / 1e6:.2f} M")
+    print(f"Pruned FLOPs: {flops / 1e9:.2f} GMac")
+
+    # Evaluate generalization on multiple datasets
+    criterion = nn.BCEWithLogitsLoss()
+    results = {}
     
-    return val_results, test_results
+    for dataset_mode in args.dataset_modes:
+        print(f"\nEvaluating generalization on dataset: {dataset_mode}")
+        
+        # Initialize dataset
+        if dataset_mode == 'hardfake':
+            dataset = Dataset_selector(
+                dataset_mode='hardfake',
+                hardfake_csv_file=os.path.join(args.data_dir, 'data.csv'),
+                hardfake_root_dir=args.data_dir,
+                train_batch_size=64,
+                eval_batch_size=64,
+                num_workers=4,
+                pin_memory=True,
+                ddp=False
+            )
+        elif dataset_mode == 'rvf10k':
+            dataset = Dataset_selector(
+                dataset_mode='rvf10k',
+                rvf10k_train_csv=os.path.join(args.data_dir, 'train.csv'),
+                rvf10k_valid_csv=os.path.join(args.data_dir, 'valid.csv'),
+                rvf10k_root_dir=args.data_dir,
+                train_batch_size=64,
+                eval_batch_size=64,
+                num_workers=4,
+                pin_memory=True,
+                ddp=False
+            )
+        elif dataset_mode == '140k':
+            dataset = Dataset_selector(
+                dataset_mode='140k',
+                realfake140k_train_csv=os.path.join(args.data_dir, 'train.csv'),
+                realfake140k_valid_csv=os.path.join(args.data_dir, 'valid.csv'),
+                realfake140k_test_csv=os.path.join(args.data_dir, 'test.csv'),
+                realfake140k_root_dir=args.data_dir,
+                train_batch_size=64,
+                eval_batch_size=64,
+                num_workers=4,
+                pin_memory=True,
+                ddp=False
+            )
+        else:
+            print(f"Skipping unsupported dataset: {dataset_mode}")
+            continue
+        
+        # Evaluate on validation and test sets
+        val_loader = dataset.loader_val
+        test_loader = dataset.loader_test
+        
+        val_loss, val_accuracy = evaluate_model(pruned_model, val_loader, criterion, device)
+        test_loss, test_accuracy = evaluate_model(pruned_model, test_loader, criterion, device)
+        
+        results[dataset_mode] = {
+            'val_loss': val_loss,
+            'val_accuracy': val_accuracy,
+            'test_loss': test_loss,
+            'test_accuracy': test_accuracy
+        }
+        
+        print(f"Dataset: {dataset_mode}")
+        print(f"  Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%")
+        print(f"  Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.2f}%")
+    
+    # Save results
+    results_df = pd.DataFrame.from_dict(results, orient='index')
+    results_df.to_csv(os.path.join(args.output_dir, 'generalization_results.csv'))
+    print(f"\nGeneralization results saved to {os.path.join(args.output_dir, 'generalization_results.csv')}")
 
 if __name__ == "__main__":
-    val_results, test_results = test_student_generalization()
+    main()
