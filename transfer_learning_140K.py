@@ -54,21 +54,67 @@ def evaluate_model(dataset_mode):
     sparse_model.ticket = True
     sparse_model.eval()
 
-    # استخراج ماسک‌ها از مدل sparse
+    # تنظیم ابعاد مکانی برای دیتاست‌های 256x256
+    image_size = 256
+    conv1_h = (image_size - 7 + 2 * 3) // 2 + 1  # = 128
+    maxpool_h = (conv1_h - 3 + 2 * 1) // 2 + 1  # ≈ 64
+
+    # استخراج ماسک‌ها
     masks = []
     for module in sparse_model.modules():
         if isinstance(module, SoftMaskedConv2d):
             mask = module.mask
             if mask is not None:
-                masks.append(mask.cpu().detach().numpy())
+                # تبدیل ماسک به تنسور و گسترش ابعاد مکانی
+                mask = torch.tensor(mask, device=device)
+                mask = mask.expand(-1, maxpool_h, maxpool_h)  # گسترش به [C, 64, 64]
+                masks.append(mask)
             else:
                 print(f"هشدار: ماسک برای لایه {module} None است")
                 masks.append(None)
+    print(f"تعداد ماسک‌ها: {len(masks)}")
 
     # ایجاد مدل هرس‌شده
     pruned_model = ResNet_50_pruned_hardfakevsreal(masks=masks)
     pruned_model = pruned_model.to(device)
     pruned_model.eval()
+
+    # تابع کمکی برای تنظیم تعداد کانال‌های downsample
+    def adjust_downsample(pruned_model, masks):
+        def get_preserved_filter_num(mask):
+            return int(mask.sum(dim=(1, 2, 3)))  # جمع تعداد فیلترهای حفظ‌شده
+
+        mask_idx = 0
+        for layer_name, layer in pruned_model.named_children():
+            if layer_name.startswith('layer'):
+                for block_idx, block in enumerate(layer):
+                    if isinstance(block, Bottleneck_pruned):
+                        preserved_filter_num3 = get_preserved_filter_num(masks[mask_idx + 2])
+                        if block.downsample:
+                            downsample_conv = block.downsample[0]
+                            downsample_bn = block.downsample[1]
+                            # ایجاد downsample جدید با تعداد کانال‌های مناسب
+                            new_conv = nn.Conv2d(
+                                downsample_conv.in_channels,
+                                preserved_filter_num3,
+                                kernel_size=1,
+                                stride=downsample_conv.stride,
+                                bias=False
+                            ).to(device)
+                            new_bn = nn.BatchNorm2d(preserved_filter_num3).to(device)
+                            # کپی وزن‌های مرتبط
+                            with torch.no_grad():
+                                min_channels = min(preserved_filter_num3, downsample_conv.out_channels)
+                                new_conv.weight[:min_channels] = downsample_conv.weight[:min_channels]
+                                new_bn.weight[:min_channels] = downsample_bn.weight[:min_channels]
+                                new_bn.bias[:min_channels] = downsample_bn.bias[:min_channels]
+                                new_bn.running_mean[:min_channels] = downsample_bn.running_mean[:min_channels]
+                                new_bn.running_var[:min_channels] = downsample_bn.running_var[:min_channels]
+                            block.downsample = nn.Sequential(new_conv, new_bn)
+                        mask_idx += 3  # هر بلوک Bottleneck سه ماسک دارد
+
+    # تنظیم downsample
+    adjust_downsample(pruned_model, masks)
 
     # انتقال وزن‌های هرس‌شده از مدل sparse به مدل pruned
     pruned_state_dict = pruned_model.state_dict()
@@ -78,9 +124,8 @@ def evaluate_model(dataset_mode):
             pruned_state_dict[name].copy_(param)
     pruned_model.load_state_dict(pruned_state_dict)
 
-    # تنظیمات دیتاست‌ها بر اساس __main__ در data/dataset.py
+    # تنظیمات دیتاست‌ها
     dataset_configs = {
- 
         'rvf10k': {
             'rvf10k_train_csv': '/kaggle/input/rvf10k/train.csv',
             'rvf10k_valid_csv': '/kaggle/input/rvf10k/valid.csv',
@@ -110,8 +155,6 @@ def evaluate_model(dataset_mode):
     try:
         dataset = Dataset_selector(
             dataset_mode=dataset_mode,
-            hardfake_csv_file=dataset_configs[dataset_mode].get('hardfake_csv_file'),
-            hardfake_root_dir=dataset_configs[dataset_mode].get('hardfake_root_dir'),
             rvf10k_train_csv=dataset_configs[dataset_mode].get('rvf10k_train_csv'),
             rvf10k_valid_csv=dataset_configs[dataset_mode].get('rvf10k_valid_csv'),
             rvf10k_root_dir=dataset_configs[dataset_mode].get('rvf10k_root_dir'),
@@ -136,7 +179,7 @@ def evaluate_model(dataset_mode):
     with torch.no_grad():
         for inputs, labels in dataset.loader_test:
             inputs, labels = inputs.to(device), labels.to(device)
-            outputs = pruned_model(inputs)  # استفاده از مدل هرس‌شده
+            outputs, _ = pruned_model(inputs)  # استفاده از مدل هرس‌شده
             preds = (torch.sigmoid(outputs) > 0.5).float()
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
@@ -145,8 +188,8 @@ def evaluate_model(dataset_mode):
     accuracy = accuracy_score(all_labels, all_preds)
     precision, recall, f1, _ = precision_recall_fscore_support(all_labels, all_preds, average='binary')
 
-    # محاسبه FLOPs و تعداد پارامترها برای مدل هرس‌شده
-    input_size = (1, 3, 300 if dataset_mode == 'hardfake' else 256, 300 if dataset_mode == 'hardfake' else 256)
+    # محاسبه FLOPs و تعداد پارامترها
+    input_size = (1, 3, 256, 256)  # برای دیتاست‌های غیر از hardfake
     flops, params = profile(pruned_model, inputs=(torch.randn(input_size).to(device),), verbose=False)
 
     # چاپ نتایج
@@ -179,8 +222,8 @@ def evaluate_model(dataset_mode):
     }
 
 if __name__ == "__main__":
-    # لیست دیتاست‌ها
-    datasets = ['hardfake', 'rvf10k', '190k', '200k', '330k']
+    # لیست دیتاست‌ها (بدون hardfake)
+    datasets = ['rvf10k', '190k', '200k', '330k']
 
     # ذخیره نتایج همه دیتاست‌ها
     all_results = []
