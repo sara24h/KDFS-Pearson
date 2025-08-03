@@ -65,9 +65,10 @@ def evaluate_model(dataset_mode):
         if isinstance(module, SoftMaskedConv2d):
             mask = module.mask
             if mask is not None:
-                # تبدیل ماسک به تنسور و گسترش ابعاد مکانی
-                mask = torch.tensor(mask, device=device)
-                mask = mask.expand(-1, maxpool_h, maxpool_h)  # گسترش به [C, 64, 64]
+                # کپی تنسور با clone().detach() و انتقال به دستگاه
+                mask = mask.clone().detach().to(device)
+                # گسترش ماسک به ابعاد [1, C, 64, 64]
+                mask = mask.expand(1, -1, maxpool_h, maxpool_h)  # [1, C, 64, 64]
                 masks.append(mask)
             else:
                 print(f"هشدار: ماسک برای لایه {module} None است")
