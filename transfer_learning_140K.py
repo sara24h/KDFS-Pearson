@@ -5,9 +5,11 @@ from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns
+from thop import profile
 
-# Import your classes
+# فرض می‌کنیم این ماژول‌ها در پروژه شما وجود دارند
 from data.dataset import Dataset_selector
+from model.student.ResNet_sparse import ResNet_50_sparse_140k
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
 
 def analyze_student_checkpoint(checkpoint_path):
@@ -16,25 +18,23 @@ def analyze_student_checkpoint(checkpoint_path):
     print("ANALYZING STUDENT CHECKPOINT")
     print("="*60)
     
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
     
     print(f"Checkpoint keys: {list(checkpoint.keys())}")
     print(f"Best precision: {checkpoint.get('best_prec1', 'N/A')}")
     print(f"Start epoch: {checkpoint.get('start_epoch', 'N/A')}")
     
-    # Analyze student model structure
     if 'student' in checkpoint:
         student_state = checkpoint['student']
         print(f"\nStudent model has {len(student_state)} parameters")
         
-        # Look for conv layers to understand pruning
         conv_layers = {}
         for key, value in student_state.items():
-            if 'conv' in key and 'weight' in key:
+            if 'conv' in key and 'weight' in key and 'mask_weight' not in key:
                 conv_layers[key] = value.shape
         
         print(f"\nConv layers found: {len(conv_layers)}")
-        for key, shape in list(conv_layers.items())[:10]:  # Show first 10
+        for key, shape in list(conv_layers.items())[:10]:
             print(f"  {key}: {shape}")
         
         return student_state, conv_layers
@@ -42,15 +42,13 @@ def analyze_student_checkpoint(checkpoint_path):
         print("No 'student' key found!")
         return None, None
 
-def extract_masks_from_conv_layers(conv_layers):
-    """Extract masks based on actual conv layer sizes in the pruned model"""
+def extract_masks_from_conv_layers(student_state):
+    """Extract masks from mask_weight in the sparse model"""
     print("\n" + "="*60)
     print("EXTRACTING MASKS FROM CONV LAYERS")
     print("="*60)
     
     masks = []
-    
-    # ResNet50 layer structure
     layer_patterns = [
         ('layer1', 3),  # 3 blocks
         ('layer2', 4),  # 4 blocks
@@ -60,18 +58,33 @@ def extract_masks_from_conv_layers(conv_layers):
     
     for layer_name, num_blocks in layer_patterns:
         for block_idx in range(num_blocks):
-            for conv_idx in [1, 2, 3]:  # conv1, conv2, conv3
-                key = f"{layer_name}.{block_idx}.conv{conv_idx}.weight"
-                
-                if key in conv_layers:
-                    out_channels = conv_layers[key][0]
-                    mask = torch.ones(out_channels, dtype=torch.bool)
-                    masks.append(mask)
-                    print(f"  {key}: {out_channels} filters -> mask created")
+            for conv_idx in [1, 2, 3]:
+                key = f"{layer_name}.{block_idx}.conv{conv_idx}.mask_weight"
+                if key in student_state:
+                    mask = student_state[key][:, 0, 0, 0]  # تبدیل به ماسک باینری
+                    masks.append(mask > 0)
+                    print(f"  {key}: {mask.shape[0]} filters -> mask created ({mask.sum().item()} preserved)")
                 else:
                     print(f"  Warning: {key} not found")
     
     print(f"\nTotal masks created: {len(masks)}")
+    return masks
+
+def create_default_resnet50_masks():
+    """Create default masks for ResNet50"""
+    print("Creating default ResNet50 masks...")
+    
+    masks = []
+    for _ in range(3):  # Layer 1: 3 blocks, [64, 64, 256]
+        masks.extend([torch.ones(64, dtype=torch.bool), torch.ones(64, dtype=torch.bool), torch.ones(256, dtype=torch.bool)])
+    for _ in range(4):  # Layer 2: 4 blocks, [128, 128, 512]
+        masks.extend([torch.ones(128, dtype=torch.bool), torch.ones(128, dtype=torch.bool), torch.ones(512, dtype=torch.bool)])
+    for _ in range(6):  # Layer 3: 6 blocks, [256, 256, 1024]
+        masks.extend([torch.ones(256, dtype=torch.bool), torch.ones(256, dtype=torch.bool), torch.ones(1024, dtype=torch.bool)])
+    for _ in range(3):  # Layer 4: 3 blocks, [512, 512, 2048]
+        masks.extend([torch.ones(512, dtype=torch.bool), torch.ones(512, dtype=torch.bool), torch.ones(2048, dtype=torch.bool)])
+    
+    print(f"Created {len(masks)} default masks")
     return masks
 
 def create_and_load_student_model(checkpoint_path, device='cuda'):
@@ -86,88 +99,51 @@ def create_and_load_student_model(checkpoint_path, device='cuda'):
         print("Failed to extract student state")
         return None
     
-    # Step 2: Extract masks
-    masks = extract_masks_from_conv_layers(conv_layers)
+    # Step 2: Load sparse model to extract masks
+    try:
+        sparse_model = ResNet_50_sparse_140k()
+        sparse_model.load_state_dict(student_state, strict=True)
+        print("✓ Sparse model loaded successfully")
+    except Exception as e:
+        print(f"✗ Error loading sparse model: {e}")
+        return None
+    
+    # Step 3: Extract masks
+    masks = extract_masks_from_conv_layers(student_state)
     if not masks:
         print("Failed to extract masks, using defaults")
         masks = create_default_resnet50_masks()
     
-    # Step 3: Create model
+    # Step 4: Create pruned model
     try:
-        print(f"\nCreating ResNet50 with {len(masks)} masks...")
-        model = ResNet_50_pruned_hardfakevsreal(masks)
-        print("✓ Model created successfully")
+        print(f"\nCreating ResNet50 pruned model with {len(masks)} masks...")
+        pruned_model = ResNet_50_pruned_hardfakevsreal(masks=masks)
+        print("✓ Pruned model created successfully")
         
-        total_params = sum(p.numel() for p in model.parameters())
+        # Step 5: Load weights (ignore incompatible keys)
+        state_dict = {k: v for k, v in student_state.items() if k in pruned_model.state_dict()}
+        pruned_model.load_state_dict(state_dict, strict=False)
+        print("✓ Pruned model weights loaded with ignored keys")
+        
+        total_params = sum(p.numel() for p in pruned_model.parameters())
         print(f"✓ Total parameters: {total_params:,}")
         
+        # Step 6: Calculate FLOPs
+        input_size = 256  # برای دیتاست 140k
+        input = torch.randn(1, 3, input_size, input_size).to(device)
+        flops, params = profile(pruned_model, inputs=(input,), verbose=False)
+        print(f"Total FLOPs: {flops / 1e6:.2f} MFLOPs")
+        print(f"Total Parameters: {params / 1e6:.2f}M")
     except Exception as e:
-        print(f"✗ Error creating model: {e}")
-        print("Trying with default masks...")
-        try:
-            default_masks = create_default_resnet50_masks()
-            model = ResNet_50_pruned_hardfakevsreal(default_masks)
-            print("✓ Model created with default masks")
-        except Exception as e2:
-            print(f"✗ Still failed: {e2}")
-            return None
-    
-    # Step 4: Load weights
-    try:
-        model.load_state_dict(student_state)
-        print("✓ Student weights loaded successfully")
-    except Exception as e:
-        print(f"✗ Error loading weights: {e}")
+        print(f"✗ Error creating/loading pruned model: {e}")
         return None
     
-    # Step 5: Prepare for inference
-    model.to(device)
-    model.eval()
+    # Step 7: Prepare for inference
+    pruned_model.to(device)
+    pruned_model.eval()
     print(f"✓ Model ready on {device}")
     
-    return model
-
-def create_default_resnet50_masks():
-    """Create default masks for ResNet50"""
-    print("Creating default ResNet50 masks...")
-    
-    masks = []
-    
-    # Standard ResNet50 Bottleneck structure
-    # Layer 1: 3 blocks, each with [64, 64, 256] filters  
-    for _ in range(3):
-        masks.extend([
-            torch.ones(64, dtype=torch.bool),
-            torch.ones(64, dtype=torch.bool),
-            torch.ones(256, dtype=torch.bool)
-        ])
-    
-    # Layer 2: 4 blocks, each with [128, 128, 512] filters
-    for _ in range(4):
-        masks.extend([
-            torch.ones(128, dtype=torch.bool),
-            torch.ones(128, dtype=torch.bool),
-            torch.ones(512, dtype=torch.bool)
-        ])
-    
-    # Layer 3: 6 blocks, each with [256, 256, 1024] filters
-    for _ in range(6):
-        masks.extend([
-            torch.ones(256, dtype=torch.bool),
-            torch.ones(256, dtype=torch.bool),
-            torch.ones(1024, dtype=torch.bool)
-        ])
-    
-    # Layer 4: 3 blocks, each with [512, 512, 2048] filters
-    for _ in range(3):
-        masks.extend([
-            torch.ones(512, dtype=torch.bool),
-            torch.ones(512, dtype=torch.bool),
-            torch.ones(2048, dtype=torch.bool)
-        ])
-    
-    print(f"Created {len(masks)} default masks")
-    return masks
+    return pruned_model
 
 def evaluate_student_model(model, dataloader, device='cuda'):
     """Evaluate the student model"""
@@ -189,21 +165,17 @@ def evaluate_student_model(model, dataloader, device='cuda'):
                 images = images.to(device)
                 labels = labels.to(device).float()
                 
-                # Forward pass
                 outputs, _ = model(images)
                 outputs = outputs.squeeze()
                 
-                # Handle single sample batches
                 if outputs.dim() == 0:
                     outputs = outputs.unsqueeze(0)
                 if labels.dim() == 0:
                     labels = labels.unsqueeze(0)
                 
-                # Calculate loss
                 loss = criterion(outputs, labels)
                 total_loss += loss.item()
                 
-                # Get predictions
                 probabilities = torch.sigmoid(outputs)
                 predictions = (probabilities > 0.5).float()
                 
@@ -219,7 +191,6 @@ def evaluate_student_model(model, dataloader, device='cuda'):
         print("No predictions made!")
         return None
     
-    # Calculate metrics
     all_predictions = np.array(all_predictions)
     all_labels = np.array(all_labels)
     all_probabilities = np.array(all_probabilities)
@@ -236,7 +207,6 @@ def evaluate_student_model(model, dataloader, device='cuda'):
     
     avg_loss = total_loss / len(dataloader)
     
-    # Confusion matrix
     cm = confusion_matrix(all_labels, all_predictions)
     tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
     
@@ -252,7 +222,6 @@ def evaluate_student_model(model, dataloader, device='cuda'):
         'tn': tn, 'fp': fp, 'fn': fn, 'tp': tp
     }
     
-    # Print results
     print(f"\nEVALUATION RESULTS:")
     print(f"Total Samples: {len(all_labels)}")
     print(f"Accuracy:      {accuracy:.4f}")
@@ -268,6 +237,66 @@ def evaluate_student_model(model, dataloader, device='cuda'):
     print(f"       Real   {fn:4d}  {tp:4d}")
     
     return results
+
+def plot_comparison(val_results, test_results):
+    """Plot validation vs test results"""
+    if not val_results or not test_results:
+        return
+    
+    metrics = ['accuracy', 'precision', 'recall', 'f1_score', 'auc']
+    val_values = [val_results[m] for m in metrics]
+    test_values = [test_results[m] for m in metrics]
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    x = np.arange(len(metrics))
+    width = 0.35
+    
+    ax1.bar(x - width/2, val_values, width, label='Validation', alpha=0.8, color='skyblue')
+    ax1.bar(x + width/2, test_values, width, label='Test', alpha=0.8, color='lightcoral')
+    
+    ax1.set_xlabel('Metrics')
+    ax1.set_ylabel('Score')
+    ax1.set_title('Student Model: Validation vs Test Performance')
+    ax1.set_xticks(x)
+    ax1.set_xticklabels([m.replace('_', ' ').title() for m in metrics], rotation=45)
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    ax1.set_ylim(0, 1.1)
+    
+    for i, (val, test) in enumerate(zip(val_values, test_values)):
+        ax1.text(i - width/2, val + 0.01, f'{val:.3f}', ha='center', va='bottom', fontsize=9)
+        ax1.text(i + width/2, test + 0.01, f'{test:.3f}', ha='center', va='bottom', fontsize=9)
+    
+    cm_val = val_results['confusion_matrix']
+    cm_test = test_results['confusion_matrix']
+    
+    ax2.text(0.25, 0.8, 'Validation', transform=ax2.transAxes, ha='center', fontsize=12, weight='bold')
+    ax2.text(0.25, 0.7, f"Acc: {val_results['accuracy']:.3f}", transform=ax2.transAxes, ha='center', fontsize=10)
+    ax2.text(0.25, 0.6, f"F1: {val_results['f1_score']:.3f}", transform=ax2.transAxes, ha='center', fontsize=10)
+    
+    ax2.text(0.75, 0.8, 'Test', transform=ax2.transAxes, ha='center', fontsize=12, weight='bold')
+    ax2.text(0.75, 0.7, f"Acc: {test_results['accuracy']:.3f}", transform=ax2.transAxes, ha='center', fontsize=10)
+    ax2.text(0.75, 0.6, f"F1: {test_results['f1_score']:.3f}", transform=ax2.transAxes, ha='center', fontsize=10)
+    
+    ax2.text(0.25, 0.4, f"TN: {val_results['tn']}", transform=ax2.transAxes, ha='center', fontsize=9)
+    ax2.text(0.25, 0.3, f"FP: {val_results['fp']}", transform=ax2.transAxes, ha='center', fontsize=9)
+    ax2.text(0.25, 0.2, f"FN: {val_results['fn']}", transform=ax2.transAxes, ha='center', fontsize=9)
+    ax2.text(0.25, 0.1, f"TP: {val_results['tp']}", transform=ax2.transAxes, ha='center', fontsize=9)
+    
+    ax2.text(0.75, 0.4, f"TN: {test_results['tn']}", transform=ax2.transAxes, ha='center', fontsize=9)
+    ax2.text(0.75, 0.3, f"FP: {test_results['fp']}", transform=ax2.transAxes, ha='center', fontsize=9)
+    ax2.text(0.75, 0.2, f"FN: {test_results['fn']}", transform=ax2.transAxes, ha='center', fontsize=9)
+    ax2.text(0.75, 0.1, f"TP: {test_results['tp']}", transform=ax2.transAxes, ha='center', fontsize=9)
+    
+    ax2.set_xlim(0, 1)
+    ax2.set_ylim(0, 1)
+    ax2.set_title('Confusion Matrix Summary')
+    ax2.axis('off')
+    
+    plt.tight_layout()
+    plt.savefig('student_generalization_results.png', dpi=300, bbox_inches='tight')
+    plt.show()
 
 def test_student_generalization():
     """Main function to test student model generalization"""
@@ -315,79 +344,7 @@ def test_student_generalization():
     print("="*60)
     test_results = evaluate_student_model(model, dataset.loader_test, device)
     
-    return val_results, test_results
-
-def plot_comparison(val_results, test_results):
-    """Plot validation vs test results"""
-    if not val_results or not test_results:
-        return
-    
-    metrics = ['accuracy', 'precision', 'recall', 'f1_score', 'auc']
-    val_values = [val_results[m] for m in metrics]
-    test_values = [test_results[m] for m in metrics]
-    
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-    
-    # Bar plot
-    x = np.arange(len(metrics))
-    width = 0.35
-    
-    ax1.bar(x - width/2, val_values, width, label='Validation', alpha=0.8, color='skyblue')
-    ax1.bar(x + width/2, test_values, width, label='Test', alpha=0.8, color='lightcoral')
-    
-    ax1.set_xlabel('Metrics')
-    ax1.set_ylabel('Score')
-    ax1.set_title('Student Model: Validation vs Test Performance')
-    ax1.set_xticks(x)
-    ax1.set_xticklabels([m.replace('_', ' ').title() for m in metrics], rotation=45)
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-    ax1.set_ylim(0, 1.1)
-    
-    # Add value labels
-    for i, (val, test) in enumerate(zip(val_values, test_values)):
-        ax1.text(i - width/2, val + 0.01, f'{val:.3f}', ha='center', va='bottom', fontsize=9)
-        ax1.text(i + width/2, test + 0.01, f'{test:.3f}', ha='center', va='bottom', fontsize=9)
-    
-    # Confusion matrices
-    cm_val = val_results['confusion_matrix']
-    cm_test = test_results['confusion_matrix']
-    
-    # Validation confusion matrix
-    ax2.text(0.25, 0.8, 'Validation', transform=ax2.transAxes, ha='center', fontsize=12, weight='bold')
-    ax2.text(0.25, 0.7, f"Acc: {val_results['accuracy']:.3f}", transform=ax2.transAxes, ha='center', fontsize=10)
-    ax2.text(0.25, 0.6, f"F1: {val_results['f1_score']:.3f}", transform=ax2.transAxes, ha='center', fontsize=10)
-    
-    # Test confusion matrix  
-    ax2.text(0.75, 0.8, 'Test', transform=ax2.transAxes, ha='center', fontsize=12, weight='bold')
-    ax2.text(0.75, 0.7, f"Acc: {test_results['accuracy']:.3f}", transform=ax2.transAxes, ha='center', fontsize=10)
-    ax2.text(0.75, 0.6, f"F1: {test_results['f1_score']:.3f}", transform=ax2.transAxes, ha='center', fontsize=10)
-    
-    # Simple confusion matrix display
-    ax2.text(0.25, 0.4, f"TN: {val_results['tn']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    ax2.text(0.25, 0.3, f"FP: {val_results['fp']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    ax2.text(0.25, 0.2, f"FN: {val_results['fn']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    ax2.text(0.25, 0.1, f"TP: {val_results['tp']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    
-    ax2.text(0.75, 0.4, f"TN: {test_results['tn']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    ax2.text(0.75, 0.3, f"FP: {test_results['fp']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    ax2.text(0.75, 0.2, f"FN: {test_results['fn']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    ax2.text(0.75, 0.1, f"TP: {test_results['tp']}", transform=ax2.transAxes, ha='center', fontsize=9)
-    
-    ax2.set_xlim(0, 1)
-    ax2.set_ylim(0, 1)
-    ax2.set_title('Confusion Matrix Summary')
-    ax2.axis('off')
-    
-    plt.tight_layout()
-    plt.savefig('student_generalization_results.png', dpi=300, bbox_inches='tight')
-    plt.show()
-
-# Main execution
-if __name__ == "__main__":
-    # Run the generalization test
-    val_results, test_results = test_student_generalization()
-    
+    # Step 5: Plot results
     if val_results and test_results:
         print("\n" + "="*60)
         print("FINAL SUMMARY")
@@ -398,9 +355,13 @@ if __name__ == "__main__":
         print(f"Test F1:             {test_results['f1_score']:.4f}")
         print(f"Generalization Gap:  {abs(val_results['accuracy'] - test_results['accuracy']):.4f}")
         
-        # Plot results
         plot_comparison(val_results, test_results)
         
         print("\n✓ Student model generalization test completed!")
     else:
         print("\n✗ Generalization test failed!")
+    
+    return val_results, test_results
+
+if __name__ == "__main__":
+    val_results, test_results = test_student_generalization()
