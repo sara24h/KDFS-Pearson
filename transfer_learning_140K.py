@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from sklearn.metrics import precision_score, recall_score, f1_score
 import numpy as np
@@ -8,7 +7,7 @@ import numpy as np
 # تابع ارزیابی مدل
 def evaluate_model(model, test_loader, device, dataset_name):
     model.eval()
-    criterion = nn.BCEWithLogitsLoss()  # برای مسئله باینری کلاسیفیکیشن
+    criterion = nn.BCEWithLogitsLoss()
     total_loss = 0.0
     all_labels = []
     all_preds = []
@@ -49,14 +48,19 @@ def evaluate_model(model, test_loader, device, dataset_name):
 # مسیر فایل وزن‌ها
 model_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt'
 
-# لود کردن checkpoint
+# لود checkpoint
 checkpoint = torch.load(model_path, map_location='cpu')
-masks = checkpoint['masks']  # ماسک‌های هرس
+
+# بررسی کلیدها
+print("Keys in checkpoint:", list(checkpoint.keys()))
+
+# فرض می‌کنیم کلید ماسک‌ها 'prune_masks' است (بعد از بررسی تغییر دهید)
+masks = checkpoint.get('prune_masks', [])  # اگر کلید وجود نداشت، لیست خالی
 state_dict = checkpoint['state_dict']
 
-# تعریف مدل پرشده
+# تعریف مدل
 model = ResNet_50_pruned_hardfakevsreal(masks=masks)
-model.load_state_dict(state_dict)
+model.load_state_dict(state_dict, strict=False)
 
 # انتقال مدل به دستگاه
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -105,7 +109,7 @@ for dataset_config in datasets:
         dataset_mode=dataset_mode,
         train_batch_size=64,
         eval_batch_size=64,
-        ddp=False,  # برای ارزیابی نیازی به DDP نیست
+        ddp=False,
         **dataset_config
     )
     
