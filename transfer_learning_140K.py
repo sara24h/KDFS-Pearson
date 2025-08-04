@@ -99,10 +99,11 @@ def main():
     # Step 5: Filter and trim weights
     filtered_state_dict = {k: v for k, v in state_dict.items() if not k.endswith('mask_weight') and k not in ['feat1.weight', 'feat1.bias', 'feat2.weight', 'feat2.bias', 'feat3.weight', 'feat3.bias', 'feat4.weight', 'feat4.bias']}
     
+    # Keep track of input channels for each layer
+    in_channels_list = [64] + active_filters[:-1]  # conv1 has 64 output channels, followed by active filters
     mask_idx = 0
-    prev_out_channels = 64  # Initial input channels (from conv1)
     for layer_idx in range(1, 5):
-        num_blocks = 3 if layer_idx == 1 else 4 if layer_idx <= 3 else 3
+        num_blocks = 3 if layer_idx == 1 else 4 if layer_idx == 2 else 6 if layer_idx == 3 else 3
         for block_idx in range(num_blocks):
             for conv_idx in range(1, 4):
                 if mask_idx >= len(masks):
@@ -112,22 +113,26 @@ def main():
                 bn_prefix = f'layer{layer_idx}.{block_idx}.bn{conv_idx}'
                 
                 if f'{layer_prefix}.weight' in filtered_state_dict:
-                    weight_shape = filtered_state_dict[f'{layer_prefix}.weight'].shape
-                    print(f"Weight shape for {layer_prefix}: {weight_shape}, Mask shape: {m.shape}, Active filters: {torch.sum(m == 1).item()}")
-                    if weight_shape[0] == m.shape[0]:
-                        filtered_state_dict[f'{layer_prefix}.weight'] = filtered_state_dict[f'{layer_prefix}.weight'][m == 1]
-                        if conv_idx == 3:
-                            prev_out_channels = torch.sum(m == 1).item()
+                    weight = filtered_state_dict[f'{layer_prefix}.weight']
+                    weight_shape = weight.shape
+                    expected_in_channels = in_channels_list[mask_idx]
+                    print(f"Weight shape for {layer_prefix}: {weight_shape}, Mask shape: {m.shape}, Active filters: {torch.sum(m == 1).item()}, Expected in_channels: {expected_in_channels}")
+                    if weight_shape[0] == m.shape[0] and weight_shape[1] >= expected_in_channels:
+                        # Trim output channels
+                        filtered_state_dict[f'{layer_prefix}.weight'] = weight[m == 1]
+                        # Trim input channels based on previous layer's active filters
+                        filtered_state_dict[f'{layer_prefix}.weight'] = filtered_state_dict[f'{layer_prefix}.weight'][:, in_channels_list[mask_idx-1] if mask_idx > 0 else 64]
                         if f'{layer_prefix}.bias' in filtered_state_dict:
                             filtered_state_dict[f'{layer_prefix}.bias'] = filtered_state_dict[f'{layer_prefix}.bias'][m == 1]
                     else:
                         print(f"Warning: Shape mismatch for {layer_prefix}. Using original weights.")
                 
                 if f'{bn_prefix}.weight' in filtered_state_dict:
-                    bn_weight_shape = filtered_state_dict[f'{bn_prefix}.weight'].shape
+                    bn_weight = filtered_state_dict[f'{bn_prefix}.weight']
+                    bn_weight_shape = bn_weight.shape
                     print(f"BN weight shape for {bn_prefix}: {bn_weight_shape}, Mask shape: {m.shape}")
                     if bn_weight_shape[0] == m.shape[0]:
-                        filtered_state_dict[f'{bn_prefix}.weight'] = filtered_state_dict[f'{bn_prefix}.weight'][m == 1]
+                        filtered_state_dict[f'{bn_prefix}.weight'] = bn_weight[m == 1]
                         filtered_state_dict[f'{bn_prefix}.bias'] = filtered_state_dict[f'{bn_prefix}.bias'][m == 1]
                         filtered_state_dict[f'{bn_prefix}.running_mean'] = filtered_state_dict[f'{bn_prefix}.running_mean'][m == 1]
                         filtered_state_dict[f'{bn_prefix}.running_var'] = filtered_state_dict[f'{bn_prefix}.running_var'][m == 1]
@@ -136,14 +141,19 @@ def main():
                 mask_idx += 1
 
     # Handle downsample layers
+    downsample_mask_indices = [2, 8, 20, 38]  # Indices of conv3 masks for layer1, layer2, layer3, layer4
     for layer_idx in range(1, 5):
         downsample_prefix = f'layer{layer_idx}.0.downsample'
         if f'{downsample_prefix}.0.weight' in filtered_state_dict:
-            prev_mask = masks[(layer_idx-1)*3 + 2] if layer_idx > 1 else masks[2]
-            weight_shape = filtered_state_dict[f'{downsample_prefix}.0.weight'].shape
-            print(f"Downsample weight shape for {downsample_prefix}.0: {weight_shape}, Mask shape: {prev_mask.shape}, Active filters: {torch.sum(prev_mask == 1).item()}")
-            if weight_shape[0] == prev_mask.shape[0]:
-                filtered_state_dict[f'{downsample_prefix}.0.weight'] = filtered_state_dict[f'{downsample_prefix}.0.weight'][prev_mask == 1]
+            mask_idx = downsample_mask_indices[layer_idx-1]
+            prev_mask = masks[mask_idx]
+            weight = filtered_state_dict[f'{downsample_prefix}.0.weight']
+            weight_shape = weight.shape
+            expected_in_channels = in_channels_list[mask_idx]
+            print(f"Downsample weight shape for {downsample_prefix}.0: {weight_shape}, Mask shape: {prev_mask.shape}, Active filters: {torch.sum(prev_mask == 1).item()}, Expected in_channels: {expected_in_channels}")
+            if weight_shape[0] == prev_mask.shape[0] and weight_shape[1] >= expected_in_channels:
+                filtered_state_dict[f'{downsample_prefix}.0.weight'] = weight[prev_mask == 1]
+                filtered_state_dict[f'{downsample_prefix}.0.weight'] = filtered_state_dict[f'{downsample_prefix}.0.weight'][:, in_channels_list[mask_idx-1] if mask_idx > 0 else 64]
                 filtered_state_dict[f'{downsample_prefix}.1.weight'] = filtered_state_dict[f'{downsample_prefix}.1.weight'][prev_mask == 1]
                 filtered_state_dict[f'{downsample_prefix}.1.bias'] = filtered_state_dict[f'{downsample_prefix}.1.bias'][prev_mask == 1]
                 filtered_state_dict[f'{downsample_prefix}.1.running_mean'] = filtered_state_dict[f'{downsample_prefix}.1.running_mean'][prev_mask == 1]
