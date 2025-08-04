@@ -8,10 +8,18 @@ from ptflops import get_model_complexity_info
 import os
 from PIL import Image
 import sys
-
-
 # لود معماری هرس‌شده
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
+
+# تابع اصلاح‌شده برای محاسبه تعداد فیلترهای فعال
+def get_preserved_filter_num(mask):
+    # اطمینان از اینکه ماسک باینری است (فقط ۰ و ۱)
+    mask = (mask > 0).float()  # تبدیل مقادیر منفی یا غیرباینری به ۰ و ۱
+    num_filters = int(mask.sum())
+    if num_filters <= 0:
+        print(f"هشدار: تعداد فیلترهای فعال برای ماسک برابر {num_filters} است. تنظیم به 1.")
+        num_filters = 1  # حداقل یک فیلتر برای جلوگیری از خطا
+    return num_filters
 
 # تنظیم دستگاه
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -35,12 +43,19 @@ mask_keys = [k for k in state_dict.keys() if k.endswith('mask_weight')]
 masks = [state_dict[k] for k in mask_keys]
 print(f"ماسک‌های هرس یافت‌شده: {mask_keys}")
 
-# بررسی تعداد فیلترهای فعال در هر ماسک
+# بررسی و اصلاح ماسک‌ها
+corrected_masks = []
 for i, (key, mask) in enumerate(zip(mask_keys, masks)):
-    print(f"ماسک {key}: تعداد فیلترهای فعال = {int(mask.sum())}")
+    num_filters = get_preserved_filter_num(mask)
+    print(f"ماسک {key}: تعداد فیلترهای فعال = {num_filters}")
+    corrected_masks.append((mask > 0).float())  # تبدیل ماسک به باینری
 
 # تعریف مدل هرس‌شده
-model = ResNet_50_pruned_hardfakevsreal(masks=masks).to(device)
+try:
+    model = ResNet_50_pruned_hardfakevsreal(masks=corrected_masks).to(device)
+except Exception as e:
+    print(f"خطا در تعریف مدل: {e}")
+    raise
 
 # فیلتر کردن کلیدهای غیرمرتبط
 filtered_state_dict = {k: v for k, v in state_dict.items() if not k.endswith('mask_weight') and k not in ['feat1.weight', 'feat1.bias', 'feat2.weight', 'feat2.bias', 'feat3.weight', 'feat3.bias', 'feat4.weight', 'feat4.bias']}
