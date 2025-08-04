@@ -9,7 +9,7 @@ from data.dataset import Dataset_selector
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal, get_preserved_filter_num
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Test generalization of pruned ResNet50 student model on selected datasets.')
+    parser = argparse.ArgumentParser(description='Test generalization of pruned ResNet50 student model on selected test datasets.')
     parser.add_argument('--checkpoint_path', type=str, required=True,
                         help='Path to the student model checkpoint')
     parser.add_argument('--data_dir', type=str, required=True,
@@ -151,14 +151,60 @@ dataset_configs = {
     }
 }
 
-# 6. بررسی دیتاست‌های انتخاب‌شده
+# 6. بررسی دیتاست‌های انتخاب‌شده و وجود فایل‌ها
 selected_datasets = args.datasets
-valid_datasets = [ds for ds in selected_datasets if ds in dataset_configs]
+valid_datasets = []
+for ds in selected_datasets:
+    if ds not in dataset_configs:
+        print(f"Warning: Dataset '{ds}' is invalid and will be ignored. Valid datasets: {list(dataset_configs.keys())}")
+        continue
+    config = dataset_configs[ds]
+    all_files_exist = True
+    # بررسی وجود فایل‌ها و دایرکتوری‌ها
+    if ds == 'hardfake':
+        if not os.path.exists(config.get('hardfake_csv_file', '')):
+            print(f"Error: CSV file not found: {config.get('hardfake_csv_file')}")
+            all_files_exist = False
+        if not os.path.exists(config.get('hardfake_root_dir', '')):
+            print(f"Error: Directory not found: {config.get('hardfake_root_dir')}")
+            all_files_exist = False
+    elif ds == 'rvf10k':
+        for file_key in ['rvf10k_valid_csv']:  # فقط valid_csv برای تست نیاز است
+            if not os.path.exists(config.get(file_key, '')):
+                print(f"Error: CSV file not found: {config.get(file_key)}")
+                all_files_exist = False
+        if not os.path.exists(config.get('rvf10k_root_dir', '')):
+            print(f"Error: Directory not found: {config.get('rvf10k_root_dir')}")
+            all_files_exist = False
+    elif ds == '140k':
+        if not os.path.exists(config.get('realfake140k_test_csv', '')):
+            print(f"Error: CSV file not found: {config.get('realfake140k_test_csv')}")
+            all_files_exist = False
+        if not os.path.exists(config.get('realfake140k_root_dir', '')):
+            print(f"Error: Directory not found: {config.get('realfake140k_root_dir')}")
+            all_files_exist = False
+    elif ds == '190k':
+        if not os.path.exists(config.get('realfake190k_root_dir', '')):
+            print(f"Error: Directory not found: {config.get('realfake190k_root_dir')}")
+            all_files_exist = False
+    elif ds == '200k':
+        if not os.path.exists(config.get('realfake200k_test_csv', '')):
+            print(f"Error: CSV file not found: {config.get('realfake200k_test_csv')}")
+            all_files_exist = False
+        if not os.path.exists(config.get('realfake200k_root_dir', '')):
+            print(f"Error: Directory not found: {config.get('realfake200k_root_dir')}")
+            all_files_exist = False
+    elif ds == '330k':
+        if not os.path.exists(config.get('realfake330k_root_dir', '')):
+            print(f"Error: Directory not found: {config.get('realfake330k_root_dir')}")
+            all_files_exist = False
+    if all_files_exist:
+        valid_datasets.append(ds)
+    else:
+        print(f"Dataset '{ds}' will be skipped due to missing files or directories.")
+
 if not valid_datasets:
-    raise ValueError(f"No valid datasets selected! Choose from {list(dataset_configs.keys())}")
-invalid_datasets = [ds for ds in selected_datasets if ds not in dataset_configs]
-if invalid_datasets:
-    print(f"Warning: The following datasets are invalid and will be ignored: {invalid_datasets}")
+    raise ValueError(f"No valid datasets selected or available! Choose from {list(dataset_configs.keys())}")
 
 # 7. تابع ارزیابی
 def evaluate_model(model, data_loader, device, criterion):
@@ -215,6 +261,9 @@ for dataset_name in valid_datasets:
             ddp=False
         )
         test_loader = dataset.loader_test
+        # چاپ آمار دیتاست تست
+        print(f"{dataset_name} test dataset size: {len(test_loader.dataset)}")
+        print(f"{dataset_name} test loader batches: {len(test_loader)}")
     except Exception as e:
         print(f"Error loading {dataset_name} dataset: {e}")
         results[dataset_name] = {'error': str(e)}
