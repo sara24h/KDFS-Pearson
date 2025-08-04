@@ -11,8 +11,8 @@ from PIL import Image
 import sys
 
 # لود معماری‌ها
-from model.pruned_model.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
-from model.student.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
+from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
+from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal 
 
 # مقادیر پایه FLOPs و پارامترها
 Flops_baselines = {
