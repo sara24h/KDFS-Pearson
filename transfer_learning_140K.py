@@ -102,6 +102,8 @@ def main():
     # Keep track of input channels for each layer
     in_channels_list = [64] + active_filters[:-1]  # conv1 has 64 output channels, followed by active filters
     mask_idx = 0
+    prev_mask = torch.ones(64).to(device)  # Initial mask for conv1 input (no pruning)
+    
     for layer_idx in range(1, 5):
         num_blocks = 3 if layer_idx == 1 else 4 if layer_idx == 2 else 6 if layer_idx == 3 else 3
         for block_idx in range(num_blocks):
@@ -116,12 +118,13 @@ def main():
                     weight = filtered_state_dict[f'{layer_prefix}.weight']
                     weight_shape = weight.shape
                     expected_in_channels = in_channels_list[mask_idx]
-                    print(f"Weight shape for {layer_prefix}: {weight_shape}, Mask shape: {m.shape}, Active filters: {torch.sum(m == 1).item()}, Expected in_channels: {expected_in_channels}")
+                    expected_out_channels = active_filters[mask_idx]
+                    print(f"Weight shape for {layer_prefix}: {weight_shape}, Mask shape: {m.shape}, Active filters: {expected_out_channels}, Expected in_channels: {expected_in_channels}")
                     if weight_shape[0] == m.shape[0] and weight_shape[1] >= expected_in_channels:
                         # Trim output channels
                         filtered_state_dict[f'{layer_prefix}.weight'] = weight[m == 1]
                         # Trim input channels based on previous layer's active filters
-                        filtered_state_dict[f'{layer_prefix}.weight'] = filtered_state_dict[f'{layer_prefix}.weight'][:, in_channels_list[mask_idx-1] if mask_idx > 0 else 64]
+                        filtered_state_dict[f'{layer_prefix}.weight'] = filtered_state_dict[f'{layer_prefix}.weight'][:, prev_mask == 1]
                         if f'{layer_prefix}.bias' in filtered_state_dict:
                             filtered_state_dict[f'{layer_prefix}.bias'] = filtered_state_dict[f'{layer_prefix}.bias'][m == 1]
                     else:
@@ -138,10 +141,13 @@ def main():
                         filtered_state_dict[f'{bn_prefix}.running_var'] = filtered_state_dict[f'{bn_prefix}.running_var'][m == 1]
                     else:
                         print(f"Warning: Shape mismatch for {bn_prefix}. Using original BN weights.")
+                
+                prev_mask = m  # Update previous mask for the next layer
                 mask_idx += 1
 
     # Handle downsample layers
     downsample_mask_indices = [2, 8, 20, 38]  # Indices of conv3 masks for layer1, layer2, layer3, layer4
+    downsample_in_channels = [64, 256, 512, 1024]  # Input channels for downsample layers
     for layer_idx in range(1, 5):
         downsample_prefix = f'layer{layer_idx}.0.downsample'
         if f'{downsample_prefix}.0.weight' in filtered_state_dict:
@@ -150,7 +156,8 @@ def main():
             weight = filtered_state_dict[f'{downsample_prefix}.0.weight']
             weight_shape = weight.shape
             expected_in_channels = in_channels_list[mask_idx]
-            print(f"Downsample weight shape for {downsample_prefix}.0: {weight_shape}, Mask shape: {prev_mask.shape}, Active filters: {torch.sum(prev_mask == 1).item()}, Expected in_channels: {expected_in_channels}")
+            expected_out_channels = active_filters[mask_idx]
+            print(f"Downsample weight shape for {downsample_prefix}.0: {weight_shape}, Mask shape: {prev_mask.shape}, Active filters: {expected_out_channels}, Expected in_channels: {expected_in_channels}")
             if weight_shape[0] == prev_mask.shape[0] and weight_shape[1] >= expected_in_channels:
                 filtered_state_dict[f'{downsample_prefix}.0.weight'] = weight[prev_mask == 1]
                 filtered_state_dict[f'{downsample_prefix}.0.weight'] = filtered_state_dict[f'{downsample_prefix}.0.weight'][:, in_channels_list[mask_idx-1] if mask_idx > 0 else 64]
