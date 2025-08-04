@@ -9,17 +9,25 @@ from data.dataset import Dataset_selector
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal, get_preserved_filter_num
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Test generalization of pruned ResNet50 student model on selected test datasets.')
+    parser = argparse.ArgumentParser(description='Fine-tune and test generalization of pruned ResNet50 student model on selected datasets.')
     parser.add_argument('--checkpoint_path', type=str, required=True,
                         help='Path to the student model checkpoint')
     parser.add_argument('--data_dir', type=str, required=True,
                         help='Base directory containing dataset folders')
-    parser.add_argument('--datasets', type=str, nargs='+', default=['hardfake', 'rvf10k', '140k', '190k', '200k', '330k'],
-                        help='List of datasets to test (e.g., hardfake rvf10k 140k 190k 200k 330k)')
+    parser.add_argument('--datasets', type=str, nargs='+', default=['rvf10k'],
+                        help='List of datasets to fine-tune and test (e.g., hardfake rvf10k 140k 190k 200k 330k)')
     parser.add_argument('--batch_size', type=int, default=64,
-                        help='Batch size for testing')
-    parser.add_argument('--num_workers', type=int, default=8,
+                        help='Batch size for training and testing')
+    parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of workers for data loading')
+    parser.add_argument('--epochs', type=int, default=3,
+                        help='Number of epochs for fine-tuning')
+    parser.add_argument('--lr_layer4', type=float, default=1e-4,
+                        help='Learning rate for layer4 during fine-tuning')
+    parser.add_argument('--lr_fc', type=float, default=0.0005,
+                        help='Learning rate for fc layer during fine-tuning')
+    parser.add_argument('--weight_decay', type=float, default=5e-5,
+                        help='Weight decay for optimizer')
     return parser.parse_args()
 
 # تنظیمات اولیه
@@ -169,6 +177,9 @@ for ds in selected_datasets:
             print(f"Error: Directory not found: {config.get('hardfake_root_dir')}")
             all_files_exist = False
     elif ds == 'rvf10k':
+        if not os.path.exists(config.get('rvf10k_train_csv', '')):
+            print(f"Error: CSV file not found: {config.get('rvf10k_train_csv')}")
+            all_files_exist = False
         if not os.path.exists(config.get('rvf10k_valid_csv', '')):
             print(f"Error: CSV file not found: {config.get('rvf10k_valid_csv')}")
             all_files_exist = False
@@ -176,6 +187,12 @@ for ds in selected_datasets:
             print(f"Error: Directory not found: {config.get('rvf10k_root_dir')}")
             all_files_exist = False
     elif ds == '140k':
+        if not os.path.exists(config.get('realfake140k_train_csv', '')):
+            print(f"Error: CSV file not found: {config.get('realfake140k_train_csv')}")
+            all_files_exist = False
+        if not os.path.exists(config.get('realfake140k_valid_csv', '')):
+            print(f"Error: CSV file not found: {config.get('realfake140k_valid_csv')}")
+            all_files_exist = False
         if not os.path.exists(config.get('realfake140k_test_csv', '')):
             print(f"Error: CSV file not found: {config.get('realfake140k_test_csv')}")
             all_files_exist = False
@@ -187,6 +204,12 @@ for ds in selected_datasets:
             print(f"Error: Directory not found: {config.get('realfake190k_root_dir')}")
             all_files_exist = False
     elif ds == '200k':
+        if not os.path.exists(config.get('realfake200k_train_csv', '')):
+            print(f"Error: CSV file not found: {config.get('realfake200k_train_csv')}")
+            all_files_exist = False
+        if not os.path.exists(config.get('realfake200k_val_csv', '')):
+            print(f"Error: CSV file not found: {config.get('realfake200k_val_csv')}")
+            all_files_exist = False
         if not os.path.exists(config.get('realfake200k_test_csv', '')):
             print(f"Error: CSV file not found: {config.get('realfake200k_test_csv')}")
             all_files_exist = False
@@ -226,14 +249,14 @@ def evaluate_model(model, data_loader, device, criterion):
     accuracy = 100 * correct / total if total > 0 else 0
     return avg_loss, accuracy
 
-# 8. تست روی دیتاست‌های انتخاب‌شده
+# 8. فاین‌تیونینگ و تست
 results = {}
 criterion = nn.BCEWithLogitsLoss()
 
 for dataset_name in valid_datasets:
     config = dataset_configs[dataset_name]
-    print(f"\nTesting on {dataset_name} dataset...")
-    
+    print(f"\nProcessing {dataset_name} dataset...")
+
     # لود دیتاست
     try:
         dataset = Dataset_selector(
@@ -253,14 +276,18 @@ for dataset_name in valid_datasets:
             realfake200k_root_dir=config.get('realfake200k_root_dir'),
             realfake190k_root_dir=config.get('realfake190k_root_dir'),
             realfake330k_root_dir=config.get('realfake330k_root_dir'),
-            train_batch_size=args.batch_size,  # مقدار پیش‌فرض برای جلوگیری از خطا
+            train_batch_size=args.batch_size,
             eval_batch_size=args.batch_size,
             num_workers=args.num_workers,
             pin_memory=True,
             ddp=False
         )
+        train_loader = dataset.loader_train
+        val_loader = dataset.loader_val
         test_loader = dataset.loader_test
-        # چاپ آمار دیتاست تست
+        # چاپ آمار دیتاست
+        print(f"{dataset_name} train dataset size: {len(train_loader.dataset)}")
+        print(f"{dataset_name} validation dataset size: {len(val_loader.dataset)}")
         print(f"{dataset_name} test dataset size: {len(test_loader.dataset)}")
         print(f"{dataset_name} test loader batches: {len(test_loader)}")
         # تست یک نمونه بچ
@@ -270,19 +297,74 @@ for dataset_name in valid_datasets:
             print(f"Sample test batch labels: {sample[1][:5]}")
         except Exception as e:
             print(f"Error loading sample test batch for {dataset_name}: {e}")
+            results[dataset_name] = {'error': str(e)}
+            continue
     except Exception as e:
         print(f"Error loading {dataset_name} dataset: {e}")
         results[dataset_name] = {'error': str(e)}
         continue
 
-    # ارزیابی
+    # ارزیابی قبل از فاین‌تیونینگ
     try:
         test_loss, test_accuracy = evaluate_model(model, test_loader, device, criterion)
-        print(f"{dataset_name} - Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.2f}%")
-        results[dataset_name] = {'loss': test_loss, 'accuracy': test_accuracy}
+        print(f"{dataset_name} - Before Fine-tuning - Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.2f}%")
+        results[dataset_name] = {'before_finetune_loss': test_loss, 'before_finetune_accuracy': test_accuracy}
     except Exception as e:
-        print(f"Error evaluating {dataset_name} dataset: {e}")
+        print(f"Error evaluating {dataset_name} before fine-tuning: {e}")
         results[dataset_name] = {'error': str(e)}
+        continue
+
+    # فاین‌تیونینگ
+    try:
+        # فریز کردن تمام لایه‌ها به جز layer4 و fc
+        for param in model.parameters():
+            param.requires_grad = False
+        for param in model.layer4.parameters():
+            param.requires_grad = True
+        for param in model.fc.parameters():
+            param.requires_grad = True
+
+        # تنظیم اپتیمایزر
+        optimizer = torch.optim.Adam([
+            {'params': model.layer4.parameters(), 'lr': args.lr_layer4},
+            {'params': model.fc.parameters(), 'lr': args.lr_fc}
+        ], weight_decay=args.weight_decay)
+
+        # فاین‌تیونینگ روی مجموعه train
+        model.train()
+        for epoch in range(args.epochs):
+            train_loss = 0.0
+            for images, labels in train_loader:
+                images, labels = images.to(device), labels.to(device).float()
+                optimizer.zero_grad()
+                with torch.amp.autocast('cuda', enabled=device.type == 'cuda'):
+                    outputs, _ = model(images)
+                    outputs = outputs.squeeze(1)
+                    loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.item()
+            avg_train_loss = train_loss / len(train_loader)
+            print(f"{dataset_name} - Epoch {epoch+1}/{args.epochs} - Train Loss: {avg_train_loss:.4f}")
+
+        # ارزیابی روی مجموعه validation
+        val_loss, val_accuracy = evaluate_model(model, val_loader, device, criterion)
+        print(f"{dataset_name} - After Fine-tuning - Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%")
+        results[dataset_name]['val_loss'] = val_loss
+        results[dataset_name]['val_accuracy'] = val_accuracy
+
+        # ارزیابی روی مجموعه تست
+        test_loss, test_accuracy = evaluate_model(model, test_loader, device, criterion)
+        print(f"{dataset_name} - After Fine-tuning - Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.2f}%")
+        results[dataset_name]['test_loss'] = test_loss
+        results[dataset_name]['test_accuracy'] = test_accuracy
+
+        # ذخیره مدل فاین‌تیون‌شده
+        torch.save(model.state_dict(), os.path.join('results', f'finetuned_model_{dataset_name}.pt'))
+        print(f"Fine-tuned model for {dataset_name} saved to results/finetuned_model_{dataset_name}.pt")
+    except Exception as e:
+        print(f"Error during fine-tuning {dataset_name}: {e}")
+        results[dataset_name]['error'] = str(e)
 
 # 9. ذخیره نتایج
 results_dir = 'results'
@@ -296,8 +378,12 @@ with open(os.path.join(results_dir, 'generalization_results.txt'), 'w') as f:
         if 'error' in result:
             f.write(f"Error: {result['error']}\n")
         else:
-            f.write(f"Test Loss: {result['loss']:.4f}\n")
-            f.write(f"Test Accuracy: {result['accuracy']:.2f}%\n")
+            f.write(f"Before Fine-tuning - Test Loss: {result['before_finetune_loss']:.4f}\n")
+            f.write(f"Before Fine-tuning - Test Accuracy: {result['before_finetune_accuracy']:.2f}%\n")
+            f.write(f"After Fine-tuning - Validation Loss: {result['val_loss']:.4f}\n")
+            f.write(f"After Fine-tuning - Validation Accuracy: {result['val_accuracy']:.2f}%\n")
+            f.write(f"After Fine-tuning - Test Loss: {result['test_loss']:.4f}\n")
+            f.write(f"After Fine-tuning - Test Accuracy: {result['test_accuracy']:.2f}%\n")
         f.write("\n")
 print(f"Results saved to {os.path.join(results_dir, 'generalization_results.txt')}")
 
@@ -309,4 +395,6 @@ for dataset_name in valid_datasets:
     if 'error' in result:
         print(f"Error: {result['error']}")
     else:
-        print(f"Test Loss: {result['loss']:.4f}, Test Accuracy: {result['accuracy']:.2f}%")
+        print(f"Before Fine-tuning - Test Loss: {result['before_finetune_loss']:.4f}, Test Accuracy: {result['before_finetune_accuracy']:.2f}%")
+        print(f"After Fine-tuning - Validation Loss: {result['val_loss']:.4f}, Validation Accuracy: {result['val_accuracy']:.2f}%")
+        print(f"After Fine-tuning - Test Loss: {result['test_loss']:.4f}, Test Accuracy: {result['test_accuracy']:.2f}%")
