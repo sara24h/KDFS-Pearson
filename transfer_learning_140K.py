@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader
 from thop import profile
 import argparse
 from torch.amp import autocast
+from torchvision import transforms
 from data.dataset import Dataset_selector
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal, get_preserved_filter_num
 
@@ -64,7 +65,7 @@ for key, value in state_dict.items():
         mask_key = key.replace('.weight', '.mask_weight')
         if mask_key in state_dict:
             mask_binary = mask_dict[mask_key].float()
-            if len(value.shape) == 4:
+            if len(value.shape) == 4:  # برای لایه‌های کانولوشنی
                 out_channels = mask_binary.sum().int().item()
                 pruned_weight = value[mask_binary.bool()]
                 if 'conv2' in key:
@@ -88,6 +89,16 @@ for key, value in state_dict.items():
                 pruned_state_dict[key] = pruned_weight
             else:
                 pruned_state_dict[key] = value
+        else:
+            pruned_state_dict[key] = value
+    elif 'bn' in key and any(s in key for s in ['weight', 'bias', 'running_mean', 'running_var']):
+        # فیلتر کردن پارامترهای BatchNorm
+        conv_key = key.replace('.bn1.', '.conv1.').replace('.bn2.', '.conv2.').replace('.bn3.', '.conv3.')
+        conv_key = conv_key.replace('.weight', '.mask_weight').replace('.bias', '.mask_weight').replace('.running_mean', '.mask_weight').replace('.running_var', '.mask_weight')
+        if conv_key in state_dict:
+            mask_binary = mask_dict[conv_key].float()
+            pruned_param = value[mask_binary.bool()]
+            pruned_state_dict[key] = pruned_param
         else:
             pruned_state_dict[key] = value
     else:
