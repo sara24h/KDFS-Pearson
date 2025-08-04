@@ -253,7 +253,7 @@ for dataset_name in valid_datasets:
             realfake200k_root_dir=config.get('realfake200k_root_dir'),
             realfake190k_root_dir=config.get('realfake190k_root_dir'),
             realfake330k_root_dir=config.get('realfake330k_root_dir'),
-            train_batch_size=0,  # فقط مجموعه تست لود می‌شود
+            train_batch_size=args.batch_size,  # مقدار پیش‌فرض برای جلوگیری از خطا
             eval_batch_size=args.batch_size,
             num_workers=args.num_workers,
             pin_memory=True,
@@ -309,4 +309,4 @@ for dataset_name in valid_datasets:
     if 'error' in result:
         print(f"Error: {result['error']}")
     else:
-        print(f"Test Loss: {result['loss']:.4f}, Test Accuracy: {test_accuracy:.2f}%")
+        print(f"Test Loss: {result['loss']:.4f}, Test Accuracy: {result['accuracy']:.2f}%")
