@@ -1,206 +1,137 @@
 import torch
 import torch.nn as nn
-from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal  # Import your pruned model
-from data.dataset import FaceDataset, Dataset_selector
+import torchvision.models as models
+from torchvision import transforms
+from PIL import Image
+import os
+from ptflops import get_model_complexity_info
+import torch.nn.utils.prune as prune
+from torch.utils.data import DataLoader
+from torchvision.datasets import ImageFolder
 
-def load_pruned_model_weights(model_path, masks, device='cuda'):
-    """
-    Load weights onto a pruned ResNet model
-    
-    Args:
-        model_path (str): Path to the saved model weights
-        masks (list): List of pruning masks for the model
-        device (str): Device to load the model on
-    
-    Returns:
-        model: Loaded pruned ResNet model
-    """
-    
-    # Create the pruned model instance
-    model = ResNet_50_pruned_hardfakevsreal(masks=masks)
-    
-    try:
-        # Load the checkpoint
-        checkpoint = torch.load(model_path, map_location=device)
-        
-        # Handle different checkpoint formats
-        if isinstance(checkpoint, dict):
-            if 'state_dict' in checkpoint:
-                state_dict = checkpoint['state_dict']
-            elif 'model_state_dict' in checkpoint:
-                state_dict = checkpoint['model_state_dict']
-            elif 'model' in checkpoint:
-                state_dict = checkpoint['model']
-            else:
-                # Assume the checkpoint itself is the state_dict
-                state_dict = checkpoint
-        else:
-            # If checkpoint is directly the model
-            state_dict = checkpoint.state_dict() if hasattr(checkpoint, 'state_dict') else checkpoint
-        
-        # Remove 'module.' prefix if present (from DataParallel/DistributedDataParallel)
-        new_state_dict = {}
-        for key, value in state_dict.items():
-            if key.startswith('module.'):
-                new_key = key[7:]  # Remove 'module.' prefix
-            else:
-                new_key = key
-            new_state_dict[new_key] = value
-        
-        # Load weights with strict=False to handle missing/extra keys
-        missing_keys, unexpected_keys = model.load_state_dict(new_state_dict, strict=False)
-        
-        # Print information about loading
-        if missing_keys:
-            print(f"Missing keys in state_dict: {missing_keys}")
-        if unexpected_keys:
-            print(f"Unexpected keys in state_dict: {unexpected_keys}")
-            
-        print("Model weights loaded successfully!")
-        
-        # Move model to device
-        model = model.to(device)
-        
-        # Set to evaluation mode
-        model.eval()
-        
-        return model
-        
-    except Exception as e:
-        print(f"Error loading model weights: {e}")
-        return None
+# تنظیم دستگاه (GPU یا CPU)
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print(f"دستگاه مورد استفاده: {device}")
 
-def load_masks_from_checkpoint(model_path):
-    """
-    Try to extract masks from the checkpoint if they're saved there
-    
-    Args:
-        model_path (str): Path to the saved model
-    
-    Returns:
-        masks (list): List of masks if found, None otherwise
-    """
-    try:
-        checkpoint = torch.load(model_path, map_location='cpu')
-        
-        if isinstance(checkpoint, dict) and 'masks' in checkpoint:
-            return checkpoint['masks']
-        
-        print("No masks found in checkpoint. You'll need to provide them manually.")
-        return None
-        
-    except Exception as e:
-        print(f"Error loading masks from checkpoint: {e}")
-        return None
+# تعریف مدل ResNet50
+model = models.resnet50(pretrained=False)  # بدون وزن‌های پیش‌فرض ImageNet
+num_ftrs = model.fc.in_features
+model.fc = nn.Linear(num_ftrs, 1)  # تنظیم لایه خروجی برای طبقه‌بندی دودویی (real vs. fake)
 
-# Example usage with dataset loading
-def main():
-    # Path to your saved model
-    model_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt'
-    
-    # First, try to load masks from checkpoint
-    masks = load_masks_from_checkpoint(model_path)
-    
-    if masks is None:
-        print("Masks not found in checkpoint. You need to provide the masks used during pruning.")
-        print("Please load the masks from your pruning process or provide them manually.")
-        
-        # If you have the masks saved separately, load them here
-        # Example:
-        # masks = torch.load('path_to_your_masks.pt')
-        # or create dummy masks for testing (NOT recommended for actual use)
-        # This is just an example - you need the actual masks used during pruning
-        print("Creating dummy masks for demonstration - REPLACE WITH ACTUAL MASKS!")
-        
-        # Create dummy masks for ResNet-50 with Bottleneck blocks
-        # ResNet-50 structure: [3, 4, 6, 3] blocks, each block has 3 conv layers
-        # Total: (3+4+6+3) * 3 = 48 conv layers in residual blocks
-        print("Creating dummy masks for ResNet-50 - REPLACE WITH ACTUAL MASKS!")
-        
-        masks = []
-        num_blocks = [3, 4, 6, 3]  # ResNet-50 structure
-        base_channels = [64, 128, 256, 512]  # Base channels for each stage
-        
-        for stage_idx, (num_block, base_ch) in enumerate(zip(num_blocks, base_channels)):
-            for block_idx in range(num_block):
-                # Each Bottleneck block has 3 conv layers
-                # Conv1: 1x1, reduces channels
-                # Conv2: 3x3, processes features  
-                # Conv3: 1x1, expands channels
-                
-                # Layer 1: 1x1 conv (channel reduction)
-                mask1_size = base_ch
-                mask1 = torch.ones(mask1_size, dtype=torch.bool)
-                if stage_idx > 0 or block_idx > 0:  # Don't prune first few layers too much
-                    num_to_prune = int(0.1 * mask1_size)  # Prune 10%
-                    mask1[-num_to_prune:] = False
-                masks.append(mask1)
-                
-                # Layer 2: 3x3 conv (same channels)
-                mask2_size = base_ch
-                mask2 = torch.ones(mask2_size, dtype=torch.bool)
-                if stage_idx > 0 or block_idx > 0:
-                    num_to_prune = int(0.15 * mask2_size)  # Prune 15%
-                    mask2[-num_to_prune:] = False
-                masks.append(mask2)
-                
-                # Layer 3: 1x1 conv (channel expansion, output should match residual)
-                mask3_size = base_ch * 4  # Bottleneck expansion factor is 4
-                mask3 = torch.ones(mask3_size, dtype=torch.bool)
-                # Don't prune the final layer of each block too much to maintain residual connection
-                if stage_idx > 1:  # Only prune later stages lightly
-                    num_to_prune = int(0.05 * mask3_size)  # Prune only 5%
-                    mask3[-num_to_prune:] = False
-                masks.append(mask3)
-        
-        print(f"Created {len(masks)} dummy masks for ResNet-50")
-        print("Mask sizes:", [mask.sum().item() for mask in masks[:9]], "...")  # Show first 9 mask sizes
-    
-    # Load the model with weights
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    model = load_pruned_model_weights(model_path, masks, device)
-    
-    if model is not None:
-        print("Model loaded successfully!")
-        print(f"Model is on device: {next(model.parameters()).device}")
-        
-        # Load dataset for testing (using your Dataset_selector)
-        dataset = Dataset_selector(
-            dataset_mode='140k',
-            realfake140k_train_csv='/kaggle/input/140k-real-and-fake-faces/train.csv',
-            realfake140k_valid_csv='/kaggle/input/140k-real-and-fake-faces/valid.csv',
-            realfake140k_test_csv='/kaggle/input/140k-real-and-fake-faces/test.csv',
-            realfake140k_root_dir='/kaggle/input/140k-real-and-fake-faces',
-            train_batch_size=32,
-            eval_batch_size=32,
-            num_workers=4,
-            pin_memory=True,
-            ddp=False,
-        )
-        
-        # Test the model with real data
-        model.eval()
-        with torch.no_grad():
-            # Get a batch from test loader
-            test_batch = next(iter(dataset.loader_test))
-            images, labels = test_batch
-            images = images.to(device)
-            labels = labels.to(device)
-            
-            # Forward pass
-            outputs, features = model(images)
-            predictions = torch.sigmoid(outputs)
-            
-            print(f"Batch size: {images.shape[0]}")
-            print(f"Input shape: {images.shape}")
-            print(f"Output shape: {outputs.shape}")
-            print(f"Predictions (after sigmoid): {predictions.flatten()[:5]}...")  # Show first 5 predictions
-            print(f"True labels: {labels.flatten()[:5]}...")  # Show first 5 labels
-            print(f"Number of feature maps: {len(features)}")
-            for i, feat in enumerate(features):
-                print(f"Feature map {i+1} shape: {feat.shape}")
-    
-    return model
+# مسیر فایل چک‌پوینت
+checkpoint_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt'
 
-if __name__ == "__main__":
-    loaded_model = main()
+# لود چک‌پوینت
+try:
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+except FileNotFoundError:
+    raise FileNotFoundError(f"فایل چک‌پوینت در مسیر {checkpoint_path} یافت نشد!")
+
+# بررسی وجود کلید 'student' و فیلتر کردن کلیدهای غیرضروری
+if 'student' in checkpoint:
+    state_dict = checkpoint['student']
+else:
+    state_dict = checkpoint
+
+# فیلتر کردن کلیدهای غیرضروری (مثل mask_weight یا کلیدهای اضافی)
+filtered_state_dict = {k: v for k, v in state_dict.items() if not k.endswith('mask_weight') and k not in ['feat1.weight', 'feat1.bias', 'feat2.weight', 'feat2.bias', 'feat3.weight', 'feat3.bias', 'feat4.weight', 'feat4.bias']}
+
+# لود state_dict به مدل
+missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
+print(f"کلیدهای گمشده: {missing_keys}")
+print(f"کلیدهای غیرمنتظره: {unexpected_keys}")
+
+# اعمال ماسک‌های هرس (در صورت وجود)
+# اگر ماسک‌های هرس در چک‌پوینت وجود دارند، آن‌ها را اعمال کنید
+for name, module in model.named_modules():
+    if isinstance(module, (nn.Conv2d, nn.Linear)):
+        mask_key = f"{name}.weight_mask"
+        if mask_key in state_dict:
+            mask = state_dict[mask_key]
+            prune.custom_from_mask(module, name='weight', mask=mask)
+            print(f"ماسک هرس برای {name} اعمال شد")
+
+# انتقال مدل به دستگاه
+model = model.to(device)
+
+# تنظیم مدل در حالت ارزیابی (برای تست یا استنتاج)
+model.eval()
+
+print("مدل دانش‌آموز با موفقیت لود شد!")
+
+# محاسبه تعداد پارامترهای کل و غیرصفر
+total_params = sum(p.numel() for p in model.parameters())
+non_zero_params = sum(torch.count_nonzero(p).item() for p in model.parameters() if p.requires_grad)
+print(f"تعداد کل پارامترها: {total_params}")
+print(f"تعداد پارامترهای غیرصفر: {non_zero_params}")
+
+# محاسبه FLOPs
+flops, params = get_model_complexity_info(model, (3, 256, 256), as_strings=True, print_per_layer_stat=False)
+print(f'FLOPs: {flops}')
+print(f'Parameters: {params}')
+
+# بررسی وزن‌های یک لایه نمونه (برای تأیید هرس)
+print("وزن‌های conv1 (نمونه):", model.conv1.weight.data[:2])
+print(f"تعداد وزن‌های غیرصفر در conv1: {torch.count_nonzero(model.conv1.weight.data).item()}")
+
+# تعریف تبدیل برای تصویر ورودی
+transform = transforms.Compose([
+    transforms.Resize((256, 256)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+# تابع برای تست مدل روی یک تصویر نمونه
+def test_single_image(img_path, model):
+    if not os.path.exists(img_path):
+        print(f"تصویر در مسیر {img_path} یافت نشد!")
+        return
+    image = Image.open(img_path).convert('RGB')
+    image = transform(image).unsqueeze(0).to(device)
+    
+    with torch.no_grad():
+        output = model(image).squeeze(1)
+        prob = torch.sigmoid(output).item()
+        predicted_label = 'real' if prob > 0.5 else 'fake'
+        print(f"تصویر: {img_path}")
+        print(f"پیش‌بینی: {predicted_label}, احتمال: {prob:.4f}")
+
+# تابع برای ارزیابی مدل روی مجموعه داده آزمایشی
+def evaluate_model(test_loader, model, criterion=nn.BCEWithLogitsLoss()):
+    model.eval()
+    test_loss = 0.0
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device).float()
+            outputs = model(images).squeeze(1)
+            loss = criterion(outputs, labels)
+            test_loss += loss.item()
+            preds = (torch.sigmoid(outputs) > 0.5).float()
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+    
+    test_loss = test_loss / len(test_loader)
+    test_accuracy = 100 * correct / total
+    print(f'زیان آزمایشی: {test_loss:.4f}, دقت آزمایشی: {test_accuracy:.2f}%')
+
+# تست روی یک تصویر نمونه (مسیر را جایگزین کنید)
+sample_image_path = '/path/to/sample/image.jpg'  # مسیر تصویر نمونه را وارد کنید
+test_single_image(sample_image_path, model)
+
+# تعریف دیتالودر آزمایشی (اختیاری)
+try:
+    test_dataset = ImageFolder(
+        root='/path/to/test/dataset',  # مسیر مجموعه داده آزمایشی را وارد کنید
+        transform=transform
+    )
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True)
+    evaluate_model(test_loader, model)
+except FileNotFoundError:
+    print("مجموعه داده آزمایشی یافت نشد. لطفاً مسیر صحیح را وارد کنید.")
+
+# ذخیره مدل (اختیاری)
+save_path = './resnet50_student_model.pth'
+torch.save(model.state_dict(), save_path)
+print(f"مدل در مسیر {save_path} ذخیره شد!")
