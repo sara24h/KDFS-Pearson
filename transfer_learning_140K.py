@@ -1,15 +1,12 @@
 import os
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from thop import profile
 import argparse
 from torch.amp import autocast
-
-# فرض می‌کنیم این ماژول‌ها از پروژه شما وارد شده‌اند
-from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal, get_preserved_filter_num
 from data.dataset import Dataset_selector
+from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal, get_preserved_filter_num
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Test generalization of pruned ResNet50 student model on multiple datasets.')
@@ -42,39 +39,52 @@ else:
 
 # استخراج ماسک‌ها
 masks = []
+mask_dict = {}
 for key, value in state_dict.items():
     if 'mask_weight' in key:
         mask_binary = (torch.argmax(value, dim=1).squeeze(1).squeeze(1) != 0).float()
         masks.append(mask_binary)
+        mask_dict[key] = mask_binary
 print(f"Number of masks extracted: {len(masks)}")
-if len(masks) != 48:  # برای ResNet50 باید 48 ماسک باشد
+if len(masks) != 48:
     print(f"Warning: Expected 48 masks for ResNet50, got {len(masks)}")
 
 # 2. ساخت مدل پرون‌شده
 model = ResNet_50_pruned_hardfakevsreal(masks=masks)
 num_ftrs = model.fc.in_features
-model.fc = nn.Linear(num_ftrs, 1)  # برای مسائل باینری (real vs fake)
+model.fc = nn.Linear(num_ftrs, 1)  # برای مسائل باینری
 model = model.to(device)
 
 # 3. فیلتر کردن و لود وزن‌ها
 pruned_state_dict = {}
 for key, value in state_dict.items():
     if 'mask_weight' in key or 'feat' in key:
-        continue  # نادیده گرفتن ماسک‌ها و لایه‌های feat
+        continue
     if 'weight' in key and 'conv' in key:
         mask_key = key.replace('.weight', '.mask_weight')
         if mask_key in state_dict:
-            mask = state_dict[mask_key]
-            mask_binary = (torch.argmax(mask, dim=1).squeeze(1).squeeze(1) != 0).float()
-            if len(value.shape) == 4:  # برای لایه‌های کانولوشنی
+            mask_binary = mask_dict[mask_key].float()
+            if len(value.shape) == 4:
                 out_channels = mask_binary.sum().int().item()
                 pruned_weight = value[mask_binary.bool()]
-                if 'conv2' in key or 'conv3' in key:
-                    prev_mask_key = key.replace('conv2', 'conv1').replace('conv3', 'conv2')
+                if 'conv2' in key:
+                    prev_mask_key = key.replace('conv2', 'conv1').replace('.weight', '.mask_weight')
                     if prev_mask_key in state_dict:
-                        prev_mask = state_dict[prev_mask_key]
-                        prev_mask_binary = (torch.argmax(prev_mask, dim=1).squeeze(1).squeeze(1) != 0).float()
-                        pruned_weight = pruned_weight[:, prev_mask_binary.bool()]
+                        prev_mask_binary = mask_dict[prev_mask_key].float()
+                        if prev_mask_binary.shape[0] != value.shape[1]:
+                            print(f"Warning: Mismatch in input channels for {key}: expected {value.shape[1]}, got {prev_mask_binary.shape[0]}")
+                            pruned_weight = pruned_weight[:, :prev_mask_binary.shape[0]][:, prev_mask_binary.bool()]
+                        else:
+                            pruned_weight = pruned_weight[:, prev_mask_binary.bool()]
+                elif 'conv3' in key:
+                    prev_mask_key = key.replace('conv3', 'conv2').replace('.weight', '.mask_weight')
+                    if prev_mask_key in state_dict:
+                        prev_mask_binary = mask_dict[prev_mask_key].float()
+                        if prev_mask_binary.shape[0] != value.shape[1]:
+                            print(f"Warning: Mismatch in input channels for {key}: expected {value.shape[1]}, got {prev_mask_binary.shape[0]}")
+                            pruned_weight = pruned_weight[:, :prev_mask_binary.shape[0]][:, prev_mask_binary.bool()]
+                        else:
+                            pruned_weight = pruned_weight[:, prev_mask_binary.bool()]
                 pruned_state_dict[key] = pruned_weight
             else:
                 pruned_state_dict[key] = value
@@ -88,11 +98,11 @@ print(f"Missing keys: {missing}")
 print(f"Unexpected keys: {unexpected}")
 
 # 4. محاسبه تعداد پارامترها و FLOPs
-input = torch.randn(1, 3, 256, 256).to(device)  # اندازه پیش‌فرض برای اکثر دیتاست‌ها
+input = torch.randn(1, 3, 256, 256).to(device)
 flops, params = profile(model, inputs=(input,))
 print(f"FLOPs: {flops / 1e9:.2f} GMac, Parameters: {params / 1e6:.2f} M")
 
-# 5. تعریف دیتاست‌ها و لودرها
+# 5. تعریف دیتاست‌ها
 dataset_configs = {
     'hardfake': {
         'dataset_mode': 'hardfake',
@@ -201,7 +211,7 @@ for dataset_name, config in dataset_configs.items():
             realfake200k_root_dir=config.get('realfake200k_root_dir'),
             realfake190k_root_dir=config.get('realfake190k_root_dir'),
             realfake330k_root_dir=config.get('realfake330k_root_dir'),
-            train_batch_size=0,  # فقط تست
+            train_batch_size=0,
             eval_batch_size=args.batch_size,
             num_workers=args.num_workers,
             pin_memory=True,
