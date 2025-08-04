@@ -8,7 +8,7 @@ import argparse
 from torch.amp import autocast
 
 # فرض می‌کنیم این ماژول‌ها از پروژه شما وارد شده‌اند
-from model.student.ResNet_pruned import ResNet_50_pruned_hardfakevsreal, get_preserved_filter_num
+from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal, get_preserved_filter_num
 from data.dataset import Dataset_selector
 
 def parse_args():
