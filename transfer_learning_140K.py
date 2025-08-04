@@ -5,6 +5,8 @@ from torch.utils.data import DataLoader
 from thop import profile
 import argparse
 from torch.amp import autocast
+from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
+import numpy as np
 from data.dataset import Dataset_selector
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal, get_preserved_filter_num
 
@@ -100,12 +102,15 @@ def fine_tune_model(model, train_loader, valid_loader, device, criterion, optimi
     
     return best_model_path
 
-# 3. تابع ارزیابی (بدون تغییر)
+# 3. تابع ارزیابی با معیارهای اضافی
 def evaluate_model(model, data_loader, device, criterion):
     model.eval()
     test_loss = 0.0
     correct = 0
     total = 0
+    all_preds = []
+    all_labels = []
+    
     with torch.no_grad():
         for images, labels in data_loader:
             images, labels = images.to(device), labels.to(device).float()
@@ -117,11 +122,27 @@ def evaluate_model(model, data_loader, device, criterion):
             preds = (torch.sigmoid(outputs) > 0.5).float()
             correct += (preds == labels).sum().item()
             total += labels.size(0)
+            all_preds.append(preds.cpu().numpy())
+            all_labels.append(labels.cpu().numpy())
+    
     avg_loss = test_loss / len(data_loader) if total > 0 else 0
     accuracy = 100 * correct / total if total > 0 else 0
-    return avg_loss, accuracy
+    
+    # ترکیب پیش‌بینی‌ها و برچسب‌ها
+    all_preds = np.concatenate(all_preds)
+    all_labels = np.concatenate(all_labels)
+    
+    # محاسبه Precision، Recall و F1-Score
+    precision = precision_score(all_labels, all_preds, zero_division=0)
+    recall = recall_score(all_labels, all_preds, zero_division=0)
+    f1 = f1_score(all_labels, all_preds, zero_division=0)
+    
+    # محاسبه Confusion Matrix
+    cm = confusion_matrix(all_labels, all_preds)
+    
+    return avg_loss, accuracy, precision, recall, f1, cm
 
-# 4. تعریف تنظیمات دیتاست‌ها (بدون تغییر)
+# 4. تعریف تنظیمات دیتاست‌ها
 dataset_configs = {
     'hardfake': {
         'dataset_mode': 'hardfake',
@@ -309,6 +330,29 @@ for dataset_name in valid_datasets:
         results[dataset_name] = {'error': str(e)}
         continue
     
+    # ارزیابی مدل قبل از فاین‌تیونینگ
+    try:
+        pre_finetune_loss, pre_finetune_accuracy, pre_precision, pre_recall, pre_f1, pre_cm = evaluate_model(model, test_loader, device, criterion)
+        print(f"{dataset_name} - Pre-Finetune Metrics:")
+        print(f"  Test Loss: {pre_finetune_loss:.4f}")
+        print(f"  Test Accuracy: {pre_finetune_accuracy:.2f}%")
+        print(f"  Precision: {pre_precision:.4f}")
+        print(f"  Recall: {pre_recall:.4f}")
+        print(f"  F1-Score: {pre_f1:.4f}")
+        print(f"  Confusion Matrix:\n{pre_cm}")
+        results[dataset_name] = {
+            'pre_finetune_loss': pre_finetune_loss,
+            'pre_finetune_accuracy': pre_finetune_accuracy,
+            'pre_precision': pre_precision,
+            'pre_recall': pre_recall,
+            'pre_f1': pre_f1,
+            'pre_cm': pre_cm.tolist()  # تبدیل به لیست برای ذخیره‌سازی
+        }
+    except Exception as e:
+        print(f"Error evaluating {dataset_name} before fine-tuning: {e}")
+        results[dataset_name] = {'error': str(e)}
+        continue
+    
     # فاین‌تیونینگ فقط لایه fc
     if train_loader:
         # تنظیم بهینه‌ساز فقط برای پارامترهای لایه fc
@@ -321,14 +365,27 @@ for dataset_name in valid_datasets:
     else:
         print(f"No training data available for {dataset_name}. Skipping fine-tuning.")
     
-    # ارزیابی روی دیتاست تست
+    # ارزیابی روی دیتاست تست پس از فاین‌تیونینگ
     try:
-        test_loss, test_accuracy = evaluate_model(model, test_loader, device, criterion)
-        print(f"{dataset_name} - Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.2f}%")
-        results[dataset_name] = {'loss': test_loss, 'accuracy': test_accuracy}
+        post_finetune_loss, post_finetune_accuracy, post_precision, post_recall, post_f1, post_cm = evaluate_model(model, test_loader, device, criterion)
+        print(f"{dataset_name} - Post-Finetune Metrics:")
+        print(f"  Test Loss: {post_finetune_loss:.4f}")
+        print(f"  Test Accuracy: {post_finetune_accuracy:.2f}%")
+        print(f"  Precision: {post_precision:.4f}")
+        print(f"  Recall: {post_recall:.4f}")
+        print(f"  F1-Score: {post_f1:.4f}")
+        print(f"  Confusion Matrix:\n{post_cm}")
+        results[dataset_name].update({
+            'post_finetune_loss': post_finetune_loss,
+            'post_finetune_accuracy': post_finetune_accuracy,
+            'post_precision': post_precision,
+            'post_recall': post_recall,
+            'post_f1': post_f1,
+            'post_cm': post_cm.tolist()  # تبدیل به لیست برای ذخیره‌سازی
+        })
     except Exception as e:
-        print(f"Error evaluating {dataset_name} dataset: {e}")
-        results[dataset_name] = {'error': str(e)}
+        print(f"Error evaluating {dataset_name} after fine-tuning: {e}")
+        results[dataset_name].update({'error': str(e)})
     
     # محاسبه FLOPs و پارامترها
     input = torch.randn(1, 3, 256, 256).to(device)
@@ -346,8 +403,20 @@ with open(os.path.join(results_dir, 'finetune_results.txt'), 'w') as f:
         if 'error' in result:
             f.write(f"Error: {result['error']}\n")
         else:
-            f.write(f"Test Loss: {result['loss']:.4f}\n")
-            f.write(f"Test Accuracy: {result['accuracy']:.2f}%\n")
+            f.write(f"Pre-Finetune Metrics:\n")
+            f.write(f"  Test Loss: {result['pre_finetune_loss']:.4f}\n")
+            f.write(f"  Test Accuracy: {result['pre_finetune_accuracy']:.2f}%\n")
+            f.write(f"  Precision: {result['pre_precision']:.4f}\n")
+            f.write(f"  Recall: {result['pre_recall']:.4f}\n")
+            f.write(f"  F1-Score: {result['pre_f1']:.4f}\n")
+            f.write(f"  Confusion Matrix: {result['pre_cm']}\n")
+            f.write(f"Post-Finetune Metrics:\n")
+            f.write(f"  Test Loss: {result['post_finetune_loss']:.4f}\n")
+            f.write(f"  Test Accuracy: {result['post_finetune_accuracy']:.2f}%\n")
+            f.write(f"  Precision: {result['post_precision']:.4f}\n")
+            f.write(f"  Recall: {result['post_recall']:.4f}\n")
+            f.write(f"  F1-Score: {result['post_f1']:.4f}\n")
+            f.write(f"  Confusion Matrix: {result['post_cm']}\n")
             f.write(f"FLOPs: {result['flops']:.2f} GMac\n")
             f.write(f"Parameters: {result['params']:.2f} M\n")
         f.write("\n")
@@ -361,5 +430,18 @@ for dataset_name in valid_datasets:
     if 'error' in result:
         print(f"Error: {result['error']}")
     else:
-        print(f"Test Loss: {result['loss']:.4f}, Test Accuracy: {result['accuracy']:.2f}%")
+        print(f"Pre-Finetune Metrics:")
+        print(f"  Test Loss: {result['pre_finetune_loss']:.4f}")
+        print(f"  Test Accuracy: {result['pre_finetune_accuracy']:.2f}%")
+        print(f"  Precision: {result['pre_precision']:.4f}")
+        print(f"  Recall: {result['pre_recall']:.4f}")
+        print(f"  F1-Score: {result['pre_f1']:.4f}")
+        print(f"  Confusion Matrix:\n{result['pre_cm']}")
+        print(f"Post-Finetune Metrics:")
+        print(f"  Test Loss: {result['post_finetune_loss']:.4f}")
+        print(f"  Test Accuracy: {result['post_finetune_accuracy']:.2f}%")
+        print(f"  Precision: {result['post_precision']:.4f}")
+        print(f"  Recall: {result['post_recall']:.4f}")
+        print(f"  F1-Score: {result['post_f1']:.4f}")
+        print(f"  Confusion Matrix:\n{result['post_cm']}")
         print(f"FLOPs: {result['flops']:.2f} GMac, Parameters: {result['params']:.2f} M")
