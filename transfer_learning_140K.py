@@ -4,12 +4,48 @@ import torch.nn.functional as F
 from torchvision import transforms
 from torch.utils.data import DataLoader
 from torchvision.datasets import ImageFolder
-from ptflops import get_model_complexity_info
+from thop import profile
+import argparse
 import os
 from PIL import Image
 import sys
-# لود معماری هرس‌شده
-from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
+
+# لود معماری‌ها
+from model.pruned_model.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
+from model.student.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
+
+# مقادیر پایه FLOPs و پارامترها
+Flops_baselines = {
+    "ResNet_50": {
+        "hardfakevsreal": 7700.0,
+        "rvf10k": 5390.0,
+        "140k": 5390.0,
+        "190k": 5390.0,
+        "200k": 5390.0,
+        "330k": 5390.0,
+        "125k": 2100.0,
+    }
+}
+Params_baselines = {
+    "ResNet_50": {
+        "hardfakevsreal": 14.97,
+        "rvf10k": 23.51,
+        "140k": 23.51,
+        "190k": 23.51,
+        "200k": 23.51,
+        "330k": 23.51,
+        "125k": 23.51,
+    }
+}
+image_sizes = {
+    "hardfakevsreal": 300,
+    "rvf10k": 256,
+    "140k": 256,
+    "190k": 256,
+    "200k": 256,
+    "330k": 256,
+    "125k": 160,
+}
 
 # تابع اصلاح‌شده برای محاسبه تعداد فیلترهای فعال
 def get_preserved_filter_num(mask):
@@ -21,90 +57,78 @@ def get_preserved_filter_num(mask):
         num_filters = 1  # حداقل یک فیلتر برای جلوگیری از خطا
     return num_filters
 
-# تنظیم دستگاه
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"دستگاه مورد استفاده: {device}")
+# تابع برای نگاشت وزن‌های مدل دانش‌آموز به مدل هرس‌شده
+def map_weights_to_pruned_model(sparse_state_dict, pruned_model, masks):
+    pruned_state_dict = {}
+    mask_idx = 0
+    for name, param in pruned_model.named_parameters():
+        sparse_name = name.replace('module.', '')  # حذف پیشوند module. در صورت وجود
+        if sparse_name in sparse_state_dict:
+            if 'conv' in sparse_name and 'weight' in sparse_name:
+                # نگاشت وزن‌ها با توجه به ماسک‌ها
+                mask = masks[mask_idx]
+                active_filters = (mask > 0).float()
+                if len(mask.shape) > 1:
+                    active_filters = active_filters.squeeze()
+                active_indices = torch.nonzero(active_filters).squeeze()
+                pruned_weight = sparse_state_dict[sparse_name][active_indices]
+                if pruned_weight.shape == param.shape:
+                    pruned_state_dict[name] = pruned_weight
+                else:
+                    print(f"هشدار: ناسازگاری شکل در {name}: انتظار {param.shape}، دریافت {pruned_weight.shape}")
+            else:
+                # برای لایه‌های غیرکانولوشنی (مثل bn یا fc)
+                if sparse_state_dict[sparse_name].shape == param.shape:
+                    pruned_state_dict[name] = sparse_state_dict[sparse_name]
+                else:
+                    print(f"هشدار: ناسازگاری شکل در {name}: انتظار {param.shape}، دریافت {sparse_state_dict[sparse_name].shape}")
+            if 'conv3.weight' in sparse_name or 'conv2.weight' in sparse_name:
+                mask_idx += 1
+    return pruned_state_dict
 
-# لود چک‌پوینت
-checkpoint_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt'
-try:
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-except FileNotFoundError:
-    raise FileNotFoundError(f"فایل چک‌پوینت در مسیر {checkpoint_path} یافت نشد!")
+# تابع برای محاسبه FLOPs و پارامترها
+def get_flops_and_params(args, masks, device):
+    dataset_type = {
+        "hardfake": "hardfakevsreal",
+        "rvf10k": "rvf10k",
+        "140k": "140k",
+        "190k": "190k",
+        "200k": "200k",
+        "330k": "330k",
+        "125k": "125k"
+    }[args.dataset_mode]
 
-# استخراج state_dict و ماسک‌ها
-if 'student' in checkpoint:
-    state_dict = checkpoint['student']
-else:
-    state_dict = checkpoint
+    # تعریف مدل هرس‌شده
+    pruned_model = ResNet_50_pruned_hardfakevsreal(masks=masks).to(device)
 
-# استخراج ماسک‌های هرس
-mask_keys = [k for k in state_dict.keys() if k.endswith('mask_weight')]
-masks = [state_dict[k] for k in mask_keys]
-print(f"ماسک‌های هرس یافت‌شده: {mask_keys}")
+    # لود چک‌پوینت دانش‌آموز
+    ckpt_student = torch.load(args.sparsed_student_ckpt_path, map_location=device, weights_only=True)
+    sparse_state_dict = ckpt_student["student"]
 
-# بررسی و اصلاح ماسک‌ها
-corrected_masks = []
-for i, (key, mask) in enumerate(zip(mask_keys, masks)):
-    num_filters = get_preserved_filter_num(mask)
-    print(f"ماسک {key}: تعداد فیلترهای فعال = {num_filters}")
-    corrected_masks.append((mask > 0).float())  # تبدیل ماسک به باینری
+    # نگاشت وزن‌ها به مدل هرس‌شده
+    pruned_state_dict = map_weights_to_pruned_model(sparse_state_dict, pruned_model, masks)
+    missing_keys, unexpected_keys = pruned_model.load_state_dict(pruned_state_dict, strict=False)
+    print(f"کلیدهای گمشده: {missing_keys}")
+    print(f"کلیدهای غیرمنتظره: {unexpected_keys}")
 
-# تعریف مدل هرس‌شده
-try:
-    model = ResNet_50_pruned_hardfakevsreal(masks=corrected_masks).to(device)
-except Exception as e:
-    print(f"خطا در تعریف مدل: {e}")
-    raise
+    # محاسبه FLOPs و پارامترها
+    input_size = image_sizes[dataset_type]
+    input = torch.rand([1, 3, input_size, input_size]).to(device)
+    Flops, Params = profile(pruned_model, inputs=(input,), verbose=False)
 
-# فیلتر کردن کلیدهای غیرمرتبط
-filtered_state_dict = {k: v for k, v in state_dict.items() if not k.endswith('mask_weight') and k not in ['feat1.weight', 'feat1.bias', 'feat2.weight', 'feat2.bias', 'feat3.weight', 'feat3.bias', 'feat4.weight', 'feat4.bias']}
+    Flops_baseline = Flops_baselines["ResNet_50"][dataset_type]
+    Params_baseline = Params_baselines["ResNet_50"][dataset_type]
+    Flops_reduction = ((Flops_baseline - Flops / (10**6)) / Flops_baseline * 100.0)
+    Params_reduction = ((Params_baseline - Params / (10**6)) / Params_baseline * 100.0)
 
-# لود وزن‌ها به مدل
-missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
-print(f"کلیدهای گمشده: {missing_keys}")
-print(f"کلیدهای غیرمنتظره: {unexpected_keys}")
+    # محاسبه تعداد پارامترهای غیرصفر
+    non_zero_params = sum(torch.count_nonzero(p).item() for p in pruned_model.parameters() if p.requires_grad)
+    print(f"تعداد پارامترهای غیرصفر: {non_zero_params}")
 
-# تنظیم مدل در حالت ارزیابی
-model.eval()
+    return Flops_baseline, Flops / (10**6), Flops_reduction, Params_baseline, Params / (10**6), Params_reduction
 
-# محاسبه تعداد پارامترها و FLOPs
-total_params = sum(p.numel() for p in model.parameters())
-non_zero_params = sum(torch.count_nonzero(p).item() for p in model.parameters() if p.requires_grad)
-print(f"تعداد کل پارامترها: {total_params}")
-print(f"تعداد پارامترهای غیرصفر: {non_zero_params}")
-
-flops, params = get_model_complexity_info(model, (3, 256, 256), as_strings=True, print_per_layer_stat=False)
-print(f'FLOPs: {flops}')
-print(f'Parameters: {params}')
-
-# بررسی وزن‌های یک لایه نمونه
-print("وزن‌های conv1 (نمونه):", model.conv1.weight.data[:2])
-print(f"تعداد وزن‌های غیرصفر در conv1: {torch.count_nonzero(model.conv1.weight.data).item()}")
-
-# تعریف تبدیل برای تصویر ورودی
-transform = transforms.Compose([
-    transforms.Resize((256, 256)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
-
-# تابع برای تست مدل روی تصویر نمونه
-def test_single_image(img_path, model):
-    if not os.path.exists(img_path):
-        print(f"تصویر در مسیر {img_path} یافت نشد!")
-        return
-    image = Image.open(img_path).convert('RGB')
-    image = transform(image).unsqueeze(0).to(device)
-    with torch.no_grad():
-        output, _ = model(image)
-        prob = torch.sigmoid(output).item()
-        predicted_label = 'real' if prob > 0.5 else 'fake'
-        print(f"تصویر: {img_path}")
-        print(f"پیش‌بینی: {predicted_label}, احتمال: {prob:.4f}")
-
-# تابع برای ارزیابی مدل روی دیتاست آزمایشی
-def evaluate_model(test_loader, model, criterion=nn.BCEWithLogitsLoss()):
+# تابع برای ارزیابی تعمیم‌پذیری
+def evaluate_model(test_loader, model, criterion=nn.BCEWithLogitsLoss(), device='cuda'):
     model.eval()
     test_loss = 0.0
     correct = 0
@@ -122,23 +146,94 @@ def evaluate_model(test_loader, model, criterion=nn.BCEWithLogitsLoss()):
     test_loss = test_loss / len(test_loader)
     test_accuracy = 100 * correct / total
     print(f'زیان آزمایشی: {test_loss:.4f}, دقت آزمایشی: {test_accuracy:.2f}%')
+    return test_loss, test_accuracy
 
-# ورودی مسیر تصویر و دیتاست
-sample_image_path = input("لطفاً مسیر تصویر نمونه را وارد کنید (مثلاً /kaggle/input/rvf10k/test/real/image.jpg): ")
-test_dataset_path = input("لطفاً مسیر دیتاست آزمایشی را وارد کنید (مثلاً /kaggle/input/rvf10k/test): ")
+# تابع برای تست تصویر نمونه
+def test_single_image(img_path, model, transform, device='cuda'):
+    if not os.path.exists(img_path):
+        print(f"تصویر در مسیر {img_path} یافت نشد!")
+        return
+    image = Image.open(img_path).convert('RGB')
+    image = transform(image).unsqueeze(0).to(device)
+    with torch.no_grad():
+        output, _ = model(image)
+        prob = torch.sigmoid(output).item()
+        predicted_label = 'real' if prob > 0.5 else 'fake'
+        print(f"تصویر: {img_path}")
+        print(f"پیش‌بینی: {predicted_label}, احتمال: {prob:.4f}")
 
-# تست تصویر نمونه
-test_single_image(sample_image_path, model)
+# تابع برای پردازش آرگومان‌ها
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--dataset_mode",
+        type=str,
+        default="rvf10k",
+        choices=("hardfake", "rvf10k", "140k", "190k", "200k", "330k", "125k"),
+        help="The type of dataset",
+    )
+    parser.add_argument(
+        "--sparsed_student_ckpt_path",
+        type=str,
+        default="/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt",
+        help="The path where to load the sparsed student ckpt",
+    )
+    parser.add_argument(
+        "--test_dataset_path",
+        type=str,
+        default="/kaggle/input/rvf10k/test",
+        help="Path to the test dataset",
+    )
+    return parser.parse_args(args=[])  # برای محیط‌هایی مثل Jupyter که آرگومان‌ها از خط فرمان دریافت نمی‌شوند
 
-# تعریف و ارزیابی دیتالودر آزمایشی
-if os.path.exists(test_dataset_path):
-    test_dataset = ImageFolder(root=test_dataset_path, transform=transform)
-    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True)
-    evaluate_model(test_loader, model)
-else:
-    print(f"دیتاست آزمایشی در مسیر {test_dataset_path} یافت نشد!")
+# تابع اصلی
+def main():
+    args = parse_args()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"دستگاه مورد استفاده: {device}")
 
-# ذخیره مدل
-save_path = './resnet50_pruned_student_model.pth'
-torch.save(model.state_dict(), save_path)
-print(f"مدل در مسیر {save_path} ذخیره شد!")
+    # لود مدل دانش‌آموز برای استخراج ماسک‌ها
+    student = ResNet_50_sparse_hardfakevsreal().to(device)
+    ckpt_student = torch.load(args.sparsed_student_ckpt_path, map_location=device, weights_only=True)
+    student.load_state_dict(ckpt_student["student"])
+
+    # استخراج ماسک‌ها
+    mask_weights = [m.mask_weight for m in student.mask_modules]
+    masks = [(mask_weight > 0).float() for mask_weight in mask_weights]  # تبدیل به باینری
+    print(f"ماسک‌های هرس یافت‌شده: {[f'layer{i//3+1}.{i%3}.conv{(i%3)+1}.mask_weight' for i in range(len(masks))]}")
+    for i, mask in enumerate(masks):
+        print(f"ماسک layer{i//3+1}.{i%3}.conv{(i%3)+1}.mask_weight: تعداد فیلترهای فعال = {int(mask.sum())}")
+
+    # محاسبه FLOPs و پارامترها
+    Flops_baseline, Flops, Flops_reduction, Params_baseline, Params, Params_reduction = get_flops_and_params(args, masks, device)
+    print(f"\nنتایج برای دیتاست: {args.dataset_mode}")
+    print(f"Params_baseline: {Params_baseline:.2f}M, Params: {Params:.2f}M, Params reduction: {Params_reduction:.2f}%")
+    print(f"Flops_baseline: {Flops_baseline:.2f}M, Flops: {Flops:.2f}M, Flops reduction: {Flops_reduction:.2f}%")
+
+    # تعریف مدل هرس‌شده برای ارزیابی
+    pruned_model = ResNet_50_pruned_hardfakevsreal(masks=masks).to(device)
+    pruned_state_dict = map_weights_to_pruned_model(ckpt_student["student"], pruned_model, masks)
+    missing_keys, unexpected_keys = pruned_model.load_state_dict(pruned_state_dict, strict=False)
+    print(f"کلیدهای گمشده: {missing_keys}")
+    print(f"کلیدهای غیرمنتظره: {unexpected_keys}")
+
+    # تست تصویر نمونه
+    sample_image_path = input(f"لطفاً مسیر تصویر نمونه را وارد کنید (مثلاً /kaggle/input/{args.dataset_mode}/test/real/image.jpg): ")
+    test_single_image(sample_image_path, pruned_model, transform, device)
+
+    # ارزیابی مدل روی دیتاست آزمایشی
+    test_dataset_path = args.test_dataset_path
+    if os.path.exists(test_dataset_path):
+        test_dataset = ImageFolder(root=test_dataset_path, transform=transform)
+        test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True)
+        evaluate_model(test_loader, pruned_model, device=device)
+    else:
+        print(f"دیتاست آزمایشی در مسیر {test_dataset_path} یافت نشد!")
+
+    # ذخیره مدل
+    save_path = f'./resnet50_pruned_student_{args.dataset_mode}.pth'
+    torch.save(pruned_model.state_dict(), save_path)
+    print(f"مدل در مسیر {save_path} ذخیره شد!")
+
+if __name__ == "__main__":
+    main()
