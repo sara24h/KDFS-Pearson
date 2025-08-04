@@ -1,285 +1,172 @@
-import os
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
-from thop import profile
-import argparse
+from torch.utils.data import Dataset, DataLoader
+import torchvision.transforms as transforms
+import os
 import pandas as pd
-from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, SoftMaskedConv2d
-from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
-from data.dataset import Dataset_selector
+from PIL import Image
+from sklearn.model_selection import train_test_split
+from ptflops import get_model_complexity_info
+import argparse
 
-# تنظیمات پایه برای فلاپس و پارامترها
-Flops_baselines = {
-    "ResNet_50": {
-        "hardfakevsreal": 7700.0,
-        "rvf10k": 5390.0,
-        "140k": 5390.0,
-        "190k": 5390.0,
-        "200k": 5390.0,
-        "330k": 5390.0,
-        "125k": 2100.0,
-    }
-}
-Params_baselines = {
-    "ResNet_50": {
-        "hardfakevsreal": 14.97,
-        "rvf10k": 23.51,
-        "140k": 23.51,
-        "190k": 23.51,
-        "200k": 23.51,
-        "330k": 23.51,
-        "125k": 23.51,
-    }
-}
-image_sizes = {
-    "hardfakevsreal": 300,
-    "rvf10k": 256,
-    "140k": 256,
-    "190k": 256,
-    "200k": 256,
-    "330k": 256,
-    "125k": 160,
-}
+# Import dataset classes from data.dataset
+from data.dataset import FaceDataset, Dataset_selector
+
+# Assuming these are your model definitions
+from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
+from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Evaluate generalization of pruned ResNet50 student model.')
-    parser.add_argument('--dataset_modes', type=str, nargs='+', default=['hardfake', 'rvf10k', '140k'],
-                        choices=['hardfake', 'rvf10k', '140k', '190k', '200k', '330k', '125k'],
-                        help='Datasets to evaluate generalization on')
-    parser.add_argument('--data_dir', type=str, required=True,
-                        help='Path to the dataset directory')
-    parser.add_argument('--output_dir', type=str, default='output_dir',
-                        help='Directory to save evaluation results')
+    parser = argparse.ArgumentParser(description='Evaluate pruned ResNet50 model on multiple datasets.')
     parser.add_argument('--checkpoint_path', type=str, 
                         default='/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt',
-                        help='Path to the sparse student checkpoint')
+                        help='Path to the student model checkpoint')
+    parser.add_argument('--hardfake_csv_file', type=str, default='/kaggle/input/hardfakevsrealfaces/data.csv',
+                        help='Path to hardfake dataset CSV')
+    parser.add_argument('--hardfake_root_dir', type=str, default='/kaggle/input/hardfakevsrealfaces',
+                        help='Root directory for hardfake dataset')
+    parser.add_argument('--rvf10k_train_csv', type=str, default='/kaggle/input/rvf10k/train.csv',
+                        help='Path to rvf10k train CSV')
+    parser.add_argument('--rvf10k_valid_csv', type=str, default='/kaggle/input/rvf10k/valid.csv',
+                        help='Path to rvf10k validation CSV')
+    parser.add_argument('--rvf10k_root_dir', type=str, default='/kaggle/input/rvf10k',
+                        help='Root directory for rvf10k dataset')
+    parser.add_argument('--realfake140k_train_csv', type=str, default='/kaggle/input/140k-real-and-fake-faces/train.csv',
+                        help='Path to 140k train CSV')
+    parser.add_argument('--realfake140k_valid_csv', type=str, default='/kaggle/input/140k-real-and-fake-faces/valid.csv',
+                        help='Path to 140k validation CSV')
+    parser.add_argument('--realfake140k_test_csv', type=str, default='/kaggle/input/140k-real-and-fake-faces/test.csv',
+                        help='Path to 140k test CSV')
+    parser.add_argument('--realfake140k_root_dir', type=str, default='/kaggle/input/140k-real-and-fake-faces',
+                        help='Root directory for 140k dataset')
+    parser.add_argument('--batch_size', type=int, default=64, help='Batch size for data loaders')
+    parser.add_argument('--num_workers', type=int, default=8, help='Number of workers for data loaders')
     return parser.parse_args()
 
-def extract_masks_from_sparse_model(sparse_model):
-    """Extract binary masks from sparse model's mask_weight"""
-    print("\n" + "="*60)
-    print("EXTRACTING MASKS FROM SPARSE MODEL")
-    print("="*60)
-    
-    masks = []
-    mask_weights = [m.mask_weight for m in sparse_model.mask_modules]
-    for i, mask_weight in enumerate(mask_weights):
-        mask = torch.argmax(mask_weight, dim=1).squeeze(1).squeeze(1) > 0
-        masks.append(mask)
-        print(f"  Mask {i}: {mask.sum().item()} filters preserved out of {len(mask)}")
-    
-    print(f"\nTotal masks created: {len(masks)}")
-    return masks
-
-def adjust_weights_for_pruned_model(sparse_state_dict, pruned_model, masks):
-    """Adjust weights from sparse model to match pruned model's reduced dimensions"""
-    print("\n" + "="*60)
-    print("ADJUSTING WEIGHTS FOR PRUNED MODEL")
-    print("="*60)
-    
-    pruned_state_dict = pruned_model.state_dict()
-    layer_patterns = [
-        ('layer1', 3, [64, 64, 256]),
-        ('layer2', 4, [128, 128, 512]),
-        ('layer3', 6, [256, 256, 1024]),
-        ('layer4', 3, [512, 512, 2048]),
-    ]
-    mask_idx = 0
-    
-    # تنظیم وزن‌های conv1
-    if 'conv1.weight' in sparse_state_dict:
-        out_mask = masks[mask_idx]
-        pruned_state_dict['conv1.weight'] = sparse_state_dict['conv1.weight'][out_mask]
-        print(f"  Adjusted conv1.weight: {pruned_state_dict['conv1.weight'].shape}")
-        for bn_param in ['weight', 'bias', 'running_mean', 'running_var']:
-            bn_key = f'bn1.{bn_param}'
-            if bn_key in sparse_state_dict:
-                pruned_state_dict[bn_key] = sparse_state_dict[bn_key][out_mask]
-        mask_idx += 1
-    
-    # تنظیم وزن‌های لایه‌های Bottleneck
-    for layer_name, num_blocks, channels in layer_patterns:
-        for block_idx in range(num_blocks):
-            for conv_idx in range(1, 4):
-                conv_key = f"{layer_name}.{block_idx}.conv{conv_idx}.weight"
-                bn_key = f"{layer_name}.{block_idx}.bn{conv_idx}.weight"
-                if conv_key in sparse_state_dict and conv_key in pruned_state_dict:
-                    out_mask = masks[mask_idx]
-                    out_channels = out_mask.sum().item()
-                    
-                    # تنظیم ورودی‌ها برای conv1, conv2, conv3
-                    if conv_idx == 1:
-                        # برای conv1 در اولین بلوک، ورودی از لایه قبلی (conv1 یا downsample)
-                        if block_idx == 0:
-                            if layer_name == 'layer1':
-                                prev_mask = masks[0]  # ماسک conv1
-                            else:
-                                prev_mask = masks[mask_idx - 3]  # ماسک conv3 از بلوک قبلی
-                        else:
-                            prev_mask = masks[mask_idx - 3]  # ماسک conv3 از بلوک قبلی
-                    else:
-                        prev_mask = masks[mask_idx - 1]  # ماسک لایه قبلی (conv1 یا conv2)
-                    
-                    # انتخاب وزن‌های فعال
-                    weight = sparse_state_dict[conv_key]
-                    weight = weight[out_mask][:, prev_mask]
-                    pruned_state_dict[conv_key] = weight
-                    print(f"  Adjusted {conv_key}: {weight.shape}")
-                    
-                    # تنظیم پارامترهای BatchNorm
-                    for bn_param in ['weight', 'bias', 'running_mean', 'running_var']:
-                        bn_key_full = f"{layer_name}.{block_idx}.bn{conv_idx}.{bn_param}"
-                        if bn_key_full in sparse_state_dict:
-                            pruned_state_dict[bn_key_full] = sparse_state_dict[bn_key_full][out_mask]
-                    
-                    mask_idx += 1
-            
-            # تنظیم لایه‌های downsample
-            if block_idx == 0:
-                downsample_key = f"{layer_name}.{block_idx}.downsample.0.weight"
-                if downsample_key in sparse_state_dict:
-                    out_mask = masks[mask_idx - 1]  # ماسک conv3
-                    in_mask = masks[0] if layer_name == 'layer1' else masks[mask_idx - 4]  # ماسک conv1 یا conv3 قبلی
-                    pruned_state_dict[downsample_key] = sparse_state_dict[downsample_key][out_mask][:, in_mask]
-                    for bn_param in ['weight', 'bias', 'running_mean', 'running_var']:
-                        bn_key = f"{layer_name}.{block_idx}.downsample.1.{bn_param}"
-                        if bn_key in sparse_state_dict:
-                            pruned_state_dict[bn_key] = sparse_state_dict[bn_key][out_mask]
-    
-    # تنظیم لایه fc
-    fc_key = 'fc.weight'
-    if fc_key in sparse_state_dict and fc_key in pruned_state_dict:
-        in_mask = masks[-1]  # ماسک آخرین لایه conv
-        pruned_state_dict[fc_key] = sparse_state_dict[fc_key][:, in_mask]
-        pruned_state_dict['fc.bias'] = sparse_state_dict['fc.bias']
-        print(f"  Adjusted {fc_key}: {pruned_state_dict[fc_key].shape}")
-    
-    return pruned_state_dict
-
-def evaluate_model(model, loader, criterion, device):
-    """Evaluate model on a given data loader"""
+def evaluate_model(model, loader, device):
     model.eval()
-    loss = 0.0
     correct = 0
     total = 0
     with torch.no_grad():
         for images, labels in loader:
-            images, labels = images.to(device), labels.to(device).float()
-            with torch.amp.autocast('cuda', enabled=device.type == 'cuda'):
-                outputs = model(images)
-                outputs = outputs.squeeze(1)
-                loss += criterion(outputs, labels).item()
-                preds = (torch.sigmoid(outputs) > 0.5).float()
-                correct += (preds == labels).sum().item()
-                total += labels.size(0)
-    return loss / len(loader), 100 * correct / total
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images).squeeze()
+            probs = torch.sigmoid(outputs)
+            predicted = (probs > 0.5).float()
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+    accuracy = 100 * correct / total
+    return accuracy
 
 def main():
     args = parse_args()
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    os.makedirs(args.output_dir, exist_ok=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load sparse student model
-    sparse_model = ResNet_50_sparse_hardfakevsreal()
-    checkpoint = torch.load(args.checkpoint_path, map_location='cpu', weights_only=True)
-    if 'student' in checkpoint:
-        sparse_model.load_state_dict(checkpoint['student'], strict=False)  # strict=False برای نادیده گرفتن feat1, feat2, ...
-        print("✓ Sparse model loaded successfully")
-    else:
-        raise KeyError("'student' key not found in checkpoint")
+    # Step 1: Load the student model checkpoint
+    checkpoint = torch.load(args.checkpoint_path, map_location="cpu")
+    state_dict = checkpoint['student']
 
-    # Extract masks
-    masks = extract_masks_from_sparse_model(sparse_model)
+    # Step 2: Extract pruning masks from the sparse model
+    student = ResNet_50_sparse_hardfakevsreal()
+    student.load_state_dict(state_dict)
+    mask_weights = [m.mask_weight for m in student.mask_modules]
+    masks = [torch.argmax(mask_weight, dim=1).squeeze(1).squeeze(1) for mask_weight in mask_weights]
 
-    # Initialize pruned model
+    # Step 3: Build the pruned model
     pruned_model = ResNet_50_pruned_hardfakevsreal(masks=masks)
-    num_ftrs = pruned_model.fc.in_features
-    pruned_model.fc = nn.Linear(num_ftrs, 1)
 
-    # Adjust weights
-    pruned_state_dict = adjust_weights_for_pruned_model(checkpoint['student'], pruned_model, masks)
-    pruned_model.load_state_dict(pruned_state_dict, strict=True)
-    pruned_model = pruned_model.to(device)
-    print("✓ Pruned model weights loaded successfully")
-
-    # Calculate FLOPs and parameters
-    dataset_type = {'hardfake': 'hardfakevsreal', 'rvf10k': 'rvf10k', '140k': '140k'}.get(args.dataset_modes[0], '140k')
-    input = torch.rand([1, 3, image_sizes[dataset_type], image_sizes[dataset_type]]).to(device)
-    flops, params = profile(pruned_model, inputs=(input,), verbose=False)
-    print(f"Total Parameters: {params / 1e6:.2f} M")
-    print(f"Pruned FLOPs: {flops / 1e9:.2f} GMac")
-
-    # Evaluate generalization on multiple datasets
-    criterion = nn.BCEWithLogitsLoss()
-    results = {}
+    # Step 4: Filter and trim weights
+    filtered_state_dict = {k: v for k, v in state_dict.items() if not k.endswith('mask_weight') and k not in ['feat1.weight', 'feat1.bias', 'feat2.weight', 'feat2.bias', 'feat3.weight', 'feat3.bias', 'feat4.weight', 'feat4.bias']}
     
-    for dataset_mode in args.dataset_modes:
-        print(f"\nEvaluating generalization on dataset: {dataset_mode}")
+    # Trim weights according to masks
+    for i, m in enumerate(masks):
+        layer_idx = (i // 3) + 1
+        block_idx = i % 3
+        conv_idx = i % 3 + 1
+        layer_prefix = f'layer{layer_idx}.{block_idx}.conv{conv_idx}'
+        bn_prefix = f'layer{layer_idx}.{block_idx}.bn{conv_idx}'
         
-        # Initialize dataset
-        if dataset_mode == 'hardfake':
-            dataset = Dataset_selector(
-                dataset_mode='hardfake',
-                hardfake_csv_file=os.path.join(args.data_dir, 'data.csv'),
-                hardfake_root_dir=args.data_dir,
-                train_batch_size=64,
-                eval_batch_size=64,
-                num_workers=4,
-                pin_memory=True,
-                ddp=False
-            )
-        elif dataset_mode == 'rvf10k':
-            dataset = Dataset_selector(
-                dataset_mode='rvf10k',
-                rvf10k_train_csv=os.path.join(args.data_dir, 'train.csv'),
-                rvf10k_valid_csv=os.path.join(args.data_dir, 'valid.csv'),
-                rvf10k_root_dir=args.data_dir,
-                train_batch_size=64,
-                eval_batch_size=64,
-                num_workers=4,
-                pin_memory=True,
-                ddp=False
-            )
-        elif dataset_mode == '140k':
-            dataset = Dataset_selector(
-                dataset_mode='140k',
-                realfake140k_train_csv=os.path.join(args.data_dir, 'train.csv'),
-                realfake140k_valid_csv=os.path.join(args.data_dir, 'valid.csv'),
-                realfake140k_test_csv=os.path.join(args.data_dir, 'test.csv'),
-                realfake140k_root_dir=args.data_dir,
-                train_batch_size=64,
-                eval_batch_size=64,
-                num_workers=4,
-                pin_memory=True,
-                ddp=False
-            )
-        else:
-            print(f"Skipping unsupported dataset: {dataset_mode}")
-            continue
+        # Trim conv weights
+        if f'{layer_prefix}.weight' in filtered_state_dict:
+            filtered_state_dict[f'{layer_prefix}.weight'] = filtered_state_dict[f'{layer_prefix}.weight'][m == 1]
+        if f'{layer_prefix}.bias' in filtered_state_dict:
+            filtered_state_dict[f'{layer_prefix}.bias'] = filtered_state_dict[f'{layer_prefix}.bias'][m == 1]
         
-        # Evaluate on validation and test sets
-        val_loader = dataset.loader_val
-        test_loader = dataset.loader_test
-        
-        val_loss, val_accuracy = evaluate_model(pruned_model, val_loader, criterion, device)
-        test_loss, test_accuracy = evaluate_model(pruned_model, test_loader, criterion, device)
-        
-        results[dataset_mode] = {
-            'val_loss': val_loss,
-            'val_accuracy': val_accuracy,
-            'test_loss': test_loss,
-            'test_accuracy': test_accuracy
-        }
-        
-        print(f"Dataset: {dataset_mode}")
-        print(f"  Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%")
-        print(f"  Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.2f}%")
-    
-    # Save results
-    results_df = pd.DataFrame.from_dict(results, orient='index')
-    results_df.to_csv(os.path.join(args.output_dir, 'generalization_results.csv'))
-    print(f"\nGeneralization results saved to {os.path.join(args.output_dir, 'generalization_results.csv')}")
+        # Trim bn weights
+        if f'{bn_prefix}.weight' in filtered_state_dict:
+            filtered_state_dict[f'{bn_prefix}.weight'] = filtered_state_dict[f'{bn_prefix}.weight'][m == 1]
+            filtered_state_dict[f'{bn_prefix}.bias'] = filtered_state_dict[f'{bn_prefix}.bias'][m == 1]
+            filtered_state_dict[f'{bn_prefix}.running_mean'] = filtered_state_dict[f'{bn_prefix}.running_mean'][m == 1]
+            filtered_state_dict[f'{bn_prefix}.running_var'] = filtered_state_dict[f'{bn_prefix}.running_var'][m == 1]
+
+    # Handle downsample layers if present
+    for layer_idx in range(1, 5):
+        for block_idx in [0]:  # Downsample typically only in first block
+            downsample_prefix = f'layer{layer_idx}.{block_idx}.downsample'
+            if f'{downsample_prefix}.0.weight' in filtered_state_dict:
+                # Use the mask of the previous conv layer
+                prev_mask = masks[(layer_idx-1)*3 + 2] if layer_idx > 1 else masks[2]
+                filtered_state_dict[f'{downsample_prefix}.0.weight'] = filtered_state_dict[f'{downsample_prefix}.0.weight'][prev_mask == 1]
+                filtered_state_dict[f'{downsample_prefix}.1.weight'] = filtered_state_dict[f'{downsample_prefix}.1.weight'][prev_mask == 1]
+                filtered_state_dict[f'{downsample_prefix}.1.bias'] = filtered_state_dict[f'{downsample_prefix}.1.bias'][prev_mask == 1]
+                filtered_state_dict[f'{downsample_prefix}.1.running_mean'] = filtered_state_dict[f'{downsample_prefix}.1.running_mean'][prev_mask == 1]
+                filtered_state_dict[f'{downsample_prefix}.1.running_var'] = filtered_state_dict[f'{downsample_prefix}.1.running_var'][prev_mask == 1]
+
+    # Step 5: Load weights onto the pruned model
+    missing, unexpected = pruned_model.load_state_dict(filtered_state_dict, strict=False)
+    print(f"Missing keys: {missing}")
+    print(f"Unexpected keys: {unexpected}")
+    pruned_model.to(device)
+
+    # Step 6: Compute FLOPs and Parameters
+    image_sizes = {"hardfake": 300, "rvf10k": 256, "140k": 256}
+    input_size = image_sizes["140k"]  # Assuming checkpoint is trained on 140k
+    flops, params = get_model_complexity_info(pruned_model, (3, input_size, input_size), as_strings=True, print_per_layer_stat=True)
+    print(f'FLOPs: {flops}')
+    print(f'Parameters: {params}')
+
+    # Step 7: Evaluate generalization on datasets
+    datasets = {
+        "hardfake": Dataset_selector(
+            dataset_mode='hardfake',
+            hardfake_csv_file=args.hardfake_csv_file,
+            hardfake_root_dir=args.hardfake_root_dir,
+            train_batch_size=args.batch_size,
+            eval_batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            ddp=False,
+        ),
+        "rvf10k": Dataset_selector(
+            dataset_mode='rvf10k',
+            rvf10k_train_csv=args.rvf10k_train_csv,
+            rvf10k_valid_csv=args.rvf10k_valid_csv,
+            rvf10k_root_dir=args.rvf10k_root_dir,
+            train_batch_size=args.batch_size,
+            eval_batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            ddp=False,
+        ),
+        "140k": Dataset_selector(
+            dataset_mode='140k',
+            realfake140k_train_csv=args.realfake140k_train_csv,
+            realfake140k_valid_csv=args.realfake140k_valid_csv,
+            realfake140k_test_csv=args.realfake140k_test_csv,
+            realfake140k_root_dir=args.realfake140k_root_dir,
+            train_batch_size=args.batch_size,
+            eval_batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            ddp=False,
+        )
+    }
+
+    for name, dataset in datasets.items():
+        print(f"\nEvaluating on {name} dataset:")
+        val_accuracy = evaluate_model(pruned_model, dataset.loader_val, device)
+        test_accuracy = evaluate_model(pruned_model, dataset.loader_test, device)
+        print(f"Validation Accuracy: {val_accuracy:.2f}%")
+        print(f"Test Accuracy: {test_accuracy:.2f}%")
 
 if __name__ == "__main__":
     main()
+
+اگر سوال یا نیاز به تغییر خاصی در کد دارید (مثل افزودن DDP یا تغییر مسیرها)، لطفاً اطلاع دهید!
