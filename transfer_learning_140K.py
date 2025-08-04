@@ -263,6 +263,13 @@ for dataset_name in valid_datasets:
         # چاپ آمار دیتاست تست
         print(f"{dataset_name} test dataset size: {len(test_loader.dataset)}")
         print(f"{dataset_name} test loader batches: {len(test_loader)}")
+        # تست یک نمونه بچ
+        try:
+            sample = next(iter(test_loader))
+            print(f"Sample test batch image shape: {sample[0].shape}")
+            print(f"Sample test batch labels: {sample[1][:5]}")
+        except Exception as e:
+            print(f"Error loading sample test batch for {dataset_name}: {e}")
     except Exception as e:
         print(f"Error loading {dataset_name} dataset: {e}")
         results[dataset_name] = {'error': str(e)}
@@ -302,4 +309,4 @@ for dataset_name in valid_datasets:
     if 'error' in result:
         print(f"Error: {result['error']}")
     else:
-        print(f"Test Loss: {result['loss']:.4f}, Test Accuracy: {result['accuracy']:.2f}%")
+        print(f"Test Loss: {result['loss']:.4f}, Test Accuracy: {test_accuracy:.2f}%")
