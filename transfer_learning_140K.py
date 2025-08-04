@@ -13,8 +13,8 @@ from torchvision.datasets import ImageFolder
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"دستگاه مورد استفاده: {device}")
 
-# تعریف مدل ResNet50
-model = models.resnet50(pretrained=False)  # بدون وزن‌های پیش‌فرض ImageNet
+# تعریف مدل ResNet50 بدون وزن‌های پیش‌فرض
+model = models.resnet50(weights=None)  # استفاده از weights=None به جای pretrained=False
 num_ftrs = model.fc.in_features
 model.fc = nn.Linear(num_ftrs, 1)  # تنظیم لایه خروجی برای طبقه‌بندی دودویی (real vs. fake)
 
@@ -41,15 +41,20 @@ missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, stric
 print(f"کلیدهای گمشده: {missing_keys}")
 print(f"کلیدهای غیرمنتظره: {unexpected_keys}")
 
-# اعمال ماسک‌های هرس (در صورت وجود)
-# اگر ماسک‌های هرس در چک‌پوینت وجود دارند، آن‌ها را اعمال کنید
-for name, module in model.named_modules():
-    if isinstance(module, (nn.Conv2d, nn.Linear)):
-        mask_key = f"{name}.weight_mask"
-        if mask_key in state_dict:
-            mask = state_dict[mask_key]
-            prune.custom_from_mask(module, name='weight', mask=mask)
-            print(f"ماسک هرس برای {name} اعمال شد")
+# ذخیره ماسک‌های هرس (در صورت وجود)
+mask_dict = {k: v for k, v in state_dict.items() if k.endswith('mask_weight')}
+if mask_dict:
+    print("ماسک‌های هرس یافت شدند:", list(mask_dict.keys()))
+    # اعمال ماسک‌های هرس
+    for name, module in model.named_modules():
+        if isinstance(module, (nn.Conv2d, nn.Linear)):
+            mask_key = f"{name}.weight_mask"
+            if mask_key in mask_dict:
+                mask = mask_dict[mask_key]
+                prune.custom_from_mask(module, name='weight', mask=mask)
+                print(f"ماسک هرس برای {name} اعمال شد")
+else:
+    print("هیچ ماسک هرسی در چک‌پوینت یافت نشد.")
 
 # انتقال مدل به دستگاه
 model = model.to(device)
@@ -116,22 +121,41 @@ def evaluate_model(test_loader, model, criterion=nn.BCEWithLogitsLoss()):
     test_accuracy = 100 * correct / total
     print(f'زیان آزمایشی: {test_loss:.4f}, دقت آزمایشی: {test_accuracy:.2f}%')
 
-# تست روی یک تصویر نمونه (مسیر را جایگزین کنید)
-sample_image_path = '/path/to/sample/image.jpg'  # مسیر تصویر نمونه را وارد کنید
+# ورودی مسیر تصویر نمونه و دیتاست آزمایشی
+sample_image_path = input("لطفاً مسیر تصویر نمونه را وارد کنید (مثلاً /kaggle/input/rvf10k/test/image.jpg): ")
+test_dataset_path = input("لطفاً مسیر دیتاست آزمایشی را وارد کنید (مثلاً /kaggle/input/rvf10k/test): ")
+
+# تست روی تصویر نمونه
 test_single_image(sample_image_path, model)
 
-# تعریف دیتالودر آزمایشی (اختیاری)
-try:
-    test_dataset = ImageFolder(
-        root='/path/to/test/dataset',  # مسیر مجموعه داده آزمایشی را وارد کنید
-        transform=transform
-    )
+# تعریف و ارزیابی دیتالودر آزمایشی (اگر مسیر معتبر باشد)
+if os.path.exists(test_dataset_path):
+    test_dataset = ImageFolder(root=test_dataset_path, transform=transform)
     test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False, num_workers=4, pin_memory=True)
     evaluate_model(test_loader, model)
-except FileNotFoundError:
-    print("مجموعه داده آزمایشی یافت نشد. لطفاً مسیر صحیح را وارد کنید.")
+else:
+    print(f"دیتاست آزمایشی در مسیر {test_dataset_path} یافت نشد!")
 
-# ذخیره مدل (اختیاری)
+# ذخیره مدل
 save_path = './resnet50_student_model.pth'
 torch.save(model.state_dict(), save_path)
 print(f"مدل در مسیر {save_path} ذخیره شد!")
+
+# ادامه آموزش (اختیاری)
+train_more = input("آیا می‌خواهید مدل را بیشتر آموزش دهید؟ (yes/no): ")
+if train_more.lower() == 'yes':
+    # باز کردن لایه‌های خاص برای آموزش
+    for param in model.parameters():
+        param.requires_grad = False
+    for param in model.layer4.parameters():
+        param.requires_grad = True
+    for param in model.fc.parameters():
+        param.requires_grad = True
+
+    # تعریف بهینه‌ساز
+    optimizer = torch.optim.Adam([
+        {'params': model.layer4.parameters(), 'lr': 1e-5},
+        {'params': model.fc.parameters(), 'lr': 1e-4}
+    ], weight_decay=1e-4)
+
+    print("مدل برای ادامه آموزش آماده است. لطفاً دیتالودر آموزشی را تعریف کنید.")
