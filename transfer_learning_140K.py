@@ -20,7 +20,7 @@ def parse_args():
                         help='List of datasets to fine-tune and test')
     parser.add_argument('--batch_size', type=int, default=64,
                         help='Batch size for training and testing')
-    parser.add_argument('--num_workers', type=int, default=8,
+    parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of workers for data loading')
     parser.add_argument('--epochs', type=int, default=5,
                         help='Number of epochs for fine-tuning')
@@ -91,7 +91,7 @@ def fine_tune_model(model, train_loader, valid_loader, device, criterion, optimi
         train_accuracy = 100 * correct / total if total > 0 else 0
         
         # ارزیابی روی دیتاست اعتبارسنجی
-        valid_loss, valid_accuracy = evaluate_model(model, valid_loader, device, criterion)
+        valid_loss, valid_accuracy, _, _, _, _ = evaluate_model(model, valid_loader, device, criterion)
         print(f"Epoch {epoch+1}/{epochs} - {dataset_name} - Train Loss: {avg_train_loss:.4f}, Train Acc: {train_accuracy:.2f}%, Valid Loss: {valid_loss:.4f}, Valid Acc: {valid_accuracy:.2f}%")
         
         # ذخیره بهترین مدل
