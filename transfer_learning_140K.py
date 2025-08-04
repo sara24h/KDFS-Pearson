@@ -5,16 +5,17 @@ from torch.utils.data import DataLoader
 from thop import profile
 import argparse
 from torch.amp import autocast
-from torchvision import transforms
 from data.dataset import Dataset_selector
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal, get_preserved_filter_num
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Test generalization of pruned ResNet50 student model on multiple datasets.')
+    parser = argparse.ArgumentParser(description='Test generalization of pruned ResNet50 student model on selected datasets.')
     parser.add_argument('--checkpoint_path', type=str, required=True,
                         help='Path to the student model checkpoint')
     parser.add_argument('--data_dir', type=str, required=True,
                         help='Base directory containing dataset folders')
+    parser.add_argument('--datasets', type=str, nargs='+', default=['hardfake', 'rvf10k', '140k', '190k', '200k', '330k'],
+                        help='List of datasets to test (e.g., hardfake rvf10k 140k 190k 200k 330k)')
     parser.add_argument('--batch_size', type=int, default=64,
                         help='Batch size for testing')
     parser.add_argument('--num_workers', type=int, default=8,
@@ -113,24 +114,18 @@ input = torch.randn(1, 3, 256, 256).to(device)
 flops, params = profile(model, inputs=(input,))
 print(f"FLOPs: {flops / 1e9:.2f} GMac, Parameters: {params / 1e6:.2f} M")
 
-# 5. تعریف دیتاست‌ها
+# 5. تعریف تنظیمات دیتاست‌ها
 dataset_configs = {
     'hardfake': {
         'dataset_mode': 'hardfake',
         'hardfake_csv_file': os.path.join(args.data_dir, 'hardfakevsrealfaces/data.csv'),
         'hardfake_root_dir': os.path.join(args.data_dir, 'hardfakevsrealfaces'),
-        'image_size': (300, 300),
-        'mean': (0.5124, 0.4165, 0.3684),
-        'std': (0.2363, 0.2087, 0.2029),
     },
     'rvf10k': {
         'dataset_mode': 'rvf10k',
         'rvf10k_train_csv': os.path.join(args.data_dir, 'rvf10k/train.csv'),
         'rvf10k_valid_csv': os.path.join(args.data_dir, 'rvf10k/valid.csv'),
         'rvf10k_root_dir': os.path.join(args.data_dir, 'rvf10k'),
-        'image_size': (256, 256),
-        'mean': (0.5212, 0.4260, 0.3811),
-        'std': (0.2486, 0.2238, 0.2211),
     },
     '140k': {
         'dataset_mode': '140k',
@@ -138,16 +133,10 @@ dataset_configs = {
         'realfake140k_valid_csv': os.path.join(args.data_dir, '140k-real-and-fake-faces/valid.csv'),
         'realfake140k_test_csv': os.path.join(args.data_dir, '140k-real-and-fake-faces/test.csv'),
         'realfake140k_root_dir': os.path.join(args.data_dir, '140k-real-and-fake-faces'),
-        'image_size': (256, 256),
-        'mean': (0.5207, 0.4258, 0.3806),
-        'std': (0.2490, 0.2239, 0.2212),
     },
     '190k': {
         'dataset_mode': '190k',
         'realfake190k_root_dir': os.path.join(args.data_dir, 'deepfake-and-real-images/Dataset'),
-        'image_size': (256, 256),
-        'mean': (0.4668, 0.3816, 0.3414),
-        'std': (0.2410, 0.2161, 0.2081),
     },
     '200k': {
         'dataset_mode': '200k',
@@ -155,20 +144,23 @@ dataset_configs = {
         'realfake200k_val_csv': os.path.join(args.data_dir, '200k-real-and-fake-faces/val_labels.csv'),
         'realfake200k_test_csv': os.path.join(args.data_dir, '200k-real-and-fake-faces/test_labels.csv'),
         'realfake200k_root_dir': os.path.join(args.data_dir, '200k-real-and-fake-faces'),
-        'image_size': (256, 256),
-        'mean': (0.4868, 0.3972, 0.3624),
-        'std': (0.2296, 0.2066, 0.2009),
     },
     '330k': {
         'dataset_mode': '330k',
         'realfake330k_root_dir': os.path.join(args.data_dir, 'deepfake-dataset'),
-        'image_size': (256, 256),
-        'mean': (0.4923, 0.4042, 0.3624),
-        'std': (0.2446, 0.2198, 0.2141),
     }
 }
 
-# 6. تابع ارزیابی
+# 6. بررسی دیتاست‌های انتخاب‌شده
+selected_datasets = args.datasets
+valid_datasets = [ds for ds in selected_datasets if ds in dataset_configs]
+if not valid_datasets:
+    raise ValueError(f"No valid datasets selected! Choose from {list(dataset_configs.keys())}")
+invalid_datasets = [ds for ds in selected_datasets if ds not in dataset_configs]
+if invalid_datasets:
+    print(f"Warning: The following datasets are invalid and will be ignored: {invalid_datasets}")
+
+# 7. تابع ارزیابی
 def evaluate_model(model, data_loader, device, criterion):
     model.eval()
     test_loss = 0.0
@@ -189,20 +181,14 @@ def evaluate_model(model, data_loader, device, criterion):
     accuracy = 100 * correct / total if total > 0 else 0
     return avg_loss, accuracy
 
-# 7. تست روی همه دیتاست‌ها
+# 8. تست روی دیتاست‌های انتخاب‌شده
 results = {}
 criterion = nn.BCEWithLogitsLoss()
 
-for dataset_name, config in dataset_configs.items():
+for dataset_name in valid_datasets:
+    config = dataset_configs[dataset_name]
     print(f"\nTesting on {dataset_name} dataset...")
     
-    # تعریف transform
-    transform = transforms.Compose([
-        transforms.Resize(config['image_size']),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=config['mean'], std=config['std']),
-    ])
-
     # لود دیتاست
     try:
         dataset = Dataset_selector(
@@ -222,7 +208,7 @@ for dataset_name, config in dataset_configs.items():
             realfake200k_root_dir=config.get('realfake200k_root_dir'),
             realfake190k_root_dir=config.get('realfake190k_root_dir'),
             realfake330k_root_dir=config.get('realfake330k_root_dir'),
-            train_batch_size=0,
+            train_batch_size=0,  # فقط مجموعه تست لود می‌شود
             eval_batch_size=args.batch_size,
             num_workers=args.num_workers,
             pin_memory=True,
@@ -243,13 +229,14 @@ for dataset_name, config in dataset_configs.items():
         print(f"Error evaluating {dataset_name} dataset: {e}")
         results[dataset_name] = {'error': str(e)}
 
-# 8. ذخیره نتایج
+# 9. ذخیره نتایج
 results_dir = 'results'
 os.makedirs(results_dir, exist_ok=True)
 with open(os.path.join(results_dir, 'generalization_results.txt'), 'w') as f:
     f.write(f"FLOPs: {flops / 1e9:.2f} GMac\n")
     f.write(f"Parameters: {params / 1e6:.2f} M\n\n")
-    for dataset_name, result in results.items():
+    for dataset_name in valid_datasets:
+        result = results.get(dataset_name, {'error': 'Not evaluated'})
         f.write(f"Dataset: {dataset_name}\n")
         if 'error' in result:
             f.write(f"Error: {result['error']}\n")
@@ -259,10 +246,11 @@ with open(os.path.join(results_dir, 'generalization_results.txt'), 'w') as f:
         f.write("\n")
 print(f"Results saved to {os.path.join(results_dir, 'generalization_results.txt')}")
 
-# 9. چاپ نتایج نهایی
+# 10. چاپ نتایج نهایی
 print("\nFinal Generalization Results:")
-for dataset_name, result in results.items():
+for dataset_name in valid_datasets:
     print(f"\nDataset: {dataset_name}")
+    result = results.get(dataset_name, {'error': 'Not evaluated'})
     if 'error' in result:
         print(f"Error: {result['error']}")
     else:
