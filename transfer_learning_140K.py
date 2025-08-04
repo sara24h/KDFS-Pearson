@@ -134,14 +134,33 @@ checkpoint = torch.load(checkpoint_path, map_location=device)
 if 'student' in checkpoint:
     state_dict = checkpoint['student']
     if preserve_pruning:
+        # Rename keys to match PyTorch pruning convention
+        renamed_state_dict = {}
+        for k, v in state_dict.items():
+            if k.endswith('mask_weight'):
+                # Convert 'mask_weight' to 'weight_mask'
+                new_key = k.replace('mask_weight', 'weight_mask')
+                renamed_state_dict[new_key] = v
+            elif k in ['feat1.weight', 'feat1.bias', 'feat2.weight', 'feat2.bias', 
+                       'feat3.weight', 'feat3.bias', 'feat4.weight', 'feat4.bias']:
+                # Skip additional feature layers
+                continue
+            else:
+                renamed_state_dict[k] = v
+        # Generate weight_orig for compatibility
+        for k in renamed_state_dict.keys():
+            if k.endswith('weight'):
+                orig_key = k + '_orig'
+                if orig_key not in renamed_state_dict:
+                    renamed_state_dict[orig_key] = renamed_state_dict[k].clone()
         # Load state_dict with pruning masks
-        missing, unexpected = model.load_state_dict(state_dict, strict=True)
+        missing, unexpected = model.load_state_dict(renamed_state_dict, strict=True)
         print(f"Missing keys: {missing}")
         print(f"Unexpected keys: {unexpected}")
         if missing or unexpected:
             raise ValueError("State dict mismatch with pruning parameters")
     else:
-        # Filter out pruning-related parameters
+        # Filter out pruning-related and additional parameters
         filtered_state_dict = {k: v for k, v in state_dict.items() if not k.endswith('mask_weight') and not k.endswith('weight_orig') and k not in ['feat1.weight', 'feat1.bias', 'feat2.weight', 'feat2.bias', 'feat3.weight', 'feat3.bias', 'feat4.weight', 'feat4.bias']}
         missing, unexpected = model.load_state_dict(filtered_state_dict, strict=False)
         print(f"Missing keys: {missing}")
@@ -238,7 +257,7 @@ for epoch in range(epochs):
             # Save original state_dict with pruning masks
             torch.save(model.state_dict(), best_model_path)
             # Save cleaned state_dict (remove pruning-related parameters)
-            cleaned_state_dict = {k: v for k, v in model.state_dict().items() if not k.endswith('mask_weight') and not k.endswith('weight_orig')}
+            cleaned_state_dict = {k: v for k, v in model.state_dict().items() if not k.endswith('mask_weight') and not k.endswith('weight_mask') and not k.endswith('weight_orig')}
             torch.save(cleaned_state_dict, cleaned_best_model_path)
         print(f'Saved best model with validation accuracy: {val_accuracy:.2f}% at epoch {epoch+1}')
 
@@ -278,7 +297,7 @@ else:
     # Save original state_dict with pruning masks
     torch.save(model.state_dict(), final_model_path)
     # Save cleaned state_dict (remove pruning-related parameters)
-    cleaned_state_dict = {k: v for k, v in model.state_dict().items() if not k.endswith('mask_weight') and not k.endswith('weight_orig')}
+    cleaned_state_dict = {k: v for k, v in model.state_dict().items() if not k.endswith('mask_weight') and not k.endswith('weight_mask') and not k.endswith('weight_orig')}
     torch.save(cleaned_state_dict, cleaned_final_model_path)
 print(f'Saved final model at epoch {epochs}')
 
