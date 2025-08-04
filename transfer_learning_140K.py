@@ -1,3 +1,4 @@
+```python
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -70,7 +71,17 @@ def main():
     student = ResNet_50_sparse_hardfakevsreal()
     student.load_state_dict(state_dict)
     mask_weights = [m.mask_weight for m in student.mask_modules]
-    masks = [torch.argmax(mask_weight, dim=1).squeeze(1).squeeze(1) for mask_weight in mask_weights]
+    masks = []
+    for i, mask_weight in enumerate(mask_weights):
+        print(f"Mask {i} original shape: {mask_weight.shape}")
+        if mask_weight.dim() > 1:
+            mask = torch.argmax(mask_weight, dim=1).squeeze()
+            if mask.dim() > 1:
+                mask = mask.squeeze()
+        else:
+            mask = (mask_weight > 0.5).float()
+        masks.append(mask)
+        print(f"Mask {i} processed shape: {mask.shape}")
 
     # Step 3: Build the pruned model
     pruned_model = ResNet_50_pruned_hardfakevsreal(masks=masks)
@@ -78,7 +89,6 @@ def main():
     # Step 4: Filter and trim weights
     filtered_state_dict = {k: v for k, v in state_dict.items() if not k.endswith('mask_weight') and k not in ['feat1.weight', 'feat1.bias', 'feat2.weight', 'feat2.bias', 'feat3.weight', 'feat3.bias', 'feat4.weight', 'feat4.bias']}
     
-    # Trim weights according to masks
     for i, m in enumerate(masks):
         layer_idx = (i // 3) + 1
         block_idx = i % 3
@@ -86,31 +96,43 @@ def main():
         layer_prefix = f'layer{layer_idx}.{block_idx}.conv{conv_idx}'
         bn_prefix = f'layer{layer_idx}.{block_idx}.bn{conv_idx}'
         
-        # Trim conv weights
         if f'{layer_prefix}.weight' in filtered_state_dict:
-            filtered_state_dict[f'{layer_prefix}.weight'] = filtered_state_dict[f'{layer_prefix}.weight'][m == 1]
-        if f'{layer_prefix}.bias' in filtered_state_dict:
-            filtered_state_dict[f'{layer_prefix}.bias'] = filtered_state_dict[f'{layer_prefix}.bias'][m == 1]
+            weight_shape = filtered_state_dict[f'{layer_prefix}.weight'].shape
+            print(f"Weight shape for {layer_prefix}: {weight_shape}, Mask shape: {m.shape}")
+            if weight_shape[0] == m.shape[0]:
+                filtered_state_dict[f'{layer_prefix}.weight'] = filtered_state_dict[f'{layer_prefix}.weight'][m == 1]
+                if f'{layer_prefix}.bias' in filtered_state_dict:
+                    filtered_state_dict[f'{layer_prefix}.bias'] = filtered_state_dict[f'{layer_prefix}.bias'][m == 1]
+            else:
+                print(f"Warning: Shape mismatch for {layer_prefix}. Skipping weight trimming.")
         
-        # Trim bn weights
         if f'{bn_prefix}.weight' in filtered_state_dict:
-            filtered_state_dict[f'{bn_prefix}.weight'] = filtered_state_dict[f'{bn_prefix}.weight'][m == 1]
-            filtered_state_dict[f'{bn_prefix}.bias'] = filtered_state_dict[f'{bn_prefix}.bias'][m == 1]
-            filtered_state_dict[f'{bn_prefix}.running_mean'] = filtered_state_dict[f'{bn_prefix}.running_mean'][m == 1]
-            filtered_state_dict[f'{bn_prefix}.running_var'] = filtered_state_dict[f'{bn_prefix}.running_var'][m == 1]
+            bn_weight_shape = filtered_state_dict[f'{bn_prefix}.weight'].shape
+            print(f"BN weight shape for {bn_prefix}: {bn_weight_shape}, Mask shape: {m.shape}")
+            if bn_weight_shape[0] == m.shape[0]:
+                filtered_state_dict[f'{bn_prefix}.weight'] = filtered_state_dict[f'{bn_prefix}.weight'][m == 1]
+                filtered_state_dict[f'{bn_prefix}.bias'] = filtered_state_dict[f'{bn_prefix}.bias'][m == 1]
+                filtered_state_dict[f'{bn_prefix}.running_mean'] = filtered_state_dict[f'{bn_prefix}.running_mean'][m == 1]
+                filtered_state_dict[f'{bn_prefix}.running_var'] = filtered_state_dict[f'{bn_prefix}.running_var'][m == 1]
+            else:
+                print(f"Warning: Shape mismatch for {bn_prefix}. Skipping BN weight trimming.")
 
-    # Handle downsample layers if present
+    # Handle downsample layers
     for layer_idx in range(1, 5):
-        for block_idx in [0]:  # Downsample typically only in first block
+        for block_idx in [0]:
             downsample_prefix = f'layer{layer_idx}.{block_idx}.downsample'
             if f'{downsample_prefix}.0.weight' in filtered_state_dict:
-                # Use the mask of the previous conv layer
                 prev_mask = masks[(layer_idx-1)*3 + 2] if layer_idx > 1 else masks[2]
-                filtered_state_dict[f'{downsample_prefix}.0.weight'] = filtered_state_dict[f'{downsample_prefix}.0.weight'][prev_mask == 1]
-                filtered_state_dict[f'{downsample_prefix}.1.weight'] = filtered_state_dict[f'{downsample_prefix}.1.weight'][prev_mask == 1]
-                filtered_state_dict[f'{downsample_prefix}.1.bias'] = filtered_state_dict[f'{downsample_prefix}.1.bias'][prev_mask == 1]
-                filtered_state_dict[f'{downsample_prefix}.1.running_mean'] = filtered_state_dict[f'{downsample_prefix}.1.running_mean'][prev_mask == 1]
-                filtered_state_dict[f'{downsample_prefix}.1.running_var'] = filtered_state_dict[f'{downsample_prefix}.1.running_var'][prev_mask == 1]
+                weight_shape = filtered_state_dict[f'{downsample_prefix}.0.weight'].shape
+                print(f"Downsample weight shape for {downsample_prefix}.0: {weight_shape}, Mask shape: {prev_mask.shape}")
+                if weight_shape[0] == prev_mask.shape[0]:
+                    filtered_state_dict[f'{downsample_prefix}.0.weight'] = filtered_state_dict[f'{downsample_prefix}.0.weight'][prev_mask == 1]
+                    filtered_state_dict[f'{downsample_prefix}.1.weight'] = filtered_state_dict[f'{downsample_prefix}.1.weight'][prev_mask == 1]
+                    filtered_state_dict[f'{downsample_prefix}.1.bias'] = filtered_state_dict[f'{downsample_prefix}.1.bias'][prev_mask == 1]
+                    filtered_state_dict[f'{downsample_prefix}.1.running_mean'] = filtered_state_dict[f'{downsample_prefix}.1.running_mean'][prev_mask == 1]
+                    filtered_state_dict[f'{downsample_prefix}.1.running_var'] = filtered_state_dict[f'{downsample_prefix}.1.running_var'][prev_mask == 1]
+                else:
+                    print(f"Warning: Shape mismatch for {downsample_prefix}. Skipping downsample weight trimming.")
 
     # Step 5: Load weights onto the pruned model
     missing, unexpected = pruned_model.load_state_dict(filtered_state_dict, strict=False)
@@ -168,3 +190,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
