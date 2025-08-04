@@ -128,7 +128,7 @@ if preserve_pruning:
             prune.identity(module, 'weight')
 
 # Load checkpoint
-checkpoint_path = '/kaggle/input/kdfs-15-khordad-pearson-weight-values/results/run_resnet50_imagenet_prune1/student_model/finetune_ResNet_50_sparse_best.pt'
+checkpoint_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt'
 checkpoint = torch.load(checkpoint_path, map_location=device)
 
 if 'student' in checkpoint:
