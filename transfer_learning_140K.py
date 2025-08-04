@@ -61,6 +61,11 @@ def fine_tune_model(model, train_loader, valid_loader, device, criterion, optimi
     best_model_path = os.path.join('checkpoints', f'finetuned_{dataset_name}.pth')
     os.makedirs('checkpoints', exist_ok=True)
     
+    # فریز کردن تمام لایه‌ها به‌جز لایه fc
+    for name, param in model.named_parameters():
+        if 'fc' not in name:
+            param.requires_grad = False
+    
     for epoch in range(epochs):
         model.train()
         train_loss = 0.0
@@ -162,7 +167,6 @@ for ds in selected_datasets:
         continue
     config = dataset_configs[ds]
     all_files_exist = True
-    # بررسی وجود فایل‌ها و دایرکتوری‌ها
     if ds == 'hardfake':
         if not os.path.exists(config.get('hardfake_csv_file', '')):
             print(f"Error: CSV file not found: {config.get('hardfake_csv_file')}")
@@ -305,10 +309,11 @@ for dataset_name in valid_datasets:
         results[dataset_name] = {'error': str(e)}
         continue
     
-    # فاین‌تیونینگ
+    # فاین‌تیونینگ فقط لایه fc
     if train_loader:
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-        print(f"Fine-tuning on {dataset_name}...")
+        # تنظیم بهینه‌ساز فقط برای پارامترهای لایه fc
+        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+        print(f"Fine-tuning only fc layer on {dataset_name}...")
         best_model_path = fine_tune_model(model, train_loader, valid_loader, device, criterion, optimizer, args.epochs, dataset_name)
         
         # لود بهترین مدل برای ارزیابی
