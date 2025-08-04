@@ -1,10 +1,21 @@
 import torch
 import torch.nn as nn
-from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal  # Import your pruned model
+from your_pruned_model import ResNet_50_pruned_hardfakevsreal  # Import your pruned model
 from data.dataset import FaceDataset, Dataset_selector
 
 def load_pruned_model_weights(model_path, masks, device='cuda'):
-
+    """
+    Load weights onto a pruned ResNet model
+    
+    Args:
+        model_path (str): Path to the saved model weights
+        masks (list): List of pruning masks for the model
+        device (str): Device to load the model on
+    
+    Returns:
+        model: Loaded pruned ResNet model
+    """
+    
     # Create the pruned model instance
     model = ResNet_50_pruned_hardfakevsreal(masks=masks)
     
@@ -60,7 +71,15 @@ def load_pruned_model_weights(model_path, masks, device='cuda'):
         return None
 
 def load_masks_from_checkpoint(model_path):
-
+    """
+    Try to extract masks from the checkpoint if they're saved there
+    
+    Args:
+        model_path (str): Path to the saved model
+    
+    Returns:
+        masks (list): List of masks if found, None otherwise
+    """
     try:
         checkpoint = torch.load(model_path, map_location='cpu')
         
@@ -93,23 +112,49 @@ def main():
         # This is just an example - you need the actual masks used during pruning
         print("Creating dummy masks for demonstration - REPLACE WITH ACTUAL MASKS!")
         
-        # Create dummy masks (you MUST replace this with your actual masks)
-        num_layers = 16  # ResNet-50 has 16 conv layers in residual blocks
+        # Create dummy masks for ResNet-50 with Bottleneck blocks
+        # ResNet-50 structure: [3, 4, 6, 3] blocks, each block has 3 conv layers
+        # Total: (3+4+6+3) * 3 = 48 conv layers in residual blocks
+        print("Creating dummy masks for ResNet-50 - REPLACE WITH ACTUAL MASKS!")
+        
         masks = []
-        for i in range(num_layers):
-            # This is just a placeholder - use your actual masks!
-            if i < 9:  # First 9 layers (3 layers per block for first 3 blocks)
-                mask_size = 256 if i >= 6 else (128 if i >= 3 else 64)
-            else:  # Last 7 layers (bottleneck layers in last block)
-                mask_size = 512
-            
-            # Create a dummy mask (keeping 80% of filters)
-            mask = torch.ones(mask_size, dtype=torch.bool)
-            if i % 3 != 2:  # Don't prune the last layer of each bottleneck block
-                num_to_prune = int(0.2 * mask_size)
-                mask[-num_to_prune:] = False
-            
-            masks.append(mask)
+        num_blocks = [3, 4, 6, 3]  # ResNet-50 structure
+        base_channels = [64, 128, 256, 512]  # Base channels for each stage
+        
+        for stage_idx, (num_block, base_ch) in enumerate(zip(num_blocks, base_channels)):
+            for block_idx in range(num_block):
+                # Each Bottleneck block has 3 conv layers
+                # Conv1: 1x1, reduces channels
+                # Conv2: 3x3, processes features  
+                # Conv3: 1x1, expands channels
+                
+                # Layer 1: 1x1 conv (channel reduction)
+                mask1_size = base_ch
+                mask1 = torch.ones(mask1_size, dtype=torch.bool)
+                if stage_idx > 0 or block_idx > 0:  # Don't prune first few layers too much
+                    num_to_prune = int(0.1 * mask1_size)  # Prune 10%
+                    mask1[-num_to_prune:] = False
+                masks.append(mask1)
+                
+                # Layer 2: 3x3 conv (same channels)
+                mask2_size = base_ch
+                mask2 = torch.ones(mask2_size, dtype=torch.bool)
+                if stage_idx > 0 or block_idx > 0:
+                    num_to_prune = int(0.15 * mask2_size)  # Prune 15%
+                    mask2[-num_to_prune:] = False
+                masks.append(mask2)
+                
+                # Layer 3: 1x1 conv (channel expansion, output should match residual)
+                mask3_size = base_ch * 4  # Bottleneck expansion factor is 4
+                mask3 = torch.ones(mask3_size, dtype=torch.bool)
+                # Don't prune the final layer of each block too much to maintain residual connection
+                if stage_idx > 1:  # Only prune later stages lightly
+                    num_to_prune = int(0.05 * mask3_size)  # Prune only 5%
+                    mask3[-num_to_prune:] = False
+                masks.append(mask3)
+        
+        print(f"Created {len(masks)} dummy masks for ResNet-50")
+        print("Mask sizes:", [mask.sum().item() for mask in masks[:9]], "...")  # Show first 9 mask sizes
     
     # Load the model with weights
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
