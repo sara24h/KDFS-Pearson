@@ -169,10 +169,9 @@ for ds in selected_datasets:
             print(f"Error: Directory not found: {config.get('hardfake_root_dir')}")
             all_files_exist = False
     elif ds == 'rvf10k':
-        for file_key in ['rvf10k_valid_csv']:  # فقط valid_csv برای تست نیاز است
-            if not os.path.exists(config.get(file_key, '')):
-                print(f"Error: CSV file not found: {config.get(file_key)}")
-                all_files_exist = False
+        if not os.path.exists(config.get('rvf10k_valid_csv', '')):
+            print(f"Error: CSV file not found: {config.get('rvf10k_valid_csv')}")
+            all_files_exist = False
         if not os.path.exists(config.get('rvf10k_root_dir', '')):
             print(f"Error: Directory not found: {config.get('rvf10k_root_dir')}")
             all_files_exist = False
