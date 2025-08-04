@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from your_pruned_model import ResNet_50_pruned_hardfakevsreal  # Import your pruned model
+from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal  # Import your pruned model
 from data.dataset import FaceDataset, Dataset_selector
 
 def load_pruned_model_weights(model_path, masks, device='cuda'):
