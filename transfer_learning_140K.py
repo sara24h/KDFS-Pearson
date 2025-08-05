@@ -17,7 +17,9 @@ def parse_args():
     parser.add_argument('--data_dir', type=str, required=True,
                         help='Base directory containing dataset folders')
     parser.add_argument('--datasets', type=str, nargs='+', default=['hardfake', 'rvf10k', '140k', '190k', '200k', '330k'],
-                        help='List of datasets to fine-tune and test')
+                        help='List of datasets to fine-tune')
+    parser.add_argument('--test_dataset', type=str, default=None,
+                        help='Dataset to use for testing (if not specified, test on all datasets)')
     parser.add_argument('--batch_size', type=int, default=64,
                         help='Batch size for training and testing')
     parser.add_argument('--num_workers', type=int, default=4,
@@ -57,7 +59,77 @@ print(f"Number of masks extracted: {len(masks)}")
 if len(masks) != 48:
     print(f"Warning: Expected 48 masks for ResNet50, got {len(masks)}")
 
-# 2. تعریف تابع فاین‌تیونینگ
+# ذخیره ماسک‌ها
+masks_path = os.path.join('checkpoints', 'pruned_masks.pth')
+os.makedirs('checkpoints', exist_ok=True)
+torch.save(masks, masks_path)
+print(f"Masks saved to {masks_path}")
+
+# 2. ساخت و ذخیره مدل هرس‌شده
+model = ResNet_50_pruned_hardfakevsreal(masks=masks)
+num_ftrs = model.fc.in_features
+model.fc = nn.Linear(num_ftrs, 1)
+model = model.to(device)
+
+# لود وزن‌های هرس‌شده
+pruned_state_dict = {}
+for key, value in state_dict.items():
+    if 'mask_weight' in key or 'feat' in key:
+        continue
+    if 'weight' in key and 'conv' in key:
+        mask_key = key.replace('.weight', '.mask_weight')
+        if mask_key in state_dict:
+            mask_binary = mask_dict[mask_key].float()
+            out_channels = mask_binary.sum().int().item()
+            pruned_weight = value[mask_binary.bool()]
+            if 'conv2' in key:
+                prev_mask_key = key.replace('conv2', 'conv1').replace('.weight', '.mask_weight')
+                if prev_mask_key in state_dict:
+                    prev_mask_binary = mask_dict[prev_mask_key].float()
+                    if prev_mask_binary.shape[0] != value.shape[1]:
+                        print(f"Warning: Mismatch in input channels for {key}: expected {value.shape[1]}, got {prev_mask_binary.shape[0]}")
+                        pruned_weight = pruned_weight[:, :prev_mask_binary.shape[0]][:, prev_mask_binary.bool()]
+                    else:
+                        pruned_weight = pruned_weight[:, prev_mask_binary.bool()]
+            elif 'conv3' in key:
+                prev_mask_key = key.replace('conv3', 'conv2').replace('.weight', '.mask_weight')
+                if prev_mask_key in state_dict:
+                    prev_mask_binary = mask_dict[prev_mask_key].float()
+                    if prev_mask_binary.shape[0] != value.shape[1]:
+                        print(f"Warning: Mismatch in input channels for {key}: expected {value.shape[1]}, got {prev_mask_binary.shape[0]}")
+                        pruned_weight = pruned_weight[:, :prev_mask_binary.shape[0]][:, prev_mask_binary.bool()]
+                    else:
+                        pruned_weight = pruned_weight[:, prev_mask_binary.bool()]
+            pruned_state_dict[key] = pruned_weight
+        else:
+            pruned_state_dict[key] = value
+    elif 'bn' in key and any(s in key for s in ['weight', 'bias', 'running_mean', 'running_var']):
+        conv_key = key.replace('.bn1.', '.conv1.').replace('.bn2.', '.conv2.').replace('.bn3.', '.conv3.')
+        conv_key = conv_key.replace('.weight', '.mask_weight').replace('.bias', '.mask_weight').replace('.running_mean', '.mask_weight').replace('.running_var', '.mask_weight')
+        if conv_key in state_dict:
+            mask_binary = mask_dict[conv_key].float()
+            pruned_param = value[mask_binary.bool()]
+            pruned_state_dict[key] = pruned_param
+        else:
+            pruned_state_dict[key] = value
+    else:
+        pruned_state_dict[key] = value
+
+missing, unexpected = model.load_state_dict(pruned_state_dict, strict=False)
+print(f"Missing keys: {missing}")
+print(f"Unexpected keys: {unexpected}")
+
+# ذخیره مدل هرس‌شده
+pruned_checkpoint_path = os.path.join('checkpoints', 'pruned_model.pth')
+torch.save(model.state_dict(), pruned_checkpoint_path)
+print(f"Pruned model saved to {pruned_checkpoint_path}")
+
+# تست لود چک‌پوینت برای اطمینان
+test_model = ResNet_50_pruned_hardfakevsreal(masks=torch.load(masks_path, map_location='cpu'))
+test_model.load_state_dict(torch.load(pruned_checkpoint_path, map_location='cpu', weights_only=True))
+print("Pruned model checkpoint loaded successfully for testing!")
+
+# 3. تعریف تابع فاین‌تیونینگ
 def fine_tune_model(model, train_loader, valid_loader, device, criterion, optimizer, epochs, dataset_name):
     best_acc = 0.0
     best_model_path = os.path.join('checkpoints', f'finetuned_{dataset_name}.pth')
@@ -102,7 +174,7 @@ def fine_tune_model(model, train_loader, valid_loader, device, criterion, optimi
     
     return best_model_path
 
-# 3. تابع ارزیابی با معیارهای اضافی
+# 4. تابع ارزیابی با معیارهای اضافی
 def evaluate_model(model, data_loader, device, criterion):
     model.eval()
     test_loss = 0.0
@@ -142,7 +214,7 @@ def evaluate_model(model, data_loader, device, criterion):
     
     return avg_loss, accuracy, precision, recall, f1, cm
 
-# 4. تعریف تنظیمات دیتاست‌ها
+# 5. تعریف تنظیمات دیتاست‌ها
 dataset_configs = {
     'hardfake': {
         'dataset_mode': 'hardfake',
@@ -179,7 +251,7 @@ dataset_configs = {
     }
 }
 
-# 5. بررسی دیتاست‌های انتخاب‌شده و وجود فایل‌ها
+# 6. بررسی دیتاست‌های انتخاب‌شده و وجود فایل‌ها
 selected_datasets = args.datasets
 valid_datasets = []
 for ds in selected_datasets:
@@ -229,69 +301,63 @@ for ds in selected_datasets:
     else:
         print(f"Dataset '{ds}' will be skipped due to missing files or directories.")
 
-if not valid_datasets:
-    raise ValueError(f"No valid datasets selected or available! Choose from {list(dataset_configs.keys())}")
+# بررسی دیتاست تست
+test_dataset = args.test_dataset
+if test_dataset and test_dataset not in dataset_configs:
+    print(f"Warning: Test dataset '{test_dataset}' is invalid. Valid datasets: {list(dataset_configs.keys())}")
+    test_dataset = None
+if test_dataset:
+    config = dataset_configs[test_dataset]
+    all_files_exist = True
+    if test_dataset == 'hardfake':
+        if not os.path.exists(config.get('hardfake_csv_file', '')):
+            print(f"Error: CSV file not found: {config.get('hardfake_csv_file')}")
+            all_files_exist = False
+        if not os.path.exists(config.get('hardfake_root_dir', '')):
+            print(f"Error: Directory not found: {config.get('hardfake_root_dir')}")
+            all_files_exist = False
+    elif test_dataset == 'rvf10k':
+        if not os.path.exists(config.get('rvf10k_valid_csv', '')):
+            print(f"Error: CSV file not found: {config.get('rvf10k_valid_csv')}")
+            all_files_exist = False
+        if not os.path.exists(config.get('rvf10k_root_dir', '')):
+            print(f"Error: Directory not found: {config.get('rvf10k_root_dir')}")
+            all_files_exist = False
+    elif test_dataset == '140k':
+        if not os.path.exists(config.get('realfake140k_test_csv', '')):
+            print(f"Error: CSV file not found: {config.get('realfake140k_test_csv')}")
+            all_files_exist = False
+        if not os.path.exists(config.get('realfake140k_root_dir', '')):
+            print(f"Error: Directory not found: {config.get('realfake140k_root_dir')}")
+            all_files_exist = False
+    elif test_dataset == '190k':
+        if not os.path.exists(config.get('realfake190k_root_dir', '')):
+            print(f"Error: Directory not found: {config.get('realfake190k_root_dir')}")
+            all_files_exist = False
+    elif test_dataset == '200k':
+        if not os.path.exists(config.get('realfake200k_test_csv', '')):
+            print(f"Error: CSV file not found: {config.get('realfake200k_test_csv')}")
+            all_files_exist = False
+        if not os.path.exists(config.get('realfake200k_root_dir', '')):
+            print(f"Error: Directory not found: {config.get('realfake200k_root_dir')}")
+            all_files_exist = False
+    elif test_dataset == '330k':
+        if not os.path.exists(config.get('realfake330k_root_dir', '')):
+            print(f"Error: Directory not found: {config.get('realfake330k_root_dir')}")
+            all_files_exist = False
+    if not all_files_exist:
+        print(f"Test dataset '{test_dataset}' will be ignored due to missing files or directories.")
+        test_dataset = None
 
-# 6. حلقه اصلی برای فاین‌تیونینگ و ارزیابی
+if not valid_datasets and not test_dataset:
+    raise ValueError(f"No valid datasets or test dataset selected! Choose from {list(dataset_configs.keys())}")
+
+# 7. حلقه فاین‌تیونینگ
 results = {}
 criterion = nn.BCEWithLogitsLoss()
 
 for dataset_name in valid_datasets:
-    print(f"\nProcessing {dataset_name} dataset...")
-    
-    # بازسازی مدل برای هر دیتاست
-    model = ResNet_50_pruned_hardfakevsreal(masks=masks)
-    num_ftrs = model.fc.in_features
-    model.fc = nn.Linear(num_ftrs, 1)
-    model = model.to(device)
-    
-    # لود وزن‌های پرون‌شده
-    pruned_state_dict = {}
-    for key, value in state_dict.items():
-        if 'mask_weight' in key or 'feat' in key:
-            continue
-        if 'weight' in key and 'conv' in key:
-            mask_key = key.replace('.weight', '.mask_weight')
-            if mask_key in state_dict:
-                mask_binary = mask_dict[mask_key].float()
-                out_channels = mask_binary.sum().int().item()
-                pruned_weight = value[mask_binary.bool()]
-                if 'conv2' in key:
-                    prev_mask_key = key.replace('conv2', 'conv1').replace('.weight', '.mask_weight')
-                    if prev_mask_key in state_dict:
-                        prev_mask_binary = mask_dict[prev_mask_key].float()
-                        if prev_mask_binary.shape[0] != value.shape[1]:
-                            print(f"Warning: Mismatch in input channels for {key}: expected {value.shape[1]}, got {prev_mask_binary.shape[0]}")
-                            pruned_weight = pruned_weight[:, :prev_mask_binary.shape[0]][:, prev_mask_binary.bool()]
-                        else:
-                            pruned_weight = pruned_weight[:, prev_mask_binary.bool()]
-                elif 'conv3' in key:
-                    prev_mask_key = key.replace('conv3', 'conv2').replace('.weight', '.mask_weight')
-                    if prev_mask_key in state_dict:
-                        prev_mask_binary = mask_dict[prev_mask_key].float()
-                        if prev_mask_binary.shape[0] != value.shape[1]:
-                            print(f"Warning: Mismatch in input channels for {key}: expected {value.shape[1]}, got {prev_mask_binary.shape[0]}")
-                            pruned_weight = pruned_weight[:, :prev_mask_binary.shape[0]][:, prev_mask_binary.bool()]
-                        else:
-                            pruned_weight = pruned_weight[:, prev_mask_binary.bool()]
-                pruned_state_dict[key] = pruned_weight
-            else:
-                pruned_state_dict[key] = value
-        elif 'bn' in key and any(s in key for s in ['weight', 'bias', 'running_mean', 'running_var']):
-            conv_key = key.replace('.bn1.', '.conv1.').replace('.bn2.', '.conv2.').replace('.bn3.', '.conv3.')
-            conv_key = conv_key.replace('.weight', '.mask_weight').replace('.bias', '.mask_weight').replace('.running_mean', '.mask_weight').replace('.running_var', '.mask_weight')
-            if conv_key in state_dict:
-                mask_binary = mask_dict[conv_key].float()
-                pruned_param = value[mask_binary.bool()]
-                pruned_state_dict[key] = pruned_param
-            else:
-                pruned_state_dict[key] = value
-        else:
-            pruned_state_dict[key] = value
-    
-    missing, unexpected = model.load_state_dict(pruned_state_dict, strict=False)
-    print(f"Missing keys: {missing}")
-    print(f"Unexpected keys: {unexpected}")
+    print(f"\nFine-tuning on {dataset_name} dataset...")
     
     # لود دیتاست
     config = dataset_configs[dataset_name]
@@ -321,16 +387,70 @@ for dataset_name in valid_datasets:
         )
         train_loader = dataset.loader_train if hasattr(dataset, 'loader_train') else None
         valid_loader = dataset.loader_valid if hasattr(dataset, 'loader_valid') else dataset.loader_test
-        test_loader = dataset.loader_test
         print(f"{dataset_name} train dataset size: {len(train_loader.dataset) if train_loader else 0}")
         print(f"{dataset_name} valid dataset size: {len(valid_loader.dataset)}")
-        print(f"{dataset_name} test dataset size: {len(test_loader.dataset)}")
     except Exception as e:
         print(f"Error loading {dataset_name} dataset: {e}")
         results[dataset_name] = {'error': str(e)}
         continue
     
-    # ارزیابی مدل قبل از فاین‌تیونینگ
+    # بازسازی مدل با ماسک‌های ذخیره‌شده و لود چک‌پوینت هرس‌شده
+    model = ResNet_50_pruned_hardfakevsreal(masks=torch.load(masks_path, map_location='cpu'))
+    model.load_state_dict(torch.load(pruned_checkpoint_path, map_location=device, weights_only=True))
+    model.to(device)
+    
+    # فاین‌تیونینگ فقط لایه fc
+    if train_loader:
+        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
+        print(f"Fine-tuning only fc layer on {dataset_name}...")
+        best_model_path = fine_tune_model(model, train_loader, valid_loader, device, criterion, optimizer, args.epochs, dataset_name)
+    else:
+        print(f"No training data available for {dataset_name}. Skipping fine-tuning.")
+        best_model_path = pruned_checkpoint_path  # استفاده از مدل هرس‌شده برای تست
+
+# 8. حلقه تست روی دیتاست انتخاب‌شده
+test_datasets = [test_dataset] if test_dataset else valid_datasets
+for dataset_name in test_datasets:
+    print(f"\nTesting on {dataset_name} dataset...")
+    
+    # لود دیتاست تست
+    config = dataset_configs[dataset_name]
+    try:
+        dataset = Dataset_selector(
+            dataset_mode=config['dataset_mode'],
+            hardfake_csv_file=config.get('hardfake_csv_file'),
+            hardfake_root_dir=config.get('hardfake_root_dir'),
+            rvf10k_train_csv=config.get('rvf10k_train_csv'),
+            rvf10k_valid_csv=config.get('rvf10k_valid_csv'),
+            rvf10k_root_dir=config.get('rvf10k_root_dir'),
+            realfake140k_train_csv=config.get('realfake140k_train_csv'),
+            realfake140k_valid_csv=config.get('realfake140k_valid_csv'),
+            realfake140k_test_csv=config.get('realfake140k_test_csv'),
+            realfake140k_root_dir=config.get('realfake140k_root_dir'),
+            realfake200k_train_csv=config.get('realfake200k_train_csv'),
+            realfake200k_val_csv=config.get('realfake200k_val_csv'),
+            realfake200k_test_csv=config.get('realfake200k_test_csv'),
+            realfake200k_root_dir=config.get('realfake200k_root_dir'),
+            realfake190k_root_dir=config.get('realfake190k_root_dir'),
+            realfake330k_root_dir=config.get('realfake330k_root_dir'),
+            train_batch_size=args.batch_size,
+            eval_batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=True,
+            ddp=False
+        )
+        test_loader = dataset.loader_test
+        print(f"{dataset_name} test dataset size: {len(test_loader.dataset)}")
+    except Exception as e:
+        print(f"Error loading {dataset_name} test dataset: {e}")
+        results[dataset_name] = {'error': str(e)}
+        continue
+    
+    # تست مدل هرس‌شده (قبل از فاین‌تیونینگ)
+    model = ResNet_50_pruned_hardfakevsreal(masks=torch.load(masks_path, map_location='cpu'))
+    model.load_state_dict(torch.load(pruned_checkpoint_path, map_location=device, weights_only=True))
+    model.to(device)
+    
     try:
         pre_finetune_loss, pre_finetune_accuracy, pre_precision, pre_recall, pre_f1, pre_cm = evaluate_model(model, test_loader, device, criterion)
         print(f"{dataset_name} - Pre-Finetune Metrics:")
@@ -346,46 +466,42 @@ for dataset_name in valid_datasets:
             'pre_precision': pre_precision,
             'pre_recall': pre_recall,
             'pre_f1': pre_f1,
-            'pre_cm': pre_cm.tolist()  # تبدیل به لیست برای ذخیره‌سازی
+            'pre_cm': pre_cm.tolist()
         }
     except Exception as e:
         print(f"Error evaluating {dataset_name} before fine-tuning: {e}")
         results[dataset_name] = {'error': str(e)}
         continue
     
-    # فاین‌تیونینگ فقط لایه fc
-    if train_loader:
-        # تنظیم بهینه‌ساز فقط برای پارامترهای لایه fc
-        optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
-        print(f"Fine-tuning only fc layer on {dataset_name}...")
-        best_model_path = fine_tune_model(model, train_loader, valid_loader, device, criterion, optimizer, args.epochs, dataset_name)
+    # تست مدل فاین‌تیون‌شده (برای هر دیتاست فاین‌تیون‌شده)
+    for finetune_dataset in valid_datasets:
+        best_model_path = os.path.join('checkpoints', f'finetuned_{finetune_dataset}.pth')
+        if not os.path.exists(best_model_path):
+            print(f"No fine-tuned model found for {finetune_dataset}. Skipping.")
+            continue
         
-        # لود بهترین مدل برای ارزیابی
+        model = ResNet_50_pruned_hardfakevsreal(masks=torch.load(masks_path, map_location='cpu'))
         model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=True))
-    else:
-        print(f"No training data available for {dataset_name}. Skipping fine-tuning.")
-    
-    # ارزیابی روی دیتاست تست پس از فاین‌تیونینگ
-    try:
-        post_finetune_loss, post_finetune_accuracy, post_precision, post_recall, post_f1, post_cm = evaluate_model(model, test_loader, device, criterion)
-        print(f"{dataset_name} - Post-Finetune Metrics:")
-        print(f"  Test Loss: {post_finetune_loss:.4f}")
-        print(f"  Test Accuracy: {post_finetune_accuracy:.2f}%")
-        print(f"  Precision: {post_precision:.4f}")
-        print(f"  Recall: {post_recall:.4f}")
-        print(f"  F1-Score: {post_f1:.4f}")
-        print(f"  Confusion Matrix:\n{post_cm}")
-        results[dataset_name].update({
-            'post_finetune_loss': post_finetune_loss,
-            'post_finetune_accuracy': post_finetune_accuracy,
-            'post_precision': post_precision,
-            'post_recall': post_recall,
-            'post_f1': post_f1,
-            'post_cm': post_cm.tolist()  # تبدیل به لیست برای ذخیره‌سازی
-        })
-    except Exception as e:
-        print(f"Error evaluating {dataset_name} after fine-tuning: {e}")
-        results[dataset_name].update({'error': str(e)})
+        model.to(device)
+        
+        try:
+            post_finetune_loss, post_finetune_accuracy, post_precision, post_recall, post_f1, post_cm = evaluate_model(model, test_loader, device, criterion)
+            print(f"{dataset_name} - Post-Finetune Metrics (fine-tuned on {finetune_dataset}):")
+            print(f"  Test Loss: {post_finetune_loss:.4f}")
+            print(f"  Test Accuracy: {post_finetune_accuracy:.2f}%")
+            print(f"  Precision: {post_precision:.4f}")
+            print(f"  Recall: {post_recall:.4f}")
+            print(f"  F1-Score: {post_f1:.4f}")
+            print(f"  Confusion Matrix:\n{post_cm}")
+            results[dataset_name][f'post_finetune_loss_{finetune_dataset}'] = post_finetune_loss
+            results[dataset_name][f'post_finetune_accuracy_{finetune_dataset}'] = post_finetune_accuracy
+            results[dataset_name][f'post_precision_{finetune_dataset}'] = post_precision
+            results[dataset_name][f'post_recall_{finetune_dataset}'] = post_recall
+            results[dataset_name][f'post_f1_{finetune_dataset}'] = post_f1
+            results[dataset_name][f'post_cm_{finetune_dataset}'] = post_cm.tolist()
+        except Exception as e:
+            print(f"Error evaluating {dataset_name} after fine-tuning on {finetune_dataset}: {e}")
+            results[dataset_name][f'error_{finetune_dataset}'] = str(e)
     
     # محاسبه FLOPs و پارامترها
     input = torch.randn(1, 3, 256, 256).to(device)
@@ -393,12 +509,12 @@ for dataset_name in valid_datasets:
     results[dataset_name]['flops'] = flops / 1e9  # GMac
     results[dataset_name]['params'] = params / 1e6  # M
 
-# 7. ذخیره نتایج
+# 9. ذخیره نتایج
 results_dir = 'results'
 os.makedirs(results_dir, exist_ok=True)
 with open(os.path.join(results_dir, 'finetune_results.txt'), 'w') as f:
-    for dataset_name in valid_datasets:
-        f.write(f"Dataset: {dataset_name}\n")
+    for dataset_name in test_datasets:
+        f.write(f"Test Dataset: {dataset_name}\n")
         result = results.get(dataset_name, {'error': 'Not evaluated'})
         if 'error' in result:
             f.write(f"Error: {result['error']}\n")
@@ -410,22 +526,26 @@ with open(os.path.join(results_dir, 'finetune_results.txt'), 'w') as f:
             f.write(f"  Recall: {result['pre_recall']:.4f}\n")
             f.write(f"  F1-Score: {result['pre_f1']:.4f}\n")
             f.write(f"  Confusion Matrix: {result['pre_cm']}\n")
-            f.write(f"Post-Finetune Metrics:\n")
-            f.write(f"  Test Loss: {result['post_finetune_loss']:.4f}\n")
-            f.write(f"  Test Accuracy: {result['post_finetune_accuracy']:.2f}%\n")
-            f.write(f"  Precision: {result['post_precision']:.4f}\n")
-            f.write(f"  Recall: {result['post_recall']:.4f}\n")
-            f.write(f"  F1-Score: {result['post_f1']:.4f}\n")
-            f.write(f"  Confusion Matrix: {result['post_cm']}\n")
+            for finetune_dataset in valid_datasets:
+                if f'post_finetune_loss_{finetune_dataset}' in result:
+                    f.write(f"Post-Finetune Metrics (fine-tuned on {finetune_dataset}):\n")
+                    f.write(f"  Test Loss: {result[f'post_finetune_loss_{finetune_dataset}']:.4f}\n")
+                    f.write(f"  Test Accuracy: {result[f'post_finetune_accuracy_{finetune_dataset}']:.2f}%\n")
+                    f.write(f"  Precision: {result[f'post_precision_{finetune_dataset}']:.4f}\n")
+                    f.write(f"  Recall: {result[f'post_recall_{finetune_dataset}']:.4f}\n")
+                    f.write(f"  F1-Score: {result[f'post_f1_{finetune_dataset}']:.4f}\n")
+                    f.write(f"  Confusion Matrix: {result[f'post_cm_{finetune_dataset}']}\n")
+                if f'error_{finetune_dataset}' in result:
+                    f.write(f"Error (fine-tuned on {finetune_dataset}): {result[f'error_{finetune_dataset}']}\n")
             f.write(f"FLOPs: {result['flops']:.2f} GMac\n")
             f.write(f"Parameters: {result['params']:.2f} M\n")
         f.write("\n")
 print(f"Results saved to {os.path.join(results_dir, 'finetune_results.txt')}")
 
-# 8. چاپ نتایج نهایی
+# 10. چاپ نتایج نهایی
 print("\nFinal Fine-tuning Results:")
-for dataset_name in valid_datasets:
-    print(f"\nDataset: {dataset_name}")
+for dataset_name in test_datasets:
+    print(f"\nTest Dataset: {dataset_name}")
     result = results.get(dataset_name, {'error': 'Not evaluated'})
     if 'error' in result:
         print(f"Error: {result['error']}")
@@ -437,11 +557,15 @@ for dataset_name in valid_datasets:
         print(f"  Recall: {result['pre_recall']:.4f}")
         print(f"  F1-Score: {result['pre_f1']:.4f}")
         print(f"  Confusion Matrix:\n{result['pre_cm']}")
-        print(f"Post-Finetune Metrics:")
-        print(f"  Test Loss: {result['post_finetune_loss']:.4f}")
-        print(f"  Test Accuracy: {result['post_finetune_accuracy']:.2f}%")
-        print(f"  Precision: {result['post_precision']:.4f}")
-        print(f"  Recall: {result['post_recall']:.4f}")
-        print(f"  F1-Score: {result['post_f1']:.4f}")
-        print(f"  Confusion Matrix:\n{result['post_cm']}")
+        for finetune_dataset in valid_datasets:
+            if f'post_finetune_loss_{finetune_dataset}' in result:
+                print(f"Post-Finetune Metrics (fine-tuned on {finetune_dataset}):")
+                print(f"  Test Loss: {result[f'post_finetune_loss_{finetune_dataset}']:.4f}")
+                print(f"  Test Accuracy: {result[f'post_finetune_accuracy_{finetune_dataset}']:.2f}%")
+                print(f"  Precision: {result[f'post_precision_{finetune_dataset}']:.4f}")
+                print(f"  Recall: {result[f'post_recall_{finetune_dataset}']:.4f}")
+                print(f"  F1-Score: {result[f'post_f1_{finetune_dataset}']:.4f}")
+                print(f"  Confusion Matrix:\n{result[f'post_cm_{finetune_dataset}']}")
+            if f'error_{finetune_dataset}' in result:
+                print(f"Error (fine-tuned on {finetune_dataset}): {result[f'error_{finetune_dataset}']}")
         print(f"FLOPs: {result['flops']:.2f} GMac, Parameters: {result['params']:.2f} M")
