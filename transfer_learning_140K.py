@@ -25,14 +25,22 @@ def evaluate_model(model, data_loader, device, dataset_name=""):
             all_labels.extend(labels.cpu().numpy())
     
     accuracy = accuracy_score(all_labels, all_preds)
-    precision, recall, f1, _ = precision_recall_fscore_support(all_labels, all_preds, average='binary')
+    # Calculate metrics for each class (remove average='binary')
+    precision, recall, f1, _ = precision_recall_fscore_support(all_labels, all_preds, average=None)
     cm = confusion_matrix(all_labels, all_preds)
+    
+    # Print metrics for each class
+    print(f"\n{dataset_name}:")
+    print(f"Accuracy: {accuracy:.4f}")
+    print(f"Precision (Fake): {precision[0]:.4f}, Precision (Real): {precision[1]:.4f}")
+    print(f"Recall (Fake): {recall[0]:.4f}, Recall (Real): {recall[1]:.4f}")
+    print(f"F1-Score (Fake): {f1[0]:.4f}, F1-Score (Real): {f1[1]:.4f}")
     
     return {
         'accuracy': accuracy,
-        'precision': precision,
-        'recall': recall,
-        'f1_score': f1,
+        'precision': precision,  # Array of precision for each class
+        'recall': recall,        # Array of recall for each class
+        'f1_score': f1,         # Array of F1-score for each class
         'confusion_matrix': cm,
         'predictions': all_preds,
         'labels': all_labels
@@ -140,11 +148,7 @@ def main():
 
     # Evaluate before finetuning
     print(f"\nEvaluating pruned model before finetuning on dataset {args.dataset_mode} (test data):")
-    metrics_before = evaluate_model(model, test_loader, device)
-    print(f"Accuracy: {metrics_before['accuracy']:.4f}")
-    print(f"Precision: {metrics_before['precision']:.4f}")
-    print(f"Recall: {metrics_before['recall']:.4f}")
-    print(f"F1-Score: {metrics_before['f1_score']:.4f}")
+    metrics_before = evaluate_model(model, test_loader, device, f"Test Data Before Finetuning ({args.dataset_mode})")
     plot_confusion_matrix(metrics_before['confusion_matrix'], 
                          f"Confusion Matrix Before Finetuning ({args.dataset_mode})",
                          "cm_before_finetuning.png")
@@ -168,11 +172,7 @@ def main():
 
     # Evaluate after finetuning
     print(f"\nEvaluating model after finetuning on dataset {args.dataset_mode} (test data):")
-    metrics_after = evaluate_model(model, test_loader, device)
-    print(f"Accuracy: {metrics_after['accuracy']:.4f}")
-    print(f"Precision: {metrics_after['precision']:.4f}")
-    print(f"Recall: {metrics_after['recall']:.4f}")
-    print(f"F1-Score: {metrics_after['f1_score']:.4f}")
+    metrics_after = evaluate_model(model, test_loader, device, f"Test Data After Finetuning ({args.dataset_mode})")
     plot_confusion_matrix(metrics_after['confusion_matrix'], 
                          f"Confusion Matrix After Finetuning ({args.dataset_mode})",
                          "cm_after_finetuning.png")
