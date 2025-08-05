@@ -16,6 +16,9 @@ def evaluate_model(model, data_loader, device, dataset_name=""):
         for images, labels in data_loader:
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
+            # Handle tuple output
+            if isinstance(outputs, tuple):
+                outputs = outputs[0]  # Select the primary output tensor
             preds = (torch.sigmoid(outputs) > 0.5).float().squeeze()
             all_preds.extend(preds.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
@@ -123,6 +126,9 @@ def main():
         sample_images = sample_batch[0].to(device)
         with torch.no_grad():
             sample_output = model(sample_images)
+            # Handle tuple output
+            if isinstance(sample_output, tuple):
+                sample_output = sample_output[0]  # Select the primary output tensor
         print(f"Sample model output for dataset {args.dataset_mode}: {sample_output.shape}")
     except Exception as e:
         print(f"Error running model on sample data from dataset {args.dataset_mode}: {e}")
@@ -147,6 +153,9 @@ def main():
             images, labels = images.to(device), labels.to(device).float().unsqueeze(1)
             optimizer.zero_grad()
             outputs = model(images)
+            # Handle tuple output
+            if isinstance(outputs, tuple):
+                outputs = outputs[0]  # Select the primary output tensor
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
@@ -168,6 +177,8 @@ def main():
     print(f"Change in recall: {(metrics_after['recall'] - metrics_before['recall']):.4f}")
     print(f"Change in F1-Score: {(metrics_after['f1_score'] - metrics_before['f1_score']):.4f}")
 
+    # Save finetuned model
+    torch.save(model, f'/kaggle/working/finetuned_pruned_model_{args.dataset_mode}.pth')
 
 if __name__ == "__main__":
     main()
