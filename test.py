@@ -108,7 +108,6 @@ class Test:
                 ddp=False
             )
          
-
             self.test_loader = dataset.loader_test
             print(f"{self.dataset_mode} test dataset loaded! Total batches: {len(self.test_loader)}")
         except Exception as e:
