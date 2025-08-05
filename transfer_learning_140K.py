@@ -122,9 +122,14 @@ def load_pruned_model(checkpoint_path, device):
             print(f"Confirmed: Pruned model exists at {pruned_model_path}")
         else:
             print(f"Error: Pruned model not found at {pruned_model_path}")
+            raise FileNotFoundError(f"Failed to confirm existence of {pruned_model_path}")
     except Exception as e:
         print(f"Error saving pruned model to {pruned_model_path}: {e}")
         raise
+
+    # بررسی فضای دیسک
+    print("Checking disk space:")
+    os.system("df -h /kaggle/working")
 
     return model, masks
 
@@ -172,6 +177,10 @@ def fine_tune_model(model, train_loader, valid_loader, device, criterion, optimi
             try:
                 torch.save(model.state_dict(), best_model_path)
                 print(f"Saved best model for {dataset_name} with Valid Acc: {best_acc:.2f}% at {best_model_path}")
+                if os.path.exists(best_model_path):
+                    print(f"Confirmed: Fine-tuned model exists at {best_model_path}")
+                else:
+                    print(f"Error: Fine-tuned model not found at {best_model_path}")
             except Exception as e:
                 print(f"Error saving fine-tuned model to {best_model_path}: {e}")
     
@@ -303,6 +312,11 @@ for ds in selected_datasets:
 if not valid_datasets:
     raise ValueError(f"No valid datasets selected or available! Choose from {list(dataset_configs.keys())}")
 
+# بررسی دایرکتوری کاری
+print(f"Current working directory: {os.getcwd()}")
+print("Listing contents of /kaggle/working/checkpoints:")
+os.system("ls -l /kaggle/working/checkpoints")
+
 # لود مدل هرس‌شده
 model, masks = load_pruned_model(args.checkpoint_path, device)
 
@@ -346,7 +360,7 @@ for dataset_name in valid_datasets:
         print(f"{dataset_name} valid dataset size: {len(valid_loader.dataset)}")
         print(f"{dataset_name} test dataset size: {len(test_loader.dataset)}")
     except Exception as e:
-        print(f"Error loading {dataset_name} dataset: {e}")
+        print(f"Error loading {dataset_name} dataset: {str(e)}")
         results[dataset_name] = {'error': str(e)}
         continue
     
@@ -357,6 +371,8 @@ for dataset_name in valid_datasets:
     model = model.to(device)
     pruned_model_path = os.path.join('/kaggle/working/checkpoints', 'pruned_model.pth')
     try:
+        if not os.path.exists(pruned_model_path):
+            raise FileNotFoundError(f"Pruned model not found at {pruned_model_path}")
         model.load_state_dict(torch.load(pruned_model_path, map_location=device, weights_only=True))
         print(f"Successfully loaded pruned model from {pruned_model_path}")
     except Exception as e:
@@ -383,7 +399,7 @@ for dataset_name in valid_datasets:
             'pre_cm': pre_cm.tolist()
         }
     except Exception as e:
-        print(f"Error evaluating {dataset_name} before fine-tuning: {e}")
+        print(f"Error evaluating {dataset_name} before fine-tuning: {str(e)}")
         results[dataset_name] = {'error': str(e)}
         continue
     
@@ -395,6 +411,8 @@ for dataset_name in valid_datasets:
         
         # لود بهترین مدل برای ارزیابی
         try:
+            if not os.path.exists(best_model_path):
+                raise FileNotFoundError(f"Fine-tuned model not found at {best_model_path}")
             model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=True))
             print(f"Successfully loaded fine-tuned model from {best_model_path}")
         except Exception as e:
@@ -424,43 +442,56 @@ for dataset_name in valid_datasets:
             'post_cm': post_cm.tolist()
         })
     except Exception as e:
-        print(f"Error evaluating {dataset_name} after fine-tuning: {e}")
+        print(f"Error evaluating {dataset_name} after fine-tuning: {str(e)}")
         results[dataset_name].update({'error': str(e)})
     
     # محاسبه FLOPs و پارامترها
     input = torch.randn(1, 3, 256, 256).to(device)
-    flops, params = profile(model, inputs=(input,))
-    results[dataset_name]['flops'] = flops / 1e9  # GMac
-    results[dataset_name]['params'] = params / 1e6  # M
+    try:
+        flops, params = profile(model, inputs=(input,))
+        results[dataset_name]['flops'] = flops / 1e9  # GMac
+        results[dataset_name]['params'] = params / 1e6  # M
+    except Exception as e:
+        print(f"Error calculating FLOPs and params for {dataset_name}: {str(e)}")
+        results[dataset_name]['flops'] = None
+        results[dataset_name]['params'] = None
 
 # ذخیره نتایج
 results_dir = '/kaggle/working/results'
 os.makedirs(results_dir, exist_ok=True)
-with open(os.path.join(results_dir, 'finetune_results.txt'), 'w') as f:
-    for dataset_name in valid_datasets:
-        f.write(f"Dataset: {dataset_name}\n")
-        result = results.get(dataset_name, {'error': 'Not evaluated'})
-        if 'error' in result:
-            f.write(f"Error: {result['error']}\n")
-        else:
-            f.write(f"Pre-Finetune Metrics:\n")
-            f.write(f"  Test Loss: {result['pre_finetune_loss']:.4f}\n")
-            f.write(f"  Test Accuracy: {result['pre_finetune_accuracy']:.2f}%\n")
-            f.write(f"  Precision: {result['pre_precision']:.4f}\n")
-            f.write(f"  Recall: {result['pre_recall']:.4f}\n")
-            f.write(f"  F1-Score: {result['pre_f1']:.4f}\n")
-            f.write(f"  Confusion Matrix: {result['pre_cm']}\n")
-            f.write(f"Post-Finetune Metrics:\n")
-            f.write(f"  Test Loss: {result['post_finetune_loss']:.4f}\n")
-            f.write(f"  Test Accuracy: {result['post_finetune_accuracy']:.2f}%\n")
-            f.write(f"  Precision: {result['post_precision']:.4f}\n")
-            f.write(f"  Recall: {result['post_recall']:.4f}\n")
-            f.write(f"  F1-Score: {result['post_f1']:.4f}\n")
-            f.write(f"  Confusion Matrix: {result['post_cm']}\n")
-            f.write(f"FLOPs: {result['flops']:.2f} GMac\n")
-            f.write(f"Parameters: {result['params']:.2f} M\n")
-        f.write("\n")
-print(f"Results saved to {os.path.join(results_dir, 'finetune_results.txt')}")
+results_path = os.path.join(results_dir, 'finetune_results.txt')
+try:
+    with open(results_path, 'w') as f:
+        for dataset_name in valid_datasets:
+            f.write(f"Dataset: {dataset_name}\n")
+            result = results.get(dataset_name, {'error': 'Not evaluated'})
+            if 'error' in result:
+                f.write(f"Error: {result['error']}\n")
+            else:
+                f.write(f"Pre-Finetune Metrics:\n")
+                f.write(f"  Test Loss: {result['pre_finetune_loss']:.4f}\n")
+                f.write(f"  Test Accuracy: {result['pre_finetune_accuracy']:.2f}%\n")
+                f.write(f"  Precision: {result['pre_precision']:.4f}\n")
+                f.write(f"  Recall: {result['pre_recall']:.4f}\n")
+                f.write(f"  F1-Score: {result['pre_f1']:.4f}\n")
+                f.write(f"  Confusion Matrix: {result['pre_cm']}\n")
+                f.write(f"Post-Finetune Metrics:\n")
+                f.write(f"  Test Loss: {result['post_finetune_loss']:.4f}\n")
+                f.write(f"  Test Accuracy: {result['post_finetune_accuracy']:.2f}%\n")
+                f.write(f"  Precision: {result['post_precision']:.4f}\n")
+                f.write(f"  Recall: {result['post_recall']:.4f}\n")
+                f.write(f"  F1-Score: {result['post_f1']:.4f}\n")
+                f.write(f"  Confusion Matrix: {result['post_cm']}\n")
+                f.write(f"FLOPs: {result['flops']:.2f} GMac\n")
+                f.write(f"Parameters: {result['params']:.2f} M\n")
+            f.write("\n")
+    print(f"Results saved to {results_path}")
+    if os.path.exists(results_path):
+        print(f"Confirmed: Results file exists at {results_path}")
+    else:
+        print(f"Error: Results file not found at {results_path}")
+except Exception as e:
+    print(f"Error saving results to {results_path}: {str(e)}")
 
 # چاپ نتایج نهایی
 print("\nFinal Fine-tuning Results:")
@@ -485,3 +516,8 @@ for dataset_name in valid_datasets:
         print(f"  F1-Score: {result['post_f1']:.4f}")
         print(f"  Confusion Matrix:\n{result['post_cm']}")
         print(f"FLOPs: {result['flops']:.2f} GMac, Parameters: {result['params']:.2f} M")
+
+# بررسی نهایی دایرکتوری‌ها
+print("\nFinal directory check:")
+os.system("ls -l /kaggle/working/checkpoints")
+os.system("ls -l /kaggle/working/results")
