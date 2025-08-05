@@ -8,12 +8,11 @@ device=0
 
 CUDA_VISIBLE_DEVICES=$device python main.py \
   --phase test \
-  --data_dir $dataset_dir \  # تغییر از --dataset_dir به --data_dir
+  --dataset_dir $dataset_dir \
   --dataset_mode $dataset_mode \
   --num_workers 8 \
   --pin_memory \
   --device cuda \
   --arch $arch \
   --test_batch_size 256 \
-  --sparsed_student_ckpt_path $ckpt_path \
-  "$@"
+  --sparsed_student_ckpt_path $ckpt_path
