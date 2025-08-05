@@ -167,13 +167,16 @@ for dataset_name in valid_datasets:
     print(f"\nProcessing {dataset_name}...")
     
     # بازسازی مدل بدون نیاز به ماسک‌ها
-    model = ResNet_50_pruned_hardfakevsreal()  # بدون پارامتر masks
+    model = ResNet_50_pruned_hardfakevsreal()
     num_ftrs = model.fc.in_features
     model.fc = nn.Linear(num_ftrs, 1)
     model = model.to(device)
     
     # لود وزن‌های پرون‌شده مستقیماً
-    model.load_state_dict(state_dict, strict=False)
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    if missing_keys or unexpected_keys:
+        print(f"Missing keys: {missing_keys}")
+        print(f"Unexpected keys: {unexpected_keys}")
     
     # لود دیتاست
     config = dataset_configs[dataset_name]
@@ -256,7 +259,7 @@ for dataset_name in valid_datasets:
         input = torch.randn(1, 3, 256, 256).to(device)
         flops, params = profile(model, inputs=(input,))
         results[dataset_name]['flops'] = flops / 1e9
-       results[dataset_name]['params'] = params / 1e6
+        results[dataset_name]['params'] = params / 1e6
     except Exception as e:
         print(f"Error calculating FLOPs/params for {dataset_name}: {e}")
         results[dataset_name]['flops'] = None
