@@ -17,7 +17,7 @@ from data.dataset import Dataset_selector
 import glob
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='Transfer learning with ResNet50 for fake vs real face classification.')
+    parser = argparse.ArgumentParser(description='Transfer learning for fake vs real face classification.')
     parser.add_argument('--dataset_mode', type=str, required=True, 
                         choices=['hardfake', 'rvf10k', '140k', '190k', '200k', '12.9k', '330k'],
                         help='Dataset to use: hardfake, rvf10k, 140k, 190k, 200k, 12.9k, or 330k')
@@ -25,6 +25,8 @@ def parse_args():
                         help='Path to the dataset directory containing images and CSV file(s)')
     parser.add_argument('--teacher_dir', type=str, default='teacher_dir',
                         help='Directory to save the trained model and outputs')
+    parser.add_argument('--model', type=str, default='resnet50', choices=['resnet50', 'densenet40'],
+                        help='Model to use for transfer learning: resnet50 or densenet40')
     parser.add_argument('--img_height', type=int, default=300,
                         help='Height of input images (default: 300 for hardfake, 256 for others)')
     parser.add_argument('--img_width', type=int, default=300,
@@ -37,6 +39,42 @@ def parse_args():
                         help='Learning rate for the optimizer')
     return parser.parse_args()
 
+def initialize_model(model_name, device):
+    if model_name == 'resnet50':
+        model = models.resnet50(weights='IMAGENET1K_V1')
+        num_ftrs = model.fc.in_features
+        model.fc = nn.Linear(num_ftrs, 1)
+        # Freeze all layers except the last layer4 and fc
+        for param in model.parameters():
+            param.requires_grad = False
+        for param in model.layer4.parameters():
+            param.requires_grad = True
+        for param in model.fc.parameters():
+            param.requires_grad = True
+        return model, [
+            {'params': model.layer4.parameters(), 'lr': 1e-5},
+            {'params': model.fc.parameters(), 'lr': args.lr}
+        ]
+    elif model_name == 'densenet40':
+        # DenseNet with depth=40, growth_rate=12 (similar to DenseNet121 but smaller)
+        model = models.densenet121(weights='IMAGENET1K_V1')
+        # Modify the classifier for binary classification
+        num_ftrs = model.classifier.in_features
+        model.classifier = nn.Linear(num_ftrs, 1)
+        # Freeze all layers except the last denseblock4 and classifier
+        for param in model.parameters():
+            param.requires_grad = False
+        for param in model.features.denseblock4.parameters():
+            param.requires_grad = True
+        for param in model.classifier.parameters():
+            param.requires_grad = True
+        return model, [
+            {'params': model.features.denseblock4.parameters(), 'lr': 1e-5},
+            {'params': model.classifier.parameters(), 'lr': args.lr}
+        ]
+    else:
+        raise ValueError(f"Unsupported model: {model_name}")
+
 if __name__ == "__main__":
     args = parse_args()
 
@@ -47,6 +85,7 @@ if __name__ == "__main__":
     dataset_mode = args.dataset_mode
     data_dir = args.data_dir
     teacher_dir = args.teacher_dir
+    model_name = args.model
     img_height = 256 if dataset_mode in ['rvf10k', '140k', '190k', '200k', '12.9k', '330k'] else args.img_height
     img_width = 256 if dataset_mode in ['rvf10k', '140k', '190k', '200k', '12.9k', '330k'] else args.img_width
     batch_size = args.batch_size
@@ -78,7 +117,7 @@ if __name__ == "__main__":
         dataset_args.update({
             'rvf10k_train_csv': os.path.join(data_dir, 'train.csv'),
             'rvf10k_valid_csv': os.path.join(data_dir, 'valid.csv'),
-            'rvf10k_test_csv': os.path.join(data_dir, 'test.csv'),  # Optional test.csv
+            'rvf10k_test_csv': os.path.join(data_dir, 'test.csv'),
             'rvf10k_root_dir': data_dir
         })
     elif dataset_mode == '140k':
@@ -115,23 +154,12 @@ if __name__ == "__main__":
     val_loader = dataset.loader_val if hasattr(dataset, 'loader_val') else None
     test_loader = dataset.loader_test if hasattr(dataset, 'loader_test') else None
 
-    model = models.resnet50(weights='IMAGENET1K_V1')
-    num_ftrs = model.fc.in_features
-    model.fc = nn.Linear(num_ftrs, 1)
+    # Initialize model and optimizer
+    model, optimizer_params = initialize_model(model_name, device)
     model = model.to(device)
-
-    for param in model.parameters():
-        param.requires_grad = False
-    for param in model.layer4.parameters():
-        param.requires_grad = True
-    for param in model.fc.parameters():
-        param.requires_grad = True
-
+    
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam([
-        {'params': model.layer4.parameters(), 'lr': 1e-5},
-        {'params': model.fc.parameters(), 'lr': lr}
-    ], weight_decay=1e-4)
+    optimizer = optim.Adam(optimizer_params, weight_decay=1e-4)
 
     scaler = GradScaler('cuda') if device.type == 'cuda' else None
 
@@ -139,7 +167,7 @@ if __name__ == "__main__":
         torch.cuda.empty_cache()
 
     best_val_acc = 0.0
-    best_model_path = os.path.join(teacher_dir, 'teacher_model_best.pth')
+    best_model_path = os.path.join(teacher_dir, f'teacher_model_best_{model_name}.pth')
 
     for epoch in range(epochs):
         model.train()
@@ -199,7 +227,7 @@ if __name__ == "__main__":
                 torch.save(model.state_dict(), best_model_path)
                 print(f'Saved best model with validation accuracy: {val_accuracy:.2f}% at epoch {epoch+1}')
 
-    torch.save(model.state_dict(), os.path.join(teacher_dir, 'teacher_model_final.pth'))
+    torch.save(model.state_dict(), os.path.join(teacher_dir, f'teacher_model_final_{model_name}.pth'))
     print(f'Saved final model at epoch {epochs}')
 
     if test_loader:
@@ -280,17 +308,17 @@ if __name__ == "__main__":
                 print(f"Image: {img_path}, True Label: {true_label}, Predicted: {predicted_label}")
 
         plt.tight_layout()
-        file_path = os.path.join(teacher_dir, 'test_samples.png')
+        file_path = os.path.join(teacher_dir, f'test_samples_{model_name}.png')
         plt.savefig(file_path)
         display(IPImage(filename=file_path))
 
     for param in model.parameters():
         param.requires_grad = True
     flops, params = get_model_complexity_info(model, (3, img_height, img_width), as_strings=True, print_per_layer_stat=True)
-    print('FLOPs (ptflops):', flops)
-    print('Parameters (ptflops):', params)
+    print(f'FLOPs (ptflops) for {model_name}:', flops)
+    print(f'Parameters (ptflops) for {model_name}:', params)
 
     input = torch.randn(1, 3, img_height, img_width).to(device)
     macs, params = profile(model, inputs=(input,))
-    print('MACs (thop):', macs)
-    print('Parameters (thop):', params)
+    print(f'MACs (thop) for {model_name}:', macs)
+    print(f'Parameters (thop) for {model_name}:', params)
