@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument(
         "--dataset_dir",
         type=str,
-        default="/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/my_real_vs_ai_dataset/my_real_vs_ai_dataset",
+        default="/kaggle/input/hardfakevsrealfaces",
         help="The dataset path (used for hardfake, rvf10k, 140k, 200k)",
     )
     parser.add_argument(
@@ -107,8 +107,6 @@ def parse_args():
         default="/kaggle/input/200k-real-vs-ai-visuals-by-mbilal/test_labels.csv",
         help="The path to the 200k test CSV file (for 200k mode)",
     )
-    
-
     parser.add_argument(
         "--realfake190k_root_dir",
         type=str,
@@ -284,12 +282,6 @@ def parse_args():
         type=float,
         default=0.5,
         help="Coefficient of mask loss",
-    )
-    parser.add_argument(
-        "--compress_rate",
-        type=float,
-        default=0.3,
-        help="Compress rate of the student model",
     )
     parser.add_argument(
         "--finetune_student_ckpt_path",
