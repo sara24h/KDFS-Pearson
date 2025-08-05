@@ -112,17 +112,28 @@ def load_pruned_model(checkpoint_path, device):
     print(f"Unexpected keys: {unexpected}")
 
     # ذخیره مدل هرس‌شده
-    os.makedirs('checkpoints', exist_ok=True)
-    pruned_model_path = os.path.join('/kaggle/working/', 'pruned_model.pth')
-    torch.save(model.state_dict(), pruned_model_path)
-    print(f"Pruned model saved to {pruned_model_path}")
+    checkpoints_dir = '/kaggle/working/checkpoints'
+    os.makedirs(checkpoints_dir, exist_ok=True)
+    pruned_model_path = os.path.join(checkpoints_dir, 'pruned_model.pth')
+    try:
+        torch.save(model.state_dict(), pruned_model_path)
+        print(f"Pruned model successfully saved to {pruned_model_path}")
+        if os.path.exists(pruned_model_path):
+            print(f"Confirmed: Pruned model exists at {pruned_model_path}")
+        else:
+            print(f"Error: Pruned model not found at {pruned_model_path}")
+    except Exception as e:
+        print(f"Error saving pruned model to {pruned_model_path}: {e}")
+        raise
 
     return model, masks
 
 # تابع فاین‌تیونینگ
 def fine_tune_model(model, train_loader, valid_loader, device, criterion, optimizer, epochs, dataset_name):
     best_acc = 0.0
-    best_model_path = os.path.join('checkpoints', f'finetuned_{dataset_name}.pth')
+    checkpoints_dir = '/kaggle/working/checkpoints'
+    os.makedirs(checkpoints_dir, exist_ok=True)
+    best_model_path = os.path.join(checkpoints_dir, f'finetuned_{dataset_name}.pth')
     
     # فریز کردن تمام لایه‌ها به‌جز لایه fc
     for name, param in model.named_parameters():
@@ -158,8 +169,11 @@ def fine_tune_model(model, train_loader, valid_loader, device, criterion, optimi
         # ذخیره بهترین مدل
         if valid_accuracy > best_acc:
             best_acc = valid_accuracy
-            torch.save(model.state_dict(), best_model_path)
-            print(f"Saved best model for {dataset_name} with Valid Acc: {best_acc:.2f}%")
+            try:
+                torch.save(model.state_dict(), best_model_path)
+                print(f"Saved best model for {dataset_name} with Valid Acc: {best_acc:.2f}% at {best_model_path}")
+            except Exception as e:
+                print(f"Error saving fine-tuned model to {best_model_path}: {e}")
     
     return best_model_path
 
@@ -341,7 +355,14 @@ for dataset_name in valid_datasets:
     num_ftrs = model.fc.in_features
     model.fc = nn.Linear(num_ftrs, 1)
     model = model.to(device)
-    model.load_state_dict(torch.load(os.path.join('checkpoints', 'pruned_model.pth'), map_location=device, weights_only=True))
+    pruned_model_path = os.path.join('/kaggle/working/checkpoints', 'pruned_model.pth')
+    try:
+        model.load_state_dict(torch.load(pruned_model_path, map_location=device, weights_only=True))
+        print(f"Successfully loaded pruned model from {pruned_model_path}")
+    except Exception as e:
+        print(f"Error loading pruned model from {pruned_model_path}: {e}")
+        results[dataset_name] = {'error': f"Failed to load pruned model: {str(e)}"}
+        continue
 
     # ارزیابی مدل قبل از فاین‌تیونینگ
     try:
@@ -373,7 +394,13 @@ for dataset_name in valid_datasets:
         best_model_path = fine_tune_model(model, train_loader, valid_loader, device, criterion, optimizer, args.epochs, dataset_name)
         
         # لود بهترین مدل برای ارزیابی
-        model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=True))
+        try:
+            model.load_state_dict(torch.load(best_model_path, map_location=device, weights_only=True))
+            print(f"Successfully loaded fine-tuned model from {best_model_path}")
+        except Exception as e:
+            print(f"Error loading fine-tuned model from {best_model_path}: {e}")
+            results[dataset_name].update({'error': f"Failed to load fine-tuned model: {str(e)}"})
+            continue
     else:
         print(f"No training data available for {dataset_name}. Skipping fine-tuning.")
         best_model_path = None
@@ -407,7 +434,7 @@ for dataset_name in valid_datasets:
     results[dataset_name]['params'] = params / 1e6  # M
 
 # ذخیره نتایج
-results_dir = 'results'
+results_dir = '/kaggle/working/results'
 os.makedirs(results_dir, exist_ok=True)
 with open(os.path.join(results_dir, 'finetune_results.txt'), 'w') as f:
     for dataset_name in valid_datasets:
