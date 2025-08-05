@@ -12,9 +12,8 @@ from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Test generalization of pruned ResNet50 model.')
-    parser.add_argument('--data_dir', type=str, required=True, help='Base directory containing dataset folders')
-    parser.add_argument('--datasets', type=str, nargs='+', default=['hardfake', 'rvf10k', '140k', '190k', '200k', '330k'],
-                        help='List of datasets to test')
+    parser.add_argument('--data_dir', type=str, default='/kaggle/input/', help='Base directory containing dataset folders')
+    parser.add_argument('--datasets', type=str, nargs='+', default=['rvf10k'], help='List of datasets to test')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size for training and testing')
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for data loading')
     parser.add_argument('--epochs', type=int, default=5, help='Number of epochs for fine-tuning')
@@ -33,17 +32,6 @@ if not os.path.exists(CHECKPOINT_PATH):
     raise FileNotFoundError(f"Checkpoint file {CHECKPOINT_PATH} not found!")
 checkpoint = torch.load(CHECKPOINT_PATH, map_location='cpu', weights_only=True)
 state_dict = checkpoint['student'] if 'student' in checkpoint else checkpoint
-
-# استخراج ماسک‌ها
-masks = []
-mask_dict = {}
-for key, value in state_dict.items():
-    if 'mask_weight' in key:
-        mask_binary = (torch.argmax(value, dim=1).squeeze(1).squeeze(1) != 0).float()
-        masks.append(mask_binary)
-        mask_dict[key] = mask_binary
-        print(f"Layer {key}: {mask_binary.sum().int().item()} filters preserved")
-print(f"Number of masks extracted: {len(masks)}")
 
 # تابع فاین‌تیونینگ
 def fine_tune_model(model, train_loader, valid_loader, device, criterion, optimizer, epochs, dataset_name):
@@ -178,45 +166,14 @@ criterion = nn.BCEWithLogitsLoss()
 for dataset_name in valid_datasets:
     print(f"\nProcessing {dataset_name}...")
     
-    # بازسازی مدل
-    model = ResNet_50_pruned_hardfakevsreal(masks=masks)
+    # بازسازی مدل بدون نیاز به ماسک‌ها
+    model = ResNet_50_pruned_hardfakevsreal()  # بدون پارامتر masks
     num_ftrs = model.fc.in_features
     model.fc = nn.Linear(num_ftrs, 1)
     model = model.to(device)
     
-    # لود وزن‌های پرون‌شده
-    pruned_state_dict = {}
-    for key, value in state_dict.items():
-        if 'mask_weight' in key or 'feat' in key:
-            continue
-        if 'weight' in key and 'conv' in key:
-            mask_key = key.replace('.weight', '.mask_weight')
-            if mask_key in state_dict:
-                mask_binary = mask_dict[mask_key].float()
-                pruned_weight = value[mask_binary.bool()]
-                if 'conv2' in key or 'conv3' in key:
-                    prev_conv = 'conv1' if 'conv2' in key else 'conv2'
-                    prev_mask_key = key.replace(f'conv{key.split(".conv")[1][0]}', prev_conv).replace('.weight', '.mask_weight')
-                    if prev_mask_key in state_dict:
-                        prev_mask_binary = mask_dict[prev_mask_key].float()
-                        if prev_mask_binary.shape[0] != value.shape[1]:
-                            pruned_weight = pruned_weight[:, :prev_mask_binary.shape[0]][:, prev_mask_binary.bool()]
-                        else:
-                            pruned_weight = pruned_weight[:, prev_mask_binary.bool()]
-                pruned_state_dict[key] = pruned_weight
-            else:
-                pruned_state_dict[key] = value
-        elif 'bn' in key and any(s in key for s in ['weight', 'bias', 'running_mean', 'running_var']):
-            conv_key = key.replace('.bn1.', '.conv1.').replace('.bn2.', '.conv2.').replace('.bn3.', '.conv3.')
-            conv_key = conv_key.replace('.weight', '.mask_weight').replace('.bias', '.mask_weight').replace('.running_mean', '.mask_weight').replace('.running_var', '.mask_weight')
-            if conv_key in state_dict:
-                pruned_state_dict[key] = value[mask_dict[conv_key].bool()]
-            else:
-                pruned_state_dict[key] = value
-        else:
-            pruned_state_dict[key] = value
-    
-    model.load_state_dict(pruned_state_dict, strict=False)
+    # لود وزن‌های پرون‌شده مستقیماً
+    model.load_state_dict(state_dict, strict=False)
     
     # لود دیتاست
     config = dataset_configs[dataset_name]
@@ -299,7 +256,7 @@ for dataset_name in valid_datasets:
         input = torch.randn(1, 3, 256, 256).to(device)
         flops, params = profile(model, inputs=(input,))
         results[dataset_name]['flops'] = flops / 1e9
-        results[dataset_name]['params'] = params / 1e6
+       results[dataset_name]['params'] = params / 1e6
     except Exception as e:
         print(f"Error calculating FLOPs/params for {dataset_name}: {e}")
         results[dataset_name]['flops'] = None
