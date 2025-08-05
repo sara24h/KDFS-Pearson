@@ -14,7 +14,6 @@ from IPython.display import Image as IPImage, display
 from ptflops import get_model_complexity_info
 from thop import profile
 from data.dataset import Dataset_selector
-import glob
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Transfer learning for fake vs real face classification.')
@@ -44,7 +43,6 @@ def initialize_model(model_name, device):
         model = models.resnet50(weights='IMAGENET1K_V1')
         num_ftrs = model.fc.in_features
         model.fc = nn.Linear(num_ftrs, 1)
-        # Freeze all layers except the last layer4 and fc
         for param in model.parameters():
             param.requires_grad = False
         for param in model.layer4.parameters():
@@ -56,12 +54,9 @@ def initialize_model(model_name, device):
             {'params': model.fc.parameters(), 'lr': args.lr}
         ]
     elif model_name == 'densenet40':
-        # DenseNet with depth=40, growth_rate=12 (similar to DenseNet121 but smaller)
         model = models.densenet121(weights='IMAGENET1K_V1')
-        # Modify the classifier for binary classification
         num_ftrs = model.classifier.in_features
         model.classifier = nn.Linear(num_ftrs, 1)
-        # Freeze all layers except the last denseblock4 and classifier
         for param in model.parameters():
             param.requires_grad = False
         for param in model.features.denseblock4.parameters():
@@ -117,7 +112,6 @@ if __name__ == "__main__":
         dataset_args.update({
             'rvf10k_train_csv': os.path.join(data_dir, 'train.csv'),
             'rvf10k_valid_csv': os.path.join(data_dir, 'valid.csv'),
-            'rvf10k_test_csv': os.path.join(data_dir, 'test.csv'),
             'rvf10k_root_dir': data_dir
         })
     elif dataset_mode == '140k':
