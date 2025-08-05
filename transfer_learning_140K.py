@@ -68,7 +68,7 @@ def parse_args():
     parser.add_argument('--realfake330k_root_dir', type=str, default=None, help='Root directory for 330k dataset')
     parser.add_argument('--train_batch_size', type=int, default=64, help='Batch size for training')
     parser.add_argument('--eval_batch_size', type=int, default=64, help='Batch size for evaluation')
-    parser.add_argument('--num_epochs', type=int, default=3, help='Number of epochs for finetuning')
+    parser.add_argument('--num_epochs', type=int, default=5, help='Number of epochs for finetuning')
     parser.add_argument('--lr', type=float, default=0.0001, help='Learning rate for finetuning')
     return parser.parse_args()
 
@@ -139,46 +139,44 @@ def main():
     print(f"\nEvaluating pruned model before finetuning on dataset {args.dataset_mode} (test data):")
     metrics_before = evaluate_model(model, test_loader, device, f"test data ({args.dataset_mode})")
 
-    # Initial evaluation on validation set
-    print(f"\nEvaluating pruned model before finetuning on dataset {args.dataset_mode} (validation data):")
-    evaluate_model(model, val_loader, device, f"validation data ({args.dataset_mode})")
-
     # Finetune model
     criterion = nn.BCEWithLogitsLoss()
     optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=args.lr)
     model.train()
     for epoch in range(args.num_epochs):
         running_loss = 0.0
+        train_preds = []
+        train_labels = []
+        with torch.no_grad():
+            for images, labels in train_loader:
+                images, labels = images.to(device), labels.to(device)
+                outputs = model(images)
+                if isinstance(outputs, tuple):
+                    outputs = outputs[0]
+                preds = (torch.sigmoid(outputs) > 0.5).float().squeeze()
+                train_preds.extend(preds.cpu().numpy())
+                train_labels.extend(labels.cpu().numpy())
+        train_accuracy = accuracy_score(train_labels, train_preds)
+
         for images, labels in train_loader:
             images, labels = images.to(device), labels.to(device).float().unsqueeze(1)
             optimizer.zero_grad()
             outputs = model(images)
-            # Handle tuple output
             if isinstance(outputs, tuple):
-                outputs = outputs[0]  # Select the primary output tensor
+                outputs = outputs[0]
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
-        print(f"Epoch [{epoch+1}/{args.num_epochs}], Loss: {running_loss/len(train_loader):.4f}")
-
+        
         # Evaluate on validation set after each epoch
-        print(f"\nEvaluation at epoch {epoch+1} on validation data ({args.dataset_mode}):")
-        evaluate_model(model, val_loader, device, f"validation data ({args.dataset_mode})")
+        val_metrics = evaluate_model(model, val_loader, device, f"validation data ({args.dataset_mode})")
+        print(f"Epoch [{epoch+1}/{args.num_epochs}], Loss: {running_loss/len(train_loader):.4f}, "
+              f"Train Accuracy: {train_accuracy:.4f}, Validation Accuracy: {val_metrics['accuracy']:.4f}")
 
     # Evaluate model after finetuning on test set
     print(f"\nEvaluating model after finetuning on dataset {args.dataset_mode} (test data):")
     metrics_after = evaluate_model(model, test_loader, device, f"test data ({args.dataset_mode})")
-
-    # Compare performance before and after finetuning on test set
-    print(f"\nPerformance comparison before and after finetuning on test data ({args.dataset_mode}):")
-    print(f"Change in accuracy: {(metrics_after['accuracy'] - metrics_before['accuracy']):.4f}")
-    print(f"Change in precision: {(metrics_after['precision'] - metrics_before['precision']):.4f}")
-    print(f"Change in recall: {(metrics_after['recall'] - metrics_before['recall']):.4f}")
-    print(f"Change in F1-Score: {(metrics_after['f1_score'] - metrics_before['f1_score']):.4f}")
-
-    # Save finetuned model
-    torch.save(model, f'/kaggle/working/finetuned_pruned_model_{args.dataset_mode}.pth')
 
 if __name__ == "__main__":
     main()
