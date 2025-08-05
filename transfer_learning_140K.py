@@ -113,7 +113,7 @@ def load_pruned_model(checkpoint_path, device):
 
     # ذخیره مدل هرس‌شده
     os.makedirs('checkpoints', exist_ok=True)
-    pruned_model_path = os.path.join('checkpoints', 'pruned_model.pth')
+    pruned_model_path = os.path.join('/kaggle/working/', 'pruned_model.pth')
     torch.save(model.state_dict(), pruned_model_path)
     print(f"Pruned model saved to {pruned_model_path}")
 
