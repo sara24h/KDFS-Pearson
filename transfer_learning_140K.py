@@ -166,8 +166,8 @@ criterion = nn.BCEWithLogitsLoss()
 for dataset_name in valid_datasets:
     print(f"\nProcessing {dataset_name}...")
     
-    # بازسازی مدل بدون نیاز به ماسک‌ها
-    model = ResNet_50_pruned_hardfakevsreal()
+    # بازسازی مدل با فرض بدون ماسک
+    model = ResNet_50_pruned_hardfakevsreal(masks=[])  # استفاده از لیست خالی برای masks
     num_ftrs = model.fc.in_features
     model.fc = nn.Linear(num_ftrs, 1)
     model = model.to(device)
