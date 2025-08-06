@@ -20,21 +20,19 @@ class Test:
         self.dataset_dir = args.dataset_dir
         self.num_workers = args.num_workers
         self.pin_memory = args.pin_memory
-        self.arch = args.arch  # Expected to be 'ResNet_50'
+        self.arch = args.arch
         self.device = args.device
         self.test_batch_size = args.test_batch_size
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
-        self.dataset_mode = args.dataset_mode  # 'hardfake', 'rvf10k', '140k', '200k'
-        self.saved_model_path = args.saved_model_path  # مسیر جدید برای ذخیره مدل
+        self.dataset_mode = args.dataset_mode
+        self.saved_model_path = args.saved_model_path  # مسیر ذخیره مدل
 
-        # Verify CUDA availability
         if self.device == 'cuda' and not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available! Please check GPU setup.")
 
     def dataload(self):
         print("==> Loading test dataset..")
         try:
-            # Verify dataset paths
             if self.dataset_mode == 'hardfake':
                 csv_path = os.path.join(self.dataset_dir, 'data.csv')
                 if not os.path.exists(csv_path):
@@ -53,7 +51,6 @@ class Test:
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
 
-            # Initialize dataset based on mode
             if self.dataset_mode == 'hardfake':
                 dataset = Dataset_selector(
                     dataset_mode='hardfake',
@@ -118,7 +115,6 @@ class Test:
         try:
             print(f"Loading sparse student model for dataset mode: {self.dataset_mode}")
             self.student = ResNet_50_sparse_hardfakevsreal()
-            # Load checkpoint
             if not os.path.exists(self.sparsed_student_ckpt_path):
                 raise FileNotFoundError(f"Checkpoint file not found: {self.sparsed_student_ckpt_path}")
             ckpt_student = torch.load(self.sparsed_student_ckpt_path, map_location="cpu", weights_only=True)
@@ -148,7 +144,7 @@ class Test:
                     for images, targets in self.test_loader:
                         images = images.to(self.device, non_blocking=True)
                         targets = targets.to(self.device, non_blocking=True).float()
-
+                        
                         logits_student, _ = self.student(images)
                         logits_student = logits_student.squeeze()
                         preds = (torch.sigmoid(logits_student) > 0.5).float()
@@ -181,20 +177,13 @@ class Test:
                 f"Flops reduction: {Flops_reduction:.2f}%"
             )
 
-            # Save the pruned model
+            # Save the pruned model (architecture + weights)
             print("==> Saving pruned model...")
             try:
-                checkpoint = {
-                    'student': self.student.state_dict(),
-                    'args': self.args,
-                    'test_accuracy': meter_top1.avg,
-                    'flops': Flops,
-                    'params': Params,
-                    'flops_reduction': Flops_reduction,
-                    'params_reduction': Params_reduction
-                }
                 os.makedirs(os.path.dirname(self.saved_model_path), exist_ok=True)
-                torch.save(checkpoint, self.saved_model_path)
+                if not self.saved_model_path.endswith('.pt'):
+                    self.saved_model_path += '.pt'
+                torch.save(self.student, self.saved_model_path)
                 print(f"Pruned model saved to {self.saved_model_path}")
             except Exception as e:
                 print(f"Error saving model: {str(e)}")
