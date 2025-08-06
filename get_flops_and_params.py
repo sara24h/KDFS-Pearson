@@ -81,7 +81,7 @@ def get_flops_and_params(args):
     # Load pruned model with masks (always use ResNet_50_pruned_hardfakevsreal)
     pruned_model = ResNet_50_pruned_hardfakevsreal(masks=masks)
 
-    torch.save(pruned_model, "/kaggle/working/res/pruned_model.pt")
+    torch.save(pruned_model, "/kaggle/working/pruned_model.pt")
     
     # Set input size based on dataset
     input = torch.rand([1, 3, image_sizes[dataset_type], image_sizes[dataset_type]])
