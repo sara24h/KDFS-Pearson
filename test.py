@@ -24,7 +24,8 @@ class Test:
         self.device = args.device
         self.test_batch_size = args.test_batch_size
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
-        self.dataset_mode = args.dataset_mode  # 'hardfake', 'rvf10k', '140k', '200k', '190k', '330k'
+        self.dataset_mode = args.dataset_mode  # 'hardfake', 'rvf10k', '140k', '200k'
+        self.saved_model_path = args.saved_model_path  # مسیر جدید برای ذخیره مدل
 
         # Verify CUDA availability
         if self.device == 'cuda' and not torch.cuda.is_available():
@@ -51,8 +52,6 @@ class Test:
                 test_csv = os.path.join(self.dataset_dir, 'test_labels.csv')
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
-     
-     
 
             # Initialize dataset based on mode
             if self.dataset_mode == 'hardfake':
@@ -96,18 +95,18 @@ class Test:
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
                 dataset = Dataset_selector(
-                dataset_mode='200k',
-                realfake200k_train_csv=os.path.join(self.dataset_dir, 'train_labels.csv'),
-                realfake200k_val_csv=os.path.join(self.dataset_dir, 'val_labels.csv'),
-                realfake200k_test_csv=os.path.join(self.dataset_dir, 'test_labels.csv'),
-                realfake200k_root_dir=os.path.join(self.dataset_dir, 'my_real_vs_ai_dataset/my_real_vs_ai_dataset'), 
-                train_batch_size=self.test_batch_size,
-                eval_batch_size=self.test_batch_size,
-                num_workers=self.num_workers,
-                pin_memory=self.pin_memory,
-                ddp=False
-            )
-         
+                    dataset_mode='200k',
+                    realfake200k_train_csv=os.path.join(self.dataset_dir, 'train_labels.csv'),
+                    realfake200k_val_csv=os.path.join(self.dataset_dir, 'val_labels.csv'),
+                    realfake200k_test_csv=os.path.join(self.dataset_dir, 'test_labels.csv'),
+                    realfake200k_root_dir=os.path.join(self.dataset_dir, 'my_real_vs_ai_dataset/my_real_vs_ai_dataset'),
+                    train_batch_size=self.test_batch_size,
+                    eval_batch_size=self.test_batch_size,
+                    num_workers=self.num_workers,
+                    pin_memory=self.pin_memory,
+                    ddp=False
+                )
+
             self.test_loader = dataset.loader_test
             print(f"{self.dataset_mode} test dataset loaded! Total batches: {len(self.test_loader)}")
         except Exception as e:
@@ -149,7 +148,7 @@ class Test:
                     for images, targets in self.test_loader:
                         images = images.to(self.device, non_blocking=True)
                         targets = targets.to(self.device, non_blocking=True).float()
-                        
+
                         logits_student, _ = self.student(images)
                         logits_student = logits_student.squeeze()
                         preds = (torch.sigmoid(logits_student) > 0.5).float()
@@ -181,7 +180,26 @@ class Test:
                 f"Flops_baseline: {Flops_baseline:.2f}M, Flops: {Flops:.2f}M, "
                 f"Flops reduction: {Flops_reduction:.2f}%"
             )
-           
+
+            # Save the pruned model
+            print("==> Saving pruned model...")
+            try:
+                checkpoint = {
+                    'student': self.student.state_dict(),
+                    'args': self.args,
+                    'test_accuracy': meter_top1.avg,
+                    'flops': Flops,
+                    'params': Params,
+                    'flops_reduction': Flops_reduction,
+                    'params_reduction': Params_reduction
+                }
+                os.makedirs(os.path.dirname(self.saved_model_path), exist_ok=True)
+                torch.save(checkpoint, self.saved_model_path)
+                print(f"Pruned model saved to {self.saved_model_path}")
+            except Exception as e:
+                print(f"Error saving model: {str(e)}")
+                raise
+
         except Exception as e:
             print(f"Error during testing: {str(e)}")
             raise
