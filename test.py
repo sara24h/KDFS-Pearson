@@ -25,7 +25,7 @@ class Test:
         self.test_batch_size = args.test_batch_size
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
         self.dataset_mode = args.dataset_mode
-        self.saved_model_path = args.saved_model_path  # مسیر ذخیره مدل
+        self.saved_model_path = args.saved_model_path
 
         if self.device == 'cuda' and not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available! Please check GPU setup.")
@@ -177,12 +177,13 @@ class Test:
                 f"Flops reduction: {Flops_reduction:.2f}%"
             )
 
-            # Save the pruned model (architecture + weights)
+            # Save the pruned model (architecture + weights) with .pt extension
             print("==> Saving pruned model...")
             try:
                 os.makedirs(os.path.dirname(self.saved_model_path), exist_ok=True)
-                if not self.saved_model_path.endswith('.pt'):
-                    self.saved_model_path += '.pt'
+                # Remove any existing extension and force .pt
+                base_path, _ = os.path.splitext(self.saved_model_path)
+                self.saved_model_path = base_path + '.pt'
                 torch.save(self.student, self.saved_model_path)
                 print(f"Pruned model saved to {self.saved_model_path}")
             except Exception as e:
@@ -194,7 +195,11 @@ class Test:
             raise
 
     def main(self):
-        print(f"Starting test pipeline with dataset mode: {self.dataset_mode}")
+        print(f"Running phase: test")
+        print(f"Dataset mode: {self.dataset_mode}")
+        print(f"Device: {self.device}")
+        print(f"Architecture: {self.arch}")
+        print("Using standard PyTorch DataLoader.")
         try:
             print(f"PyTorch version: {torch.__version__}")
             print(f"CUDA available: {torch.cuda.is_available()}")
