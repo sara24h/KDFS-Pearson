@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torchvision.models as models
 from torch.utils.data import DataLoader
 import sys
 import os
@@ -162,17 +161,20 @@ if selected_dataset not in datasets:
     raise ValueError(f"Invalid dataset name: {selected_dataset}. Choose from {list(datasets.keys())}")
 
 # بارگذاری مدل
-model = models.resnet50(pretrained=False)
-model.fc = nn.Linear(model.fc.in_features, 1)  # تنظیم برای طبقه‌بندی باینری
 model_path = "/kaggle/input/pruned_resnet50_140k/pytorch/default/1/pruned_model (3).pt"
-state_dict = torch.load(model_path, map_location=device)
 try:
-    model.load_state_dict(state_dict)
-except RuntimeError as e:
-    print(f"Error loading state dict: {e}")
-    state_dict = {k: v for k, v in state_dict.items() if k in model.state_dict()}
-    model.load_state_dict(state_dict, strict=False)
-model = model.to(device)
+    model = torch.load(model_path, map_location=device, weights_only=False)
+    model = model.to(device)
+except Exception as e:
+    print(f"Error loading model: {e}")
+    raise RuntimeError("Failed to load the model. Please check the model file or try a different approach.")
+
+# بررسی و تنظیم لایه نهایی (در صورت نیاز)
+try:
+    if model.fc.out_features != 1:
+        model.fc = nn.Linear(model.fc.in_features, 1)  # تنظیم برای طبقه‌بندی باینری
+except AttributeError:
+    print("Model does not have 'fc' layer, assuming it is already configured for binary classification.")
 
 # ارزیابی مدل قبل از فاین‌تیون
 print(f"\nEvaluating on {selected_dataset} dataset (before fine-tuning)...")
