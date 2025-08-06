@@ -355,6 +355,7 @@ def parse_args():
         default=32,
         help="Batch size for test",
     )
+    parser.add_argument('--saved_model_path', type=str, default='./pruned_model.pth', help='Path to save the pruned model')
 
     return parser.parse_args()
 
