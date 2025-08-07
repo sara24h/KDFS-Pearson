@@ -169,5 +169,5 @@ class MobileNetV2(nn.Module):
                 m.bias.data.zero_()
 
 
-def MobileNetV2_imagenet():
+def MobileNetV2_deepfake():
     return MobileNetV2(num_classes=1, width_mult=1.0)
