@@ -2,6 +2,8 @@ import os
 import time
 import numpy as np
 import torch
+import torch.nn as nn
+import torch.optim as optim
 from tqdm import tqdm
 import pandas as pd
 from PIL import Image
@@ -14,6 +16,9 @@ from get_flops_and_params import get_flops_and_params
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 from data.dataset import Dataset_selector
 
+# Suppress CUDA warnings
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
 class Test:
     def __init__(self, args):
         self.args = args
@@ -25,13 +30,16 @@ class Test:
         self.test_batch_size = args.test_batch_size
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
         self.dataset_mode = args.dataset_mode  # 'hardfake', 'rvf10k', '140k', '200k', '330k'
+        self.learning_rate = args.learning_rate  # New: Configurable learning rate
+        self.num_epochs = getattr(args, 'num_epochs', 20)  # Default to 20 epochs
+        self.weight_decay = getattr(args, 'weight_decay', 1e-4)  # Default weight decay
 
         # Verify CUDA availability
         if self.device == 'cuda' and not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available! Please check GPU setup.")
 
     def dataload(self):
-        print("==> Loading test dataset..")
+        print("==> Loading dataset..")
         try:
             # Verify dataset paths
             if self.dataset_mode == 'hardfake':
@@ -119,8 +127,10 @@ class Test:
                     ddp=False
                 )
 
+            self.train_loader = dataset.loader_train
+            self.val_loader = dataset.loader_val
             self.test_loader = dataset.loader_test
-            print(f"{self.dataset_mode} test dataset loaded! Total batches: {len(self.test_loader)}")
+            print(f"{self.dataset_mode} dataset loaded! Train batches: {len(self.train_loader)}, Val batches: {len(self.val_loader)}, Test batches: {len(self.test_loader)}")
         except Exception as e:
             print(f"Error loading dataset: {str(e)}")
             raise
@@ -144,14 +154,94 @@ class Test:
                     print("Loaded with strict=False; check for missing or unexpected keys.")
             else:
                 print(f"Using non-fine-tuned model with random or pre-trained weights for dataset mode: {self.dataset_mode}")
-                # Optionally, load pre-trained ImageNet weights here if available
-                # For example: model.load_state_dict(torch.hub.load_state_dict_from_url('url_to_imagenet_weights'), strict=False)
+                # Optionally load ImageNet pre-trained weights
+                # Example: model.load_state_dict(torch.hub.load_state_dict_from_url('https://download.pytorch.org/models/resnet50-19c8e357.pth'), strict=False)
             
             model.to(self.device)
             print(f"Model loaded on {self.device}")
             return model
         except Exception as e:
             print(f"Error building model: {str(e)}")
+            raise
+
+    def fine_tune(self, model):
+        print(f"==> Fine-tuning model with learning rate: {self.learning_rate}")
+        try:
+            model.train()
+            model.ticket = True  # Enable ticket mode for sparse model
+            criterion = nn.BCEWithLogitsLoss()
+            optimizer = optim.Adam(model.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay)
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=5, verbose=True)
+
+            best_val_acc = 0.0
+            best_model_path = os.path.join(os.path.dirname(self.sparsed_student_ckpt_path), 'best_finetuned_model.pth')
+
+            for epoch in range(self.num_epochs):
+                # Training
+                train_loss = meter.AverageMeter("Train Loss", ":6.4f")
+                train_acc = meter.AverageMeter("Train Acc", ":6.2f")
+                with tqdm(total=len(self.train_loader), ncols=100, desc=f"Epoch {epoch+1}/{self.num_epochs} (Train)") as _tqdm:
+                    for images, targets in self.train_loader:
+                        images = images.to(self.device, non_blocking=True)
+                        targets = targets.to(self.device, non_blocking=True).float()
+                        
+                        optimizer.zero_grad()
+                        logits, _ = model(images)
+                        logits = logits.squeeze()
+                        loss = criterion(logits, targets)
+                        loss.backward()
+                        optimizer.step()
+
+                        preds = (torch.sigmoid(logits) > 0.5).float()
+                        correct = (preds == targets).sum().item()
+                        acc = 100.0 * correct / images.size(0)
+                        train_loss.update(loss.item(), images.size(0))
+                        train_acc.update(acc, images.size(0))
+
+                        _tqdm.set_postfix(loss=f"{train_loss.avg:.4f}", acc=f"{train_acc.avg:.2f}")
+                        _tqdm.update(1)
+
+                # Validation
+                val_loss = meter.AverageMeter("Val Loss", ":6.4f")
+                val_acc = meter.AverageMeter("Val Acc", ":6.2f")
+                model.eval()
+                with torch.no_grad():
+                    with tqdm(total=len(self.val_loader), ncols=100, desc=f"Epoch {epoch+1}/{self.num_epochs} (Val)") as _tqdm:
+                        for images, targets in self.val_loader:
+                            images = images.to(self.device, non_blocking=True)
+                            targets = targets.to(self.device, non_blocking=True).float()
+                            
+                            logits, _ = model(images)
+                            logits = logits.squeeze()
+                            loss = criterion(logits, targets)
+
+                            preds = (torch.sigmoid(logits) > 0.5).float()
+                            correct = (preds == targets).sum().item()
+                            acc = 100.0 * correct / images.size(0)
+                            val_loss.update(loss.item(), images.size(0))
+                            val_acc.update(acc, images.size(0))
+
+                            _tqdm.set_postfix(loss=f"{val_loss.avg:.4f}", acc=f"{val_acc.avg:.2f}")
+                            _tqdm.update(1)
+
+                print(f"Epoch {epoch+1}/{self.num_epochs}: Train Loss: {train_loss.avg:.4f}, Train Acc: {train_acc.avg:.2f}%, Val Loss: {val_loss.avg:.4f}, Val Acc: {val_acc.avg:.2f}%")
+
+                # Update scheduler
+                scheduler.step(val_loss.avg)
+
+                # Save best model
+                if val_acc.avg > best_val_acc:
+                    best_val_acc = val_acc.avg
+                    torch.save({'student': model.state_dict()}, best_model_path)
+                    print(f"Saved best model with Val Acc: {best_val_acc:.2f}% at {best_model_path}")
+
+            # Load best model for testing
+            model.load_state_dict(torch.load(best_model_path, map_location="cpu", weights_only=True)['student'])
+            model.to(self.device)
+            print(f"Loaded best fine-tuned model with Val Acc: {best_val_acc:.2f}%")
+            return model
+        except Exception as e:
+            print(f"Error during fine-tuning: {str(e)}")
             raise
 
     def test(self, model, test_name):
@@ -188,7 +278,7 @@ class Test:
                 Params_baseline,
                 Params,
                 Params_reduction,
-            ) = get_flops_and_params(args=self.args)  # Removed model argument
+            ) = get_flops_and_params(args=self.args)
             print(
                 f"[{test_name}] Params_baseline: {Params_baseline:.2f}M, Params: {Params:.2f}M, "
                 f"Params reduction: {Params_reduction:.2f}%"
@@ -217,8 +307,9 @@ class Test:
             model_no_ft = self.build_model(fine_tuned=False)
             self.test(model_no_ft, "Without Fine-Tuning")
 
-            # Test with fine-tuning
-            model_ft = self.build_model(fine_tuned=True)
+            # Fine-tune and test
+            model_ft = self.build_model(fine_tuned=False)  # Start from non-fine-tuned
+            model_ft = self.fine_tune(model_ft)  # Fine-tune the model
             self.test(model_ft, "With Fine-Tuning")
         except Exception as e:
             print(f"Error in test pipeline: {str(e)}")
