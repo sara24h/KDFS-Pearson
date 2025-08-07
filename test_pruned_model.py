@@ -1,208 +1,159 @@
+#!/usr/bin/env python3
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import argparse
 import os
-from tqdm import tqdm
+import time
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, confusion_matrix, roc_auc_score
 import numpy as np
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support, roc_auc_score, confusion_matrix
-import matplotlib.pyplot as plt
-import seaborn as sns
+from tqdm import tqdm
+import pandas as pd
+
+# Import your dataset module
 from data.dataset import Dataset_selector
-import torchvision.models as models
 
-# Define the pruned ResNet architecture
-class Bottleneck_pruned(nn.Module):
-    expansion = 4
-    
-    def __init__(self, inplanes, planes1, planes2, planes3, stride=1, downsample=None):
-        super(Bottleneck_pruned, self).__init__()
-        self.conv1 = nn.Conv2d(inplanes, planes1, kernel_size=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes1)
-        self.conv2 = nn.Conv2d(planes1, planes2, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes2)
-        self.conv3 = nn.Conv2d(planes2, planes3, kernel_size=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(planes3)
-        self.relu = nn.ReLU(inplace=True)
-        self.downsample = downsample
-        self.stride = stride
-        
-    def forward(self, x):
-        residual = x
-        
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-        
-        out = self.conv2(out)
-        out = self.bn2(out)
-        out = self.relu(out)
-        
-        out = self.conv3(out)
-        out = self.bn3(out)
-        
-        if self.downsample is not None:
-            residual = self.downsample(x)
-        
-        out += residual
-        out = self.relu(out)
-        
-        return out
-
-class ResNet_pruned(nn.Module):
-    def __init__(self, num_classes=1):
-        super(ResNet_pruned, self).__init__()
-        self.inplanes = 64
-        
-        # Initial layers
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        
-        # Layer 1
-        self.layer1 = nn.Sequential(
-            Bottleneck_pruned(64, 11, 7, 57, downsample=nn.Sequential(
-                nn.Conv2d(64, 256, kernel_size=1, stride=1, bias=False),
-                nn.BatchNorm2d(256)
-            )),
-            Bottleneck_pruned(256, 7, 10, 43),
-            Bottleneck_pruned(256, 10, 8, 41)
-        )
-        
-        # Layer 2
-        self.layer2 = nn.Sequential(
-            Bottleneck_pruned(256, 28, 19, 96, stride=2, downsample=nn.Sequential(
-                nn.Conv2d(256, 512, kernel_size=1, stride=2, bias=False),
-                nn.BatchNorm2d(512)
-            )),
-            Bottleneck_pruned(512, 25, 22, 94),
-            Bottleneck_pruned(512, 25, 13, 77),
-            Bottleneck_pruned(512, 18, 16, 59)
-        )
-        
-        # Layer 3
-        self.layer3 = nn.Sequential(
-            Bottleneck_pruned(512, 30, 39, 113, stride=2, downsample=nn.Sequential(
-                nn.Conv2d(512, 1024, kernel_size=1, stride=2, bias=False),
-                nn.BatchNorm2d(1024)
-            )),
-            Bottleneck_pruned(1024, 51, 18, 112),
-            Bottleneck_pruned(1024, 46, 15, 71),
-            Bottleneck_pruned(1024, 47, 15, 67),
-            Bottleneck_pruned(1024, 28, 8, 51),
-            Bottleneck_pruned(1024, 30, 11, 44)
-        )
-        
-        # Layer 4
-        self.layer4 = nn.Sequential(
-            Bottleneck_pruned(1024, 35, 50, 66, stride=2, downsample=nn.Sequential(
-                nn.Conv2d(1024, 2048, kernel_size=1, stride=2, bias=False),
-                nn.BatchNorm2d(2048)
-            )),
-            Bottleneck_pruned(2048, 86, 12, 64),
-            Bottleneck_pruned(2048, 57, 18, 102)
-        )
-        
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(2048, num_classes)
-        
-    def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-        
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-        
-        x = self.avgpool(x)
-        x = torch.flatten(x, 1)
-        x = self.fc(x)
-        
-        return x
-
-def load_model(model_path, device):
-    """Load the pruned model"""
-    model = ResNet_pruned(num_classes=1)
-    
-    # Load the state dict
-    checkpoint = torch.load(model_path, map_location=device,weights_only=False)
-    
-    # Handle different checkpoint formats
-    if isinstance(checkpoint, dict):
-        if 'model_state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['model_state_dict'])
-        elif 'state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['state_dict'])
-        else:
-            model.load_state_dict(checkpoint)
-    else:
-        model.load_state_dict(checkpoint)
-    
-    model.to(device)
+def load_pruned_model(model_path, device):
+    """Load the pruned ResNet model"""
+    print(f"Loading model from: {model_path}")
+    model = torch.load(model_path, map_location=device)
     model.eval()
+    print("Model loaded successfully")
     return model
 
 def test_model(model, test_loader, device):
-    """Test the model and return predictions and labels"""
+    """Test the model and return comprehensive metrics"""
     model.eval()
-    all_preds = []
+    all_predictions = []
     all_labels = []
-    all_probs = []
+    all_probabilities = []
+    
+    total_time = 0
+    num_samples = 0
+    
+    print("Starting evaluation...")
     
     with torch.no_grad():
-        for images, labels in tqdm(test_loader, desc="Testing"):
+        for batch_idx, (images, labels) in enumerate(tqdm(test_loader, desc="Testing")):
+            start_time = time.time()
+            
             images = images.to(device)
             labels = labels.to(device)
             
+            # Forward pass
             outputs = model(images)
-            probs = torch.sigmoid(outputs).squeeze()
-            preds = (probs > 0.5).float()
+            probabilities = torch.sigmoid(outputs).squeeze()
+            predictions = (probabilities > 0.5).float()
             
-            all_preds.extend(preds.cpu().numpy())
+            # Store results
+            all_predictions.extend(predictions.cpu().numpy())
             all_labels.extend(labels.cpu().numpy())
-            all_probs.extend(probs.cpu().numpy())
+            all_probabilities.extend(probabilities.cpu().numpy())
+            
+            batch_time = time.time() - start_time
+            total_time += batch_time
+            num_samples += images.size(0)
+            
+            if batch_idx % 100 == 0:
+                avg_time_per_sample = total_time / num_samples
+                print(f"Batch {batch_idx}/{len(test_loader)}, "
+                      f"Avg time per sample: {avg_time_per_sample:.4f}s")
     
-    return np.array(all_preds), np.array(all_labels), np.array(all_probs)
-
-def calculate_metrics(preds, labels, probs):
-    """Calculate various metrics"""
-    accuracy = accuracy_score(labels, preds)
-    precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average='binary')
-    auc = roc_auc_score(labels, probs)
-    cm = confusion_matrix(labels, preds)
+    # Calculate metrics
+    accuracy = accuracy_score(all_labels, all_predictions)
+    precision, recall, f1, _ = precision_recall_fscore_support(all_labels, all_predictions, average='binary')
+    cm = confusion_matrix(all_labels, all_predictions)
+    auc = roc_auc_score(all_labels, all_probabilities)
+    
+    avg_inference_time = total_time / num_samples
     
     return {
         'accuracy': accuracy,
         'precision': precision,
         'recall': recall,
-        'f1': f1,
+        'f1_score': f1,
         'auc': auc,
-        'confusion_matrix': cm
+        'confusion_matrix': cm,
+        'avg_inference_time': avg_inference_time,
+        'total_samples': num_samples,
+        'predictions': np.array(all_predictions),
+        'labels': np.array(all_labels),
+        'probabilities': np.array(all_probabilities)
     }
 
-def plot_confusion_matrix(cm, save_path=None):
-    """Plot confusion matrix"""
-    plt.figure(figsize=(8, 6))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                xticklabels=['Fake', 'Real'], 
-                yticklabels=['Fake', 'Real'])
-    plt.title('Confusion Matrix')
-    plt.xlabel('Predicted')
-    plt.ylabel('Actual')
+def print_results(results, dataset_name):
+    """Print formatted test results"""
+    print(f"\n{'='*60}")
+    print(f"TEST RESULTS FOR {dataset_name.upper()} DATASET")
+    print(f"{'='*60}")
     
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.show()
+    print(f"Total Samples: {results['total_samples']}")
+    print(f"Accuracy: {results['accuracy']:.4f}")
+    print(f"Precision: {results['precision']:.4f}")
+    print(f"Recall: {results['recall']:.4f}")
+    print(f"F1-Score: {results['f1_score']:.4f}")
+    print(f"AUC-ROC: {results['auc']:.4f}")
+    print(f"Average Inference Time: {results['avg_inference_time']:.4f} seconds/sample")
+    print(f"FPS: {1.0/results['avg_inference_time']:.2f} samples/second")
+    
+    print(f"\nConfusion Matrix:")
+    print(f"                Predicted")
+    print(f"              0     1")
+    print(f"Actual   0  {results['confusion_matrix'][0,0]:4d} {results['confusion_matrix'][0,1]:4d}")
+    print(f"         1  {results['confusion_matrix'][1,0]:4d} {results['confusion_matrix'][1,1]:4d}")
+    
+    # Calculate additional metrics
+    tn, fp, fn, tp = results['confusion_matrix'].ravel()
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+    print(f"\nAdditional Metrics:")
+    print(f"True Positives: {tp}")
+    print(f"True Negatives: {tn}")
+    print(f"False Positives: {fp}")
+    print(f"False Negatives: {fn}")
+    print(f"Specificity: {specificity:.4f}")
+
+def save_results(results, dataset_name, output_dir):
+    """Save results to files"""
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    # Save summary metrics
+    summary = {
+        'dataset': dataset_name,
+        'accuracy': results['accuracy'],
+        'precision': results['precision'],
+        'recall': results['recall'],
+        'f1_score': results['f1_score'],
+        'auc': results['auc'],
+        'avg_inference_time': results['avg_inference_time'],
+        'total_samples': results['total_samples']
+    }
+    
+    summary_df = pd.DataFrame([summary])
+    summary_path = os.path.join(output_dir, f'{dataset_name}_summary.csv')
+    summary_df.to_csv(summary_path, index=False)
+    
+    # Save detailed predictions
+    detailed_results = pd.DataFrame({
+        'true_label': results['labels'],
+        'predicted_label': results['predictions'],
+        'probability': results['probabilities']
+    })
+    
+    detailed_path = os.path.join(output_dir, f'{dataset_name}_predictions.csv')
+    detailed_results.to_csv(detailed_path, index=False)
+    
+    print(f"\nResults saved to:")
+    print(f"Summary: {summary_path}")
+    print(f"Detailed predictions: {detailed_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description='Test Pruned ResNet50 Model')
+    parser = argparse.ArgumentParser(description='Test Pruned ResNet Model')
     
     # Model arguments
     parser.add_argument('--model_path', type=str, required=True,
-                        help='Path to the pruned model file (.pt)')
+                        help='Path to the pruned model (.pt file)')
     
     # Dataset arguments
     parser.add_argument('--dataset', type=str, required=True,
@@ -210,176 +161,120 @@ def main():
                         help='Dataset to test on')
     
     # Dataset-specific paths
-    parser.add_argument('--hardfake_csv', type=str,
+    parser.add_argument('--hardfake_csv', type=str, default=None,
                         help='Path to hardfake CSV file')
-    parser.add_argument('--hardfake_root', type=str,
+    parser.add_argument('--hardfake_root', type=str, default=None,
                         help='Root directory for hardfake dataset')
     
-    parser.add_argument('--rvf10k_train_csv', type=str,
-                        help='Path to RVF10k train CSV')
-    parser.add_argument('--rvf10k_valid_csv', type=str,
-                        help='Path to RVF10k valid CSV')
-    parser.add_argument('--rvf10k_root', type=str,
-                        help='Root directory for RVF10k dataset')
+    parser.add_argument('--rvf10k_train_csv', type=str, default=None,
+                        help='Path to rvf10k train CSV file')
+    parser.add_argument('--rvf10k_valid_csv', type=str, default=None,
+                        help='Path to rvf10k validation CSV file')
+    parser.add_argument('--rvf10k_root', type=str, default=None,
+                        help='Root directory for rvf10k dataset')
     
-    parser.add_argument('--realfake140k_train_csv', type=str,
-                        help='Path to 140k train CSV')
-    parser.add_argument('--realfake140k_valid_csv', type=str,
-                        help='Path to 140k valid CSV')
-    parser.add_argument('--realfake140k_test_csv', type=str,
-                        help='Path to 140k test CSV')
-    parser.add_argument('--realfake140k_root', type=str,
+    parser.add_argument('--realfake140k_train_csv', type=str, default=None,
+                        help='Path to 140k train CSV file')
+    parser.add_argument('--realfake140k_valid_csv', type=str, default=None,
+                        help='Path to 140k validation CSV file')
+    parser.add_argument('--realfake140k_test_csv', type=str, default=None,
+                        help='Path to 140k test CSV file')
+    parser.add_argument('--realfake140k_root', type=str, default=None,
                         help='Root directory for 140k dataset')
     
-    parser.add_argument('--realfake200k_train_csv', type=str,
-                        help='Path to 200k train CSV')
-    parser.add_argument('--realfake200k_val_csv', type=str,
-                        help='Path to 200k val CSV')
-    parser.add_argument('--realfake200k_test_csv', type=str,
-                        help='Path to 200k test CSV')
-    parser.add_argument('--realfake200k_root', type=str,
-                        help='Root directory for 200k dataset')
-    
-    parser.add_argument('--realfake190k_root', type=str,
+    parser.add_argument('--realfake190k_root', type=str, default=None,
                         help='Root directory for 190k dataset')
     
-    parser.add_argument('--realfake330k_root', type=str,
+    parser.add_argument('--realfake200k_train_csv', type=str, default=None,
+                        help='Path to 200k train CSV file')
+    parser.add_argument('--realfake200k_val_csv', type=str, default=None,
+                        help='Path to 200k validation CSV file')
+    parser.add_argument('--realfake200k_test_csv', type=str, default=None,
+                        help='Path to 200k test CSV file')
+    parser.add_argument('--realfake200k_root', type=str, default=None,
+                        help='Root directory for 200k dataset')
+    
+    parser.add_argument('--realfake330k_root', type=str, default=None,
                         help='Root directory for 330k dataset')
     
-    # Testing arguments
+    # Training arguments
     parser.add_argument('--batch_size', type=int, default=32,
                         help='Batch size for testing (default: 32)')
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of workers for data loading (default: 4)')
-    parser.add_argument('--device', type=str, default='auto',
-                        choices=['auto', 'cuda', 'cpu'],
-                        help='Device to use (default: auto)')
+    parser.add_argument('--device', type=str, default='cuda',
+                        help='Device to use (default: cuda)')
     
     # Output arguments
-    parser.add_argument('--save_results', type=str,
-                        help='Path to save results (optional)')
-    parser.add_argument('--plot_cm', action='store_true',
-                        help='Plot confusion matrix')
+    parser.add_argument('--output_dir', type=str, default='./test_results',
+                        help='Directory to save results (default: ./test_results)')
     
     args = parser.parse_args()
     
     # Set device
-    if args.device == 'auto':
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if args.device == 'cuda' and torch.cuda.is_available():
+        device = torch.device('cuda')
+        print(f"Using GPU: {torch.cuda.get_device_name()}")
     else:
-        device = torch.device(args.device)
-    
-    print(f"Using device: {device}")
+        device = torch.device('cpu')
+        print("Using CPU")
     
     # Load model
-    print("Loading model...")
-    model = load_model(args.model_path, device)
-    print("Model loaded successfully!")
+    try:
+        model = load_pruned_model(args.model_path, device,weights_only=False)
+        model = model.to(device)
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return
     
-    # Prepare dataset arguments
-    dataset_kwargs = {
-        'dataset_mode': args.dataset,
-        'train_batch_size': args.batch_size,
-        'eval_batch_size': args.batch_size,
-        'num_workers': args.num_workers,
-        'pin_memory': True if device.type == 'cuda' else False,
-        'ddp': False
-    }
-    
-    # Add dataset-specific arguments
-    if args.dataset == 'hardfake':
-        dataset_kwargs.update({
-            'hardfake_csv_file': args.hardfake_csv,
-            'hardfake_root_dir': args.hardfake_root
-        })
-    elif args.dataset == 'rvf10k':
-        dataset_kwargs.update({
-            'rvf10k_train_csv': args.rvf10k_train_csv,
-            'rvf10k_valid_csv': args.rvf10k_valid_csv,
-            'rvf10k_root_dir': args.rvf10k_root
-        })
-    elif args.dataset == '140k':
-        dataset_kwargs.update({
-            'realfake140k_train_csv': args.realfake140k_train_csv,
-            'realfake140k_valid_csv': args.realfake140k_valid_csv,
-            'realfake140k_test_csv': args.realfake140k_test_csv,
-            'realfake140k_root_dir': args.realfake140k_root
-        })
-    elif args.dataset == '200k':
-        dataset_kwargs.update({
-            'realfake200k_train_csv': args.realfake200k_train_csv,
-            'realfake200k_val_csv': args.realfake200k_val_csv,
-            'realfake200k_test_csv': args.realfake200k_test_csv,
-            'realfake200k_root_dir': args.realfake200k_root
-        })
-    elif args.dataset == '190k':
-        dataset_kwargs.update({
-            'realfake190k_root_dir': args.realfake190k_root
-        })
-    elif args.dataset == '330k':
-        dataset_kwargs.update({
-            'realfake330k_root_dir': args.realfake330k_root
-        })
-    
-    # Load dataset
-    print(f"Loading {args.dataset} dataset...")
-    dataset = Dataset_selector(**dataset_kwargs)
-    test_loader = dataset.loader_test
+    # Create dataset
+    try:
+        dataset = Dataset_selector(
+            dataset_mode=args.dataset,
+            hardfake_csv_file=args.hardfake_csv,
+            hardfake_root_dir=args.hardfake_root,
+            rvf10k_train_csv=args.rvf10k_train_csv,
+            rvf10k_valid_csv=args.rvf10k_valid_csv,
+            rvf10k_root_dir=args.rvf10k_root,
+            realfake140k_train_csv=args.realfake140k_train_csv,
+            realfake140k_valid_csv=args.realfake140k_valid_csv,
+            realfake140k_test_csv=args.realfake140k_test_csv,
+            realfake140k_root_dir=args.realfake140k_root,
+            realfake200k_train_csv=args.realfake200k_train_csv,
+            realfake200k_val_csv=args.realfake200k_val_csv,
+            realfake200k_test_csv=args.realfake200k_test_csv,
+            realfake200k_root_dir=args.realfake200k_root,
+            realfake190k_root_dir=args.realfake190k_root,
+            realfake330k_root_dir=args.realfake330k_root,
+            train_batch_size=args.batch_size,
+            eval_batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=True if device.type == 'cuda' else False,
+            ddp=False
+        )
+        
+        test_loader = dataset.loader_test
+        print(f"Test dataset loaded successfully with {len(test_loader)} batches")
+        
+    except Exception as e:
+        print(f"Error creating dataset: {e}")
+        return
     
     # Test model
-    print("Testing model...")
-    preds, labels, probs = test_model(model, test_loader, device)
-    
-    # Calculate metrics
-    metrics = calculate_metrics(preds, labels, probs)
-    
-    # Print results
-    print("\n" + "="*50)
-    print("TEST RESULTS")
-    print("="*50)
-    print(f"Dataset: {args.dataset}")
-    print(f"Test samples: {len(labels)}")
-    print(f"Accuracy: {metrics['accuracy']:.4f}")
-    print(f"Precision: {metrics['precision']:.4f}")
-    print(f"Recall: {metrics['recall']:.4f}")
-    print(f"F1-Score: {metrics['f1']:.4f}")
-    print(f"AUC-ROC: {metrics['auc']:.4f}")
-    print("="*50)
-    
-    # Print confusion matrix
-    print("\nConfusion Matrix:")
-    print(f"True Negatives (Fake): {metrics['confusion_matrix'][0,0]}")
-    print(f"False Positives: {metrics['confusion_matrix'][0,1]}")
-    print(f"False Negatives: {metrics['confusion_matrix'][1,0]}")
-    print(f"True Positives (Real): {metrics['confusion_matrix'][1,1]}")
-    
-    # Plot confusion matrix if requested
-    if args.plot_cm:
-        save_path = None
-        if args.save_results:
-            save_path = args.save_results.replace('.txt', '_cm.png')
-        plot_confusion_matrix(metrics['confusion_matrix'], save_path)
-    
-    # Save results if requested
-    if args.save_results:
-        with open(args.save_results, 'w') as f:
-            f.write(f"Test Results for {args.dataset} Dataset\n")
-            f.write("="*50 + "\n")
-            f.write(f"Model: {args.model_path}\n")
-            f.write(f"Dataset: {args.dataset}\n")
-            f.write(f"Test samples: {len(labels)}\n")
-            f.write(f"Accuracy: {metrics['accuracy']:.4f}\n")
-            f.write(f"Precision: {metrics['precision']:.4f}\n")
-            f.write(f"Recall: {metrics['recall']:.4f}\n")
-            f.write(f"F1-Score: {metrics['f1']:.4f}\n")
-            f.write(f"AUC-ROC: {metrics['auc']:.4f}\n")
-            f.write("\nConfusion Matrix:\n")
-            f.write(f"True Negatives (Fake): {metrics['confusion_matrix'][0,0]}\n")
-            f.write(f"False Positives: {metrics['confusion_matrix'][0,1]}\n")
-            f.write(f"False Negatives: {metrics['confusion_matrix'][1,0]}\n")
-            f.write(f"True Positives (Real): {metrics['confusion_matrix'][1,1]}\n")
+    try:
+        results = test_model(model, test_loader, device)
         
-        print(f"\nResults saved to: {args.save_results}")
+        # Print results
+        print_results(results, args.dataset)
+        
+        # Save results
+        save_results(results, args.dataset, args.output_dir)
+        
+    except Exception as e:
+        print(f"Error during testing: {e}")
+        return
+    
+    print(f"\nTesting completed successfully!")
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
