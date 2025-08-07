@@ -9,7 +9,7 @@ from sklearn.metrics import precision_score, recall_score, f1_score, confusion_m
 import numpy as np
 
 # وارد کردن کلاس‌های دیتاست از فایل data.dataset.py
-sys.path.append('/kaggle/working/')  # مسیر فایل data.dataset.py
+sys.path.append('/kaggle/working/')
 from data.dataset import FaceDataset, Dataset_selector
 
 # تابع آموزش و فاین‌تیون مدل
@@ -21,7 +21,10 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
         for inputs, labels in train_loader:
             inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
-            outputs = model(inputs).squeeze()  # حذف ابعاد اضافی برای BCEWithLogitsLoss
+            outputs = model(inputs)
+            if isinstance(outputs, tuple):
+                outputs = outputs[0]  # انتخاب خروجی اول از tuple
+            outputs = outputs.squeeze()  # حذف ابعاد اضافی برای BCEWithLogitsLoss
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
@@ -37,7 +40,10 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
         with torch.no_grad():
             for inputs, labels in val_loader:
                 inputs, labels = inputs.to(device), labels.to(device)
-                outputs = model(inputs).squeeze()
+                outputs = model(inputs)
+                if isinstance(outputs, tuple):
+                    outputs = outputs[0]  # انتخاب خروجی اول از tuple
+                outputs = outputs.squeeze()
                 loss = criterion(outputs, labels)
                 val_loss += loss.item()
                 predicted = (torch.sigmoid(outputs) > 0.5).float()
@@ -56,7 +62,10 @@ def evaluate_model(model, test_loader, dataset_name, device='cuda'):
     with torch.no_grad():
         for inputs, labels in test_loader:
             inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs).squeeze()
+            outputs = model(inputs)
+            if isinstance(outputs, tuple):
+                outputs = outputs[0]  # انتخاب خروجی اول از tuple
+            outputs = outputs.squeeze()
             loss = criterion(outputs, labels)
             running_loss += loss.item()
             predicted = (torch.sigmoid(outputs) > 0.5).float()
@@ -177,6 +186,16 @@ try:
 except AttributeError:
     print("Model does not have 'fc' layer, assuming it is already configured for binary classification.")
 
+# بررسی ساختار خروجی مدل
+try:
+    dataset = Dataset_selector(**datasets[selected_dataset])
+    sample_inputs, _ = next(iter(dataset.loader_test))
+    sample_inputs = sample_inputs.to(device)
+    sample_output = model(sample_inputs)
+    print("Sample model output:", sample_output)
+except Exception as e:
+    print(f"Error testing model output: {e}")
+
 # ارزیابی مدل قبل از فاین‌تیون
 print(f"\nEvaluating on {selected_dataset} dataset (before fine-tuning)...")
 try:
@@ -210,11 +229,17 @@ optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
 
 # فاین‌تیون مدل
 print("\nStarting fine-tuning on 140k dataset...")
-train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=10, device=device)
+try:
+    train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=10, device=device)
+except Exception as e:
+    print(f"Error during fine-tuning: {e}")
 
 # ذخیره مدل فاین‌تیون‌شده
-torch.save(model.state_dict(), '/kaggle/working/finetuned_resnet50_140k.pt')
-print("Fine-tuned model saved to /kaggle/working/finetuned_resnet50_140k.pt")
+try:
+    torch.save(model.state_dict(), '/kaggle/working/finetuned_resnet50_140k.pt')
+    print("Fine-tuned model saved to /kaggle/working/finetuned_resnet50_140k.pt")
+except Exception as e:
+    print(f"Error saving fine-tuned model: {e}")
 
 # ارزیابی مدل بعد از فاین‌تیون
 print(f"\nEvaluating on {selected_dataset} dataset (after fine-tuning)...")
