@@ -122,6 +122,7 @@ datasets = {
     },
     'rvf10k': {
         'dataset_mode': 'rvf10k',
+        'rvf10k_train_csv': '/kaggle/input/rvf10k/train.csv',
         'rvf10k_valid_csv': '/kaggle/input/rvf10k/valid.csv',
         'rvf10k_root_dir': '/kaggle/input/rvf10k',
         'eval_batch_size': 64,
