@@ -50,7 +50,6 @@ def initialize_model(model_name, device):
             param.requires_grad = True
         for param in model.fc.parameters():
             param.requires_grad = True
-            
     elif model_name == 'mobilenetv2':
         model = models.mobilenet_v2(weights='IMAGENET1K_V1')
         num_ftrs = model.classifier[1].in_features
@@ -60,7 +59,7 @@ def initialize_model(model_name, device):
         )
         for param in model.parameters():
             param.requires_grad = False
-        for param in model.features[14:].parameters():  # Fine-tune later layers
+        for param in model.features[14:].parameters():
             param.requires_grad = True
         for param in model.classifier.parameters():
             param.requires_grad = True
@@ -110,7 +109,6 @@ if __name__ == "__main__":
         dataset_args.update({
             'rvf10k_train_csv': os.path.join(data_dir, 'train.csv'),
             'rvf10k_valid_csv': os.path.join(data_dir, 'valid.csv'),
-            'rvf10k_test_csv': os.path.join(data_dir, 'test.csv'),
             'rvf10k_root_dir': data_dir
         })
     elif dataset_mode == '140k':
