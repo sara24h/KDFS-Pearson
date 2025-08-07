@@ -251,9 +251,3 @@ logging.info("\nبدون فاین‌تیونینگ:")
 logging.info(f"{dataset_name}: دقت = {results_without_finetune['accuracy']:.2f}%, امتیاز F1 = {results_without_finetune['f1_score']:.2f}%, خطا = {results_without_finetune['loss']:.4f}")
 logging.info("\nبا فاین‌تیونینگ:")
 logging.info(f"{dataset_name}: دقت = {results_with_finetune['accuracy']:.2f}%, امتیاز F1 = {results_with_finetune['f1_score']:.2f}%, خطا = {results_with_finetune['loss']:.4f}")
-
-# رسم نمودار متریک‌ها (اختیاری)
-import matplotlib.pyplot as plt
-plt.figure(figsize=(10, 5))
-plt.subplot(1, 2, 1)
-plt.plot(range(1, len(metrics['train_loss']) + 1), metrics['train_loss'], label='خطای آموزشی', color='#
