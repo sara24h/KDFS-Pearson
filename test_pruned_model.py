@@ -8,7 +8,7 @@ import argparse
 from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
 import numpy as np
 
-# وارد کردن کلاس‌های دیتاست از فایل data.dataset.py
+# وارد کردن کلاس‌های دیتاست
 sys.path.append('/kaggle/working/')
 from data.dataset import FaceDataset, Dataset_selector
 
@@ -51,7 +51,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
                 correct += (predicted == labels).sum().item()
         print(f'Validation Accuracy: {100 * correct / total:.2f}%, Validation Loss: {val_loss/len(val_loader):.4f}')
 
-# تابع ارزیابی مدل با معیارهای اضافی
+# تابع ارزیابی مدل
 def evaluate_model(model, test_loader, dataset_name, device='cuda'):
     model.eval()
     criterion = nn.BCEWithLogitsLoss()
@@ -112,23 +112,14 @@ def evaluate_model(model, test_loader, dataset_name, device='cuda'):
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # تعریف آرگومان‌های خط فرمان
-parser = argparse.ArgumentParser(description='Fine-tune and test model on selected dataset')
+parser = argparse.ArgumentParser(description='Fine-tune on 140k and test on selected dataset')
 parser.add_argument('--dataset', type=str, required=True, choices=['hardfake', 'rvf10k', '140k', '190k', '200k', '330k'],
-                    help='Dataset to use for testing (e.g., 140k, hardfake)')
+                    help='Dataset to use for testing (e.g., rvf10k)')
 args = parser.parse_args()
 selected_dataset = args.dataset
 
 # تعریف دیتاست‌ها برای تست
 datasets = {
-    'hardfake': {
-        'dataset_mode': 'hardfake',
-        'hardfake_csv_file': '/kaggle/input/hardfakevsrealfaces/data.csv',
-        'hardfake_root_dir': '/kaggle/input/hardfakevsrealfaces',
-        'eval_batch_size': 64,
-        'num_workers': 4,
-        'pin_memory': True,
-        'ddp': False,
-    },
     'rvf10k': {
         'dataset_mode': 'rvf10k',
         'rvf10k_train_csv': '/kaggle/input/rvf10k/train.csv',
@@ -139,31 +130,18 @@ datasets = {
         'pin_memory': True,
         'ddp': False,
     },
-    '190k': {
-        'dataset_mode': '190k',
-        'realfake190k_root_dir': '/kaggle/input/deepfake-and-real-images/Dataset',
+    '140k': {
+        'dataset_mode': '140k',
+        'realfake140k_train_csv': '/kaggle/input/140k-real-and-fake-faces/train.csv',
+        'realfake140k_valid_csv': '/kaggle/input/140k-real-and-fake-faces/valid.csv',
+        'realfake140k_test_csv': '/kaggle/input/140k-real-and-fake-faces/test.csv',
+        'realfake140k_root_dir': '/kaggle/input/140k-real-and-fake-faces',
+        'train_batch_size': 64,
         'eval_batch_size': 64,
         'num_workers': 4,
         'pin_memory': True,
         'ddp': False,
-    },
-    '200k': {
-        'dataset_mode': '200k',
-        'realfake200k_test_csv': '/kaggle/input/200k-real-and-fake-faces/test_labels.csv',
-        'realfake200k_root_dir': '/kaggle/input/200k-real-and-fake-faces',
-        'eval_batch_size': 64,
-        'num_workers': 4,
-        'pin_memory': True,
-        'ddp': False,
-    },
-    '330k': {
-        'dataset_mode': '330k',
-        'realfake330k_root_dir': '/kaggle/input/deepfake-dataset',
-        'eval_batch_size': 64,
-        'num_workers': 4,
-        'pin_memory': True,
-        'ddp': False,
-    },
+    }
 }
 
 # بررسی دیتاست انتخاب‌شده
@@ -181,18 +159,26 @@ except Exception as e:
 
 # بررسی و تنظیم لایه نهایی (در صورت نیاز)
 try:
-    if model.fc.out_features != 1:
-        model.fc = nn.Linear(model.fc.in_features, 1)  # تنظیم برای طبقه‌بندی باینری
+    if hasattr(model, 'fc') and model.fc.out_features != 1:
+        model.fc = nn.Linear(model.fc.in_features, 1)
+        model = model.to(device)
 except AttributeError:
-    print("Model does not have 'fc' layer, assuming it is already configured for binary classification.")
+    print("Model does not have 'fc' layer, assuming it is configured for binary classification.")
 
 # بررسی ساختار خروجی مدل
 try:
     dataset = Dataset_selector(**datasets[selected_dataset])
-    sample_inputs, _ = next(iter(dataset.loader_test))
+    sample_inputs, sample_labels = next(iter(dataset.loader_test))
     sample_inputs = sample_inputs.to(device)
-    sample_output = model(sample_inputs)
-    print("Sample model output:", sample_output)
+    model.eval()
+    with torch.no_grad():
+        sample_output = model(sample_inputs)
+        if isinstance(sample_output, tuple):
+            sample_output = sample_output[0]
+        print("Sample model output:", sample_output)
+        print("Sample probabilities:", torch.sigmoid(sample_output))
+        print("Sample predictions:", (torch.sigmoid(sample_output) > 0.5).float())
+        print("Sample true labels:", sample_labels)
 except Exception as e:
     print(f"Error testing model output: {e}")
 
@@ -206,18 +192,7 @@ except Exception as e:
     results_before = None
 
 # تعریف دیتاست برای فاین‌تیون (140k)
-finetune_dataset = Dataset_selector(
-    dataset_mode='140k',
-    realfake140k_train_csv='/kaggle/input/140k-real-and-fake-faces/train.csv',
-    realfake140k_valid_csv='/kaggle/input/140k-real-and-fake-faces/valid.csv',
-    realfake140k_test_csv='/kaggle/input/140k-real-and-fake-faces/test.csv',
-    realfake140k_root_dir='/kaggle/input/140k-real-and-fake-faces',
-    train_batch_size=64,
-    eval_batch_size=64,
-    num_workers=4,
-    pin_memory=True,
-    ddp=False,
-)
+finetune_dataset = Dataset_selector(**datasets['140k'])
 
 # دسترسی به DataLoaderها برای فاین‌تیون
 train_loader = finetune_dataset.loader_train
