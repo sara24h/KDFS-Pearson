@@ -1,118 +1,187 @@
 import torch
-from data.dataset import Dataset_selector
-from tqdm import tqdm
+import torch.nn as nn
+import torch.optim as optim
+import pandas as pd
+from sklearn.metrics import accuracy_score, f1_score
+from torch.utils.data import DataLoader
+from thop import profile
+import os
+import warnings
+warnings.filterwarnings("ignore")
 
-# تابع تست مدل
-def test_model(model, test_loader, device, dataset_name):
-    model.eval()
-    correct = 0
-    total = 0
-    with torch.no_grad():
-        for images, labels in tqdm(test_loader, desc=f"Testing {dataset_name}", ncols=100):
-            images = images.to(device, non_blocking=True)
-            labels = labels.to(device, non_blocking=True).float()
-            outputs, _ = model(images)
-            outputs = outputs.squeeze()
-            preds = (torch.sigmoid(outputs) > 0.5).float()
-            correct += (preds == labels).sum().item()
-            total += labels.size(0)
-    accuracy = 100.0 * correct / total
-    print(f"Accuracy on {dataset_name} test dataset: {accuracy:.2f}%")
-    return accuracy
-
-# تنظیمات عمومی
-saved_model_path = "/kaggle/input/pruned_resnet50_140k/pytorch/default/1/pruned_model (3).pt"  # مسیر مدل ذخیره‌شده
+# تنظیم دستگاه
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-eval_batch_size = 64
-num_workers = 8
-pin_memory = True
+print(f"Using device: {device}")
 
 # لود مدل
-model = torch.load(saved_model_path, map_location=device)
-model.to(device)
+try:
+    model = torch.load('/kaggle/input/pruned_resnet50_140k/pytorch/default/1/pruned_model (3).pt', map_location=device, weights_only=False)
+    print("Model loaded successfully.")
+except Exception as e:
+    print(f"Error loading model: {e}")
+    raise Exception("Failed to load the model.")
+model = model.to(device)
 model.eval()
-print("Model loaded successfully.")
 
-# لیست دیتاست‌ها و تنظیمات مربوطه
-datasets = [
-    {
-        "mode": "hardfake",
-        "params": {
-            "hardfake_csv_file": "/path/to/hardfakevsrealfaces/data.csv",
-            "hardfake_root_dir": "/path/to/hardfakevsrealfaces",
-        }
+# محاسبه FLOPs و پارامترها
+input = torch.randn(1, 3, 224, 224).to(device)
+flops, params = profile(model, inputs=(input,))
+print(f"Params: {params/1e6:.2f}M, FLOPs: {flops/1e6:.2f}M")
+
+# تنظیمات دیتاست‌ها
+dataset_configs = {
+    'hardfake': {
+        'dataset_mode': 'hardfake',
+        'hardfake_csv_file': '/kaggle/input/hardfakevsrealfaces/data.csv',
+        'hardfake_root_dir': '/kaggle/input/hardfakevsrealfaces',
+        'train_batch_size': 64,
+        'eval_batch_size': 64,
+        'ddp': False
     },
-    {
-        "mode": "rvf10k",
-        "params": {
-            "rvf10k_train_csv": "/path/to/rvf10k/train.csv",
-            "rvf10k_valid_csv": "/path/to/rvf10k/valid.csv",
-            "rvf10k_root_dir": "/path/to/rvf10k",
-        }
+    'rvf10k': {
+        'dataset_mode': 'rvf10k',
+        'rvf10k_train_csv': '/kaggle/input/rvf10k/train.csv',
+        'rvf10k_valid_csv': '/kaggle/input/rvf10k/valid.csv',
+        'rvf10k_root_dir': '/kaggle/input/rvf10k',
+        'train_batch_size': 64,
+        'eval_batch_size': 64,
+        'ddp': False
     },
-    {
-        "mode": "140k",
-        "params": {
-            "realfake140k_train_csv": "/path/to/140k-real-and-fake-faces/train.csv",
-            "realfake140k_valid_csv": "/path/to/140k-real-and-fake-faces/valid.csv",
-            "realfake140k_test_csv": "/path/to/140k-real-and-fake-faces/test.csv",
-            "realfake140k_root_dir": "/path/to/140k-real-and-fake-faces",
-        }
+    '140k': {
+        'dataset_mode': '140k',
+        'realfake140k_train_csv': '/kaggle/input/140k-real-and-fake-faces/train.csv',
+        'realfake140k_valid_csv': '/kaggle/input/140k-real-and-fake-faces/valid.csv',
+        'realfake140k_test_csv': '/kaggle/input/140k-real-and-fake-faces/test.csv',
+        'realfake140k_root_dir': '/kaggle/input/140k-real-and-fake-faces',
+        'train_batch_size': 64,
+        'eval_batch_size': 64,
+        'ddp': False
     },
-    {
-        "mode": "190k",
-        "params": {
-            "realfake190k_root_dir": "/path/to/deepfake-and-real-images/Dataset",
-        }
+    '190k': {
+        'dataset_mode': '190k',
+        'realfake190k_root_dir': '/kaggle/input/deepfake-and-real-images/Dataset',
+        'train_batch_size': 64,
+        'eval_batch_size': 64,
+        'ddp': False
     },
-    {
-        "mode": "200k",
-        "params": {
-            "realfake200k_train_csv": "/path/to/200k-real-and-fake-faces/train_labels.csv",
-            "realfake200k_val_csv": "/path/to/200k-real-and-fake-faces/val_labels.csv",
-            "realfake200k_test_csv": "/path/to/200k-real-and-fake-faces/test_labels.csv",
-            "realfake200k_root_dir": "/path/to/200k-real-and-fake-faces",
-        }
+    '200k': {
+        'dataset_mode': '200k',
+        'realfake200k_train_csv': '/kaggle/input/200k-real-and-fake-faces/train_labels.csv',
+        'realfake200k_val_csv': '/kaggle/input/200k-real-and-fake-faces/val_labels.csv',
+        'realfake200k_test_csv': '/kaggle/input/200k-real-and-fake-faces/test_labels.csv',
+        'realfake200k_root_dir': '/kaggle/input/200k-real-and-fake-faces',
+        'train_batch_size': 64,
+        'eval_batch_size': 64,
+        'ddp': False
     },
-    {
-        "mode": "330k",
-        "params": {
-            "realfake330k_root_dir": "/path/to/deepfake-dataset",
-        }
+    '330k': {
+        'dataset_mode': '330k',
+        'realfake330k_root_dir': '/kaggle/input/deepfake-dataset',
+        'train_batch_size': 64,
+        'eval_batch_size': 64,
+        'ddp': False
     }
-]
+}
 
-# تست مدل روی تمام دیتاست‌ها
-results = {}
-for dataset in datasets:
-    try:
-        dataset_mode = dataset["mode"]
-        params = dataset["params"]
-        params.update({
-            "dataset_mode": dataset_mode,
-            "eval_batch_size": eval_batch_size,
-            "num_workers": num_workers,
-            "pin_memory": pin_memory,
-            "ddp": False
-        })
+# انتخاب دیتاست از متغیر محیطی
+dataset_name = os.getenv('SELECTED_DATASET')
+if dataset_name not in dataset_configs:
+    raise ValueError(f"Invalid dataset: {dataset_name}. Available datasets: {list(dataset_configs.keys())}")
 
-        # ایجاد Dataset_selector
-        print(f"\nLoading test dataset for {dataset_mode}...")
-        dataset_selector = Dataset_selector(**params)
-        test_loader = dataset_selector.loader_test
-        print(f"Test loader batches for {dataset_mode}: {len(test_loader)}")
+# لود دیتاست انتخاب‌شده
+from data.dataset import Dataset_selector
+try:
+    dataset = Dataset_selector(**dataset_configs[dataset_name])
+    print(f"{dataset_name} dataset loaded successfully")
+except Exception as e:
+    print(f"Error loading {dataset_name} dataset: {e}")
+    raise
 
-        # تست مدل
-        accuracy = test_model(model, test_loader, device, dataset_mode)
-        results[dataset_mode] = accuracy
-    except Exception as e:
-        print(f"Error processing {dataset_mode}: {str(e)}")
-        results[dataset_mode] = None
+# تابع ارزیابی
+def evaluate(model, dataloader, criterion):
+    model.eval()
+    running_loss = 0.0
+    predictions = []
+    true_labels = []
+    with torch.no_grad():
+        for data in dataloader:
+            inputs, labels = data
+            inputs, labels = inputs.to(device), labels.to(device).float()
+            outputs = model(inputs).squeeze(1)
+            loss = criterion(outputs, labels)
+            running_loss += loss.item()
+            predicted = (torch.sigmoid(outputs) > 0.5).float()
+            predictions.extend(predicted.cpu().numpy())
+            true_labels.extend(labels.cpu().numpy())
+    accuracy = accuracy_score(true_labels, predictions) * 100
+    f1 = f1_score(true_labels, predictions, average='binary') * 100
+    avg_loss = running_loss / len(dataloader)
+    return accuracy, f1, avg_loss
 
-# چاپ نتایج نهایی
-print("\nSummary of results:")
-for dataset_mode, accuracy in results.items():
-    if accuracy is not None:
-        print(f"{dataset_mode}: {accuracy:.2f}%")
-    else:
-        print(f"{dataset_mode}: Failed to process")
+# تست بدون فاین‌تیون
+criterion = nn.BCEWithLogitsLoss()
+print(f"\nTesting {dataset_name} without fine-tuning...")
+accuracy, f1, loss = evaluate(model, dataset.loader_test, criterion)
+results_without_finetune = {
+    'accuracy': accuracy,
+    'f1_score': f1,
+    'loss': loss
+}
+print(f"{dataset_name} Without Fine-tuning - Accuracy: {accuracy:.2f}%, F1-Score: {f1:.2f}%, Loss: {loss:.4f}")
+
+# تابع آموزش برای فاین‌تیون
+def train_model(model, trainloader, valloader, criterion, optimizer, num_epochs=5):
+    for epoch in range(num_epochs):
+        model.train()
+        running_loss = 0.0
+        for i, data in enumerate(trainloader, 0):
+            inputs, labels = data
+            inputs, labels = inputs.to(device), labels.to(device).float()
+            optimizer.zero_grad()
+            outputs = model(inputs).squeeze(1)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+        print(f"Epoch {epoch+1}, Train Loss: {running_loss / len(trainloader):.4f}")
+        
+        # ارزیابی روی داده اعتبارسنجی
+        accuracy, f1, val_loss = evaluate(model, valloader, criterion)
+        print(f"Epoch {epoch+1}, Validation Accuracy: {accuracy:.2f}%, F1-Score: {f1:.2f}%, Validation Loss: {val_loss:.4f}")
+
+# فاین‌تیون برای دیتاست انتخاب‌شده
+print(f"\nFine-tuning on {dataset_name}...")
+model = torch.load('/kaggle/input/pruned_resnet50_140k/pytorch/default/1/pruned_model (3).pt', map_location=device, weights_only=False)
+model = model.to(device)
+
+# فریز کردن لایه‌های اولیه
+for param in model.parameters():
+    param.requires_grad = False
+for param in model.layer4.parameters():
+    param.requires_grad = True
+for param in model.fc.parameters():
+    param.requires_grad = True
+
+optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=0.001)
+
+# آموزش
+train_model(model, dataset.loader_train, dataset.loader_val, criterion, optimizer, num_epochs=5)
+
+# تست روی داده تست
+accuracy, f1, loss = evaluate(model, dataset.loader_test, criterion)
+results_with_finetune = {
+    'accuracy': accuracy,
+    'f1_score': f1,
+    'loss': loss
+}
+print(f"{dataset_name} With Fine-tuning - Accuracy: {accuracy:.2f}%, F1-Score: {f1:.2f}%, Loss: {loss:.4f}")
+
+# ذخیره مدل فاین‌تیون‌شده
+torch.save(model, f'finetuned_{dataset_name}.pt')
+
+# گزارش نتایج
+print("\nSummary of Results:")
+print("\nWithout Fine-tuning:")
+print(f"{dataset_name}: Accuracy = {results_without_finetune['accuracy']:.2f}%, F1-Score = {results_without_finetune['f1_score']:.2f}%, Loss = {results_without_finetune['loss']:.4f}")
+print("\nWith Fine-tuning:")
+print(f"{dataset_name}: Accuracy = {results_with_finetune['accuracy']:.2f}%, F1-Score = {results_with_finetune['f1_score']:.2f}%, Loss = {results_with_finetune['loss']:.4f}")
