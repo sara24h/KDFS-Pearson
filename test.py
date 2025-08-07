@@ -19,6 +19,26 @@ from data.dataset import Dataset_selector
 # Suppress CUDA warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
+class HardFakeDataset(Dataset):
+    def __init__(self, csv_file, root_dir, transform=None):
+        self.data = pd.read_csv(csv_file)
+        self.root_dir = root_dir
+        self.transform = transform
+        self.label_map = {'fake': 0, 'real': 1}
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        img_path = os.path.join(self.root_dir, self.data.iloc[idx]['images_id'])
+        image = Image.open(img_path).convert('RGB')
+        label = self.label_map[self.data.iloc[idx]['label']]
+        
+        if self.transform:
+            image = self.transform(image)
+            
+        return image, label
+
 class Test:
     def __init__(self, args):
         self.args = args
@@ -31,7 +51,7 @@ class Test:
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
         self.dataset_mode = args.dataset_mode  # 'hardfake', 'rvf10k', '140k', '200k', '330k'
         self.learning_rate = getattr(args, 'learning_rate', 1e-4)  # Default to 1e-4
-        self.num_epochs = getattr(args, 'num_epochs', 20)  # Default to 20 epochs
+        self.num_epochs = getattr(args, 'num_epochs', 30)  # Default to 30 epochs
         self.weight_decay = getattr(args, 'weight_decay', 1e-4)  # Default weight decay
 
         # Verify CUDA availability
@@ -41,28 +61,6 @@ class Test:
     def dataload(self):
         print("==> Loading dataset..")
         try:
-            # Verify dataset paths
-            if self.dataset_mode == 'hardfake':
-                csv_path = os.path.join(self.dataset_dir, 'data.csv')
-                if not os.path.exists(csv_path):
-                    raise FileNotFoundError(f"CSV file not found: {csv_path}")
-            elif self.dataset_mode == 'rvf10k':
-                train_csv = os.path.join(self.dataset_dir, 'train.csv')
-                valid_csv = os.path.join(self.dataset_dir, 'valid.csv')
-                if not os.path.exists(train_csv) or not os.path.exists(valid_csv):
-                    raise FileNotFoundError(f"CSV files not found: {train_csv}, {valid_csv}")
-            elif self.dataset_mode == '140k':
-                test_csv = os.path.join(self.dataset_dir, 'test.csv')
-                if not os.path.exists(test_csv):
-                    raise FileNotFoundError(f"CSV file not found: {test_csv}")
-            elif self.dataset_mode == '200k':
-                test_csv = os.path.join(self.dataset_dir, 'test_labels.csv')
-                if not os.path.exists(test_csv):
-                    raise FileNotFoundError(f"CSV file not found: {test_csv}")
-            elif self.dataset_mode == '330k':
-                if not os.path.exists(self.dataset_dir):
-                    raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
-
             # Define data augmentations for training
             train_transform = transforms.Compose([
                 transforms.RandomHorizontalFlip(),
@@ -78,49 +76,95 @@ class Test:
                 transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             ])
 
-            # Initialize dataset based on mode
+            # Verify dataset paths
             if self.dataset_mode == 'hardfake':
+                csv_path = os.path.join(self.dataset_dir, 'data.csv')
+                if not os.path.exists(csv_path):
+                    raise FileNotFoundError(f"CSV file not found: {csv_path}")
+                
+                # Load dataset using Dataset_selector
                 dataset = Dataset_selector(
                     dataset_mode='hardfake',
-                    hardfake_csv_file=os.path.join(self.dataset_dir, 'data.csv'),
+                    hardfake_csv_file=csv_path,
                     hardfake_root_dir=self.dataset_dir,
                     train_batch_size=self.test_batch_size,
                     eval_batch_size=self.test_batch_size,
                     num_workers=self.num_workers,
                     pin_memory=self.pin_memory,
-                    ddp=False,
-                    train_transform=train_transform,  # Apply augmentations
-                    eval_transform=eval_transform
+                    ddp=False
                 )
+                self.train_loader = dataset.loader_train
+                self.val_loader = dataset.loader_val
+                self.test_loader = dataset.loader_test
+
+                # Override DataLoaders with custom HardFakeDataset to apply transforms
+                train_dataset = HardFakeDataset(csv_file=csv_path, root_dir=self.dataset_dir, transform=train_transform)
+                val_dataset = HardFakeDataset(csv_file=csv_path, root_dir=self.dataset_dir, transform=eval_transform)
+                test_dataset = HardFakeDataset(csv_file=csv_path, root_dir=self.dataset_dir, transform=eval_transform)
+
+                # Filter datasets based on train/val/test splits (assuming data.csv has a 'split' column)
+                data = pd.read_csv(csv_path)
+                train_data = data[data['split'] == 'train'] if 'split' in data else data.sample(frac=0.7, random_state=42)
+                val_data = data[data['split'] == 'val'] if 'split' in data else data.sample(frac=0.15, random_state=42)
+                test_data = data[data['split'] == 'test'] if 'split' in data else data.sample(frac=0.15, random_state=42)
+
+                train_dataset.data = train_data
+                val_dataset.data = val_data
+                test_dataset.data = test_data
+
+                self.train_loader = DataLoader(
+                    train_dataset, batch_size=self.test_batch_size, shuffle=True,
+                    num_workers=self.num_workers, pin_memory=self.pin_memory
+                )
+                self.val_loader = DataLoader(
+                    val_dataset, batch_size=self.test_batch_size, shuffle=False,
+                    num_workers=self.num_workers, pin_memory=self.pin_memory
+                )
+                self.test_loader = DataLoader(
+                    test_dataset, batch_size=self.test_batch_size, shuffle=False,
+                    num_workers=self.num_workers, pin_memory=self.pin_memory
+                )
+
             elif self.dataset_mode == 'rvf10k':
+                train_csv = os.path.join(self.dataset_dir, 'train.csv')
+                valid_csv = os.path.join(self.dataset_dir, 'valid.csv')
+                if not os.path.exists(train_csv) or not os.path.exists(valid_csv):
+                    raise FileNotFoundError(f"CSV files not found: {train_csv}, {valid_csv}")
                 dataset = Dataset_selector(
                     dataset_mode='rvf10k',
-                    rvf10k_train_csv=os.path.join(self.dataset_dir, 'train.csv'),
-                    rvf10k_valid_csv=os.path.join(self.dataset_dir, 'valid.csv'),
+                    rvf10k_train_csv=train_csv,
+                    rvf10k_valid_csv=valid_csv,
                     rvf10k_root_dir=self.dataset_dir,
                     train_batch_size=self.test_batch_size,
                     eval_batch_size=self.test_batch_size,
                     num_workers=self.num_workers,
                     pin_memory=self.pin_memory,
-                    ddp=False,
-                    train_transform=train_transform,
-                    eval_transform=eval_transform
+                    ddp=False
                 )
+                self.train_loader = dataset.loader_train
+                self.val_loader = dataset.loader_val
+                self.test_loader = dataset.loader_test
+
             elif self.dataset_mode == '140k':
+                test_csv = os.path.join(self.dataset_dir, 'test.csv')
+                if not os.path.exists(test_csv):
+                    raise FileNotFoundError(f"CSV file not found: {test_csv}")
                 dataset = Dataset_selector(
                     dataset_mode='140k',
                     realfake140k_train_csv=os.path.join(self.dataset_dir, 'train.csv'),
                     realfake140k_valid_csv=os.path.join(self.dataset_dir, 'valid.csv'),
-                    realfake140k_test_csv=os.path.join(self.dataset_dir, 'test.csv'),
+                    realfake140k_test_csv=test_csv,
                     realfake140k_root_dir=self.dataset_dir,
                     train_batch_size=self.test_batch_size,
                     eval_batch_size=self.test_batch_size,
                     num_workers=self.num_workers,
                     pin_memory=self.pin_memory,
-                    ddp=False,
-                    train_transform=train_transform,
-                    eval_transform=eval_transform
+                    ddp=False
                 )
+                self.train_loader = dataset.loader_train
+                self.val_loader = dataset.loader_val
+                self.test_loader = dataset.loader_test
+
             elif self.dataset_mode == '200k':
                 test_csv = os.path.join(self.dataset_dir, 'test_labels.csv')
                 if not os.path.exists(test_csv):
@@ -129,17 +173,21 @@ class Test:
                     dataset_mode='200k',
                     realfake200k_train_csv=os.path.join(self.dataset_dir, 'train_labels.csv'),
                     realfake200k_val_csv=os.path.join(self.dataset_dir, 'val_labels.csv'),
-                    realfake200k_test_csv=os.path.join(self.dataset_dir, 'test_labels.csv'),
+                    realfake200k_test_csv=test_csv,
                     realfake200k_root_dir=os.path.join(self.dataset_dir, 'my_real_vs_ai_dataset/my_real_vs_ai_dataset'),
                     train_batch_size=self.test_batch_size,
                     eval_batch_size=self.test_batch_size,
                     num_workers=self.num_workers,
                     pin_memory=self.pin_memory,
-                    ddp=False,
-                    train_transform=train_transform,
-                    eval_transform=eval_transform
+                    ddp=False
                 )
+                self.train_loader = dataset.loader_train
+                self.val_loader = dataset.loader_val
+                self.test_loader = dataset.loader_test
+
             elif self.dataset_mode == '330k':
+                if not os.path.exists(self.dataset_dir):
+                    raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
                 dataset = Dataset_selector(
                     dataset_mode='330k',
                     realfake330k_root_dir=self.dataset_dir,
@@ -147,14 +195,12 @@ class Test:
                     eval_batch_size=self.test_batch_size,
                     num_workers=self.num_workers,
                     pin_memory=self.pin_memory,
-                    ddp=False,
-                    train_transform=train_transform,
-                    eval_transform=eval_transform
+                    ddp=False
                 )
+                self.train_loader = dataset.loader_train
+                self.val_loader = dataset.loader_val
+                self.test_loader = dataset.loader_test
 
-            self.train_loader = dataset.loader_train
-            self.val_loader = dataset.loader_val
-            self.test_loader = dataset.loader_test
             print(f"{self.dataset_mode} dataset loaded! Train batches: {len(self.train_loader)}, Val batches: {len(self.val_loader)}, Test batches: {len(self.test_loader)}")
         except Exception as e:
             print(f"Error loading dataset: {str(e)}")
@@ -179,7 +225,6 @@ class Test:
                     print("Loaded with strict=False; check for missing or unexpected keys.")
             else:
                 print(f"Using non-fine-tuned model with pre-trained weights for dataset mode: {self.dataset_mode}")
-                # Load ImageNet pre-trained weights if available
                 try:
                     pretrained_dict = torch.hub.load_state_dict_from_url(
                         'https://download.pytorch.org/models/resnet50-19c8e357.pth',
