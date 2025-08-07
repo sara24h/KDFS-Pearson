@@ -23,14 +23,14 @@ class Test:
     def __init__(self, args):
         self.args = args
         self.dataset_dir = args.dataset_dir
-        self.num_workers = args.num_workers
+        self.num_workers = min(args.num_workers, 4)  # Cap at 4 to avoid DataLoader warning
         self.pin_memory = args.pin_memory
         self.arch = args.arch  # Expected to be 'ResNet_50'
         self.device = args.device
         self.test_batch_size = args.test_batch_size
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
         self.dataset_mode = args.dataset_mode  # 'hardfake', 'rvf10k', '140k', '200k', '330k'
-        self.learning_rate = args.learning_rate  # New: Configurable learning rate
+        self.learning_rate = getattr(args, 'learning_rate', 1e-4)  # Default to 1e-4
         self.num_epochs = getattr(args, 'num_epochs', 20)  # Default to 20 epochs
         self.weight_decay = getattr(args, 'weight_decay', 1e-4)  # Default weight decay
 
@@ -63,6 +63,21 @@ class Test:
                 if not os.path.exists(self.dataset_dir):
                     raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
 
+            # Define data augmentations for training
+            train_transform = transforms.Compose([
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomRotation(10),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+                transforms.Resize((300, 300)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+            eval_transform = transforms.Compose([
+                transforms.Resize((300, 300)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+
             # Initialize dataset based on mode
             if self.dataset_mode == 'hardfake':
                 dataset = Dataset_selector(
@@ -73,7 +88,9 @@ class Test:
                     eval_batch_size=self.test_batch_size,
                     num_workers=self.num_workers,
                     pin_memory=self.pin_memory,
-                    ddp=False
+                    ddp=False,
+                    train_transform=train_transform,  # Apply augmentations
+                    eval_transform=eval_transform
                 )
             elif self.dataset_mode == 'rvf10k':
                 dataset = Dataset_selector(
@@ -85,7 +102,9 @@ class Test:
                     eval_batch_size=self.test_batch_size,
                     num_workers=self.num_workers,
                     pin_memory=self.pin_memory,
-                    ddp=False
+                    ddp=False,
+                    train_transform=train_transform,
+                    eval_transform=eval_transform
                 )
             elif self.dataset_mode == '140k':
                 dataset = Dataset_selector(
@@ -98,7 +117,9 @@ class Test:
                     eval_batch_size=self.test_batch_size,
                     num_workers=self.num_workers,
                     pin_memory=self.pin_memory,
-                    ddp=False
+                    ddp=False,
+                    train_transform=train_transform,
+                    eval_transform=eval_transform
                 )
             elif self.dataset_mode == '200k':
                 test_csv = os.path.join(self.dataset_dir, 'test_labels.csv')
@@ -114,7 +135,9 @@ class Test:
                     eval_batch_size=self.test_batch_size,
                     num_workers=self.num_workers,
                     pin_memory=self.pin_memory,
-                    ddp=False
+                    ddp=False,
+                    train_transform=train_transform,
+                    eval_transform=eval_transform
                 )
             elif self.dataset_mode == '330k':
                 dataset = Dataset_selector(
@@ -124,7 +147,9 @@ class Test:
                     eval_batch_size=self.test_batch_size,
                     num_workers=self.num_workers,
                     pin_memory=self.pin_memory,
-                    ddp=False
+                    ddp=False,
+                    train_transform=train_transform,
+                    eval_transform=eval_transform
                 )
 
             self.train_loader = dataset.loader_train
@@ -153,10 +178,18 @@ class Test:
                     model.load_state_dict(state_dict, strict=False)
                     print("Loaded with strict=False; check for missing or unexpected keys.")
             else:
-                print(f"Using non-fine-tuned model with random or pre-trained weights for dataset mode: {self.dataset_mode}")
-                # Optionally load ImageNet pre-trained weights
-                # Example: model.load_state_dict(torch.hub.load_state_dict_from_url('https://download.pytorch.org/models/resnet50-19c8e357.pth'), strict=False)
-            
+                print(f"Using non-fine-tuned model with pre-trained weights for dataset mode: {self.dataset_mode}")
+                # Load ImageNet pre-trained weights if available
+                try:
+                    pretrained_dict = torch.hub.load_state_dict_from_url(
+                        'https://download.pytorch.org/models/resnet50-19c8e357.pth',
+                        progress=True
+                    )
+                    model.load_state_dict(pretrained_dict, strict=False)
+                    print("Loaded ImageNet pre-trained weights (strict=False)")
+                except Exception as e:
+                    print(f"Failed to load ImageNet weights: {str(e)}. Using random weights.")
+
             model.to(self.device)
             print(f"Model loaded on {self.device}")
             return model
