@@ -17,7 +17,7 @@ from model.student.MobileNetV2_sparse import MobileNetV2_sparse_deepfake
 from utils import utils, loss, meter, scheduler
 from thop import profile
 from model.teacher.ResNet import ResNet_50_hardfakevsreal
-from model.teacher.Mobilenetv2 import MobileNetv2_deepfake
+from model.teacher.Mobilenetv2 import MobileNetV2_deepfake
 from torch import amp
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
