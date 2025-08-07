@@ -15,28 +15,31 @@ def load_model(model_path):
     return model
 
 def evaluate_model(model, dataloader, device):
-    """ارزیابی مدل و محاسبه معیارها"""
+
     y_true = []
     y_pred = []
-    
+
     with torch.no_grad():
         for inputs, labels in dataloader:
             inputs = inputs.to(device)
             labels = labels.to(device)
-            
+
             outputs = model(inputs)
+            if isinstance(outputs, tuple):
+                outputs = outputs[0]  # فقط تنسور اصلی را بگیر
+
             predicted = (torch.sigmoid(outputs) > 0.5).float().squeeze()
-            
+
             y_true.extend(labels.cpu().numpy())
             y_pred.extend(predicted.cpu().numpy())
-    
+
     # محاسبه معیارها
     accuracy = accuracy_score(y_true, y_pred)
     precision = precision_score(y_true, y_pred)
     recall = recall_score(y_true, y_pred)
     f1 = f1_score(y_true, y_pred)
     cm = confusion_matrix(y_true, y_pred)
-    
+
     return accuracy, precision, recall, f1, cm
 
 def plot_confusion_matrix(cm, dataset_name):
