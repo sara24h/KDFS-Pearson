@@ -12,10 +12,12 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from torch.cuda.amp import autocast, GradScaler
 from data.dataset import Dataset_selector
-from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, ResNet_50_sparse_rvf10k,SoftMaskedConv2d
+from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, ResNet_50_sparse_rvf10k, SoftMaskedConv2d
+from model.student.MobilenetV2_sparse import MobileNetV2_sparse_deepfake
 from utils import utils, loss, meter, scheduler
 from thop import profile
 from model.teacher.ResNet import ResNet_50_hardfakevsreal
+from model.teacher.MobilenetV2 import MobileNetV2_deepfake
 from torch import amp
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
@@ -27,7 +29,7 @@ class TrainDDP:
         self.dataset_mode = args.dataset_mode
         self.num_workers = args.num_workers
         self.pin_memory = args.pin_memory
-        self.arch = args.arch
+        self.arch = args.arch  
         self.seed = args.seed
         self.result_dir = args.result_dir
         self.teacher_ckpt_path = args.teacher_ckpt_path
@@ -80,6 +82,10 @@ class TrainDDP:
             self.image_size = 256
         else:
             raise ValueError("dataset_mode must be 'hardfake', 'rvf10k', '140k', '200k', '190k', or '330k'")
+
+        # اعتبارسنجی arch
+        if self.arch not in ['resnet50', 'mobilenetv2']:
+            raise ValueError("arch must be 'resnet50' or 'mobilenetv2'")
 
     def dist_init(self):
         dist.init_process_group("nccl")
@@ -223,11 +229,18 @@ class TrainDDP:
             self.logger.info("==> Building model..")
             self.logger.info("Loading teacher model")
 
-        resnet = ResNet_50_hardfakevsreal()
+        if self.arch == 'resnet50':
+            teacher_model = ResNet_50_hardfakevsreal()
+        elif self.arch == 'mobilenetv2':
+            teacher_model = MobileNetV2_deepfake()
+        else:
+            raise ValueError(f"Unsupported architecture: {self.arch}")
+
+        # بارگذاری وزن‌های معلم
         ckpt_teacher = torch.load(self.teacher_ckpt_path, map_location="cpu", weights_only=True)
         state_dict = ckpt_teacher.get('config_state_dict', ckpt_teacher)
-        resnet.load_state_dict(state_dict, strict=True)
-        self.teacher = resnet.cuda()
+        teacher_model.load_state_dict(state_dict, strict=True)
+        self.teacher = teacher_model.cuda()
 
         if self.rank == 0:
             self.logger.info("Testing teacher model on validation batch...")
@@ -248,21 +261,36 @@ class TrainDDP:
 
         if self.rank == 0:
             self.logger.info("Building student model")
-        if self.dataset_mode == "hardfake":
-            self.student = ResNet_50_sparse_hardfakevsreal(
+
+        # انتخاب مدل دانش‌آموز بر اساس arch و dataset_mode
+        if self.arch == 'resnet50':
+            if self.dataset_mode == "hardfake":
+                self.student = ResNet_50_sparse_hardfakevsreal(
+                    gumbel_start_temperature=self.gumbel_start_temperature,
+                    gumbel_end_temperature=self.gumbel_end_temperature,
+                    num_epochs=self.num_epochs,
+                )
+            else:  # rvf10k, 140k, 200k, 190k, or 330k
+                self.student = ResNet_50_sparse_rvf10k(
+                    gumbel_start_temperature=self.gumbel_start_temperature,
+                    gumbel_end_temperature=self.gumbel_end_temperature,
+                    num_epochs=self.num_epochs,
+                )
+        elif self.arch == 'mobilenetv2':
+            self.student = MobileNetV2_sparse_deepfake(
                 gumbel_start_temperature=self.gumbel_start_temperature,
                 gumbel_end_temperature=self.gumbel_end_temperature,
                 num_epochs=self.num_epochs,
             )
-        else:  # rvf10k, 140k, 200k, 190k, or 330k
-            self.student = ResNet_50_sparse_rvf10k(
-                gumbel_start_temperature=self.gumbel_start_temperature,
-                gumbel_end_temperature=self.gumbel_end_temperature,
-                num_epochs=self.num_epochs,
-            )
+        else:
+            raise ValueError(f"Unsupported architecture: {self.arch}")
+
         self.student.dataset_type = self.args.dataset_type
-        num_ftrs = self.student.fc.in_features
-        self.student.fc = nn.Linear(num_ftrs, 1)
+        num_ftrs = self.student.classifier[-1].in_features if self.arch == 'mobilenetv2' else self.student.fc.in_features
+        if self.arch == 'mobilenetv2':
+            self.student.classifier[-1] = nn.Linear(num_ftrs, 1)
+        else:
+            self.student.fc = nn.Linear(num_ftrs, 1)
         self.student = self.student.cuda()
         self.student = DDP(self.student, device_ids=[self.local_rank])
 
