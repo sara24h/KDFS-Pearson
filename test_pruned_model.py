@@ -10,37 +10,43 @@ import warnings
 import argparse
 import logging
 
-# Setup logging
+# تنظیم لاگ‌گیری
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 warnings.filterwarnings("ignore")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-logging.info(f"Using device: {device}")
+logging.info(f"استفاده از دستگاه: {device}")
 
-parser = argparse.ArgumentParser(description='Test a model on a specified dataset.')
+parser = argparse.ArgumentParser(description='آزمایش یک مدل روی مجموعه داده مشخص')
 parser.add_argument('--dataset', type=str, required=True, choices=['hardfake', 'rvf10k', '140k', '190k', '200k', '330k'],
-                    help='Name of the dataset to test (e.g., hardfake, rvf10k, 140k, 190k, 200k, 330k)')
+                    help='نام مجموعه داده برای آزمایش (مثل hardfake، rvf10k، 140k، 190k، 200k، 330k)')
 args = parser.parse_args()
 
-# Load model
+# بارگذاری مدل
 try:
     model = torch.load('/kaggle/input/pruned_resnet50_140k/pytorch/default/1/pruned_model (3).pt', map_location=device, weights_only=False)
-    logging.info("Model loaded successfully.")
+    logging.info("مدل با موفقیت بارگذاری شد.")
 except Exception as e:
-    logging.error(f"Error loading model: {e}")
-    raise Exception("Failed to load the model.")
+    logging.error(f"خطا در بارگذاری مدل: {e}")
+    raise Exception("بارگذاری مدل ناموفق بود.")
 model = model.to(device)
 model.eval()
 
-# Calculate FLOPs and parameters
-input = torch.randn(1, 3, 256, 256).to(device)  # Match dataset image size
+# دیباگ خروجی مدل
+sample_input = torch.randn(1, 3, 256, 256).to(device)
+with torch.no_grad():
+    sample_output = model(sample_input)
+    logging.info(f"نوع خروجی مدل: {type(sample_output)}, شکل: {sample_output[0].shape if isinstance(sample_output, tuple) else sample_output.shape}")
+
+# محاسبه FLOPs و پارامترها
+input = torch.randn(1, 3, 256, 256).to(device)  # تطبیق با اندازه تصویر مجموعه داده
 try:
     flops, params = profile(model, inputs=(input,))
-    logging.info(f"Params: {params/1e6:.2f}M, FLOPs: {flops/1e6:.2f}M")
+    logging.info(f"پارامترها: {params/1e6:.2f}M, FLOPs: {flops/1e6:.2f}M")
 except Exception as e:
-    logging.error(f"Error profiling model: {e}")
+    logging.error(f"خطا در پروفایلینگ مدل: {e}")
 
-# Dataset configurations
+# تنظیمات مجموعه داده‌ها
 dataset_configs = {
     'hardfake': {
         'dataset_mode': 'hardfake',
@@ -95,34 +101,34 @@ dataset_configs = {
     }
 }
 
-# Select dataset
+# انتخاب مجموعه داده
 dataset_name = args.dataset
 if dataset_name not in dataset_configs:
-    logging.error(f"Invalid dataset: {dataset_name}. Available datasets: {list(dataset_configs.keys())}")
-    raise ValueError(f"Invalid dataset: {dataset_name}")
+    logging.error(f"مجموعه داده نامعتبر: {dataset_name}. مجموعه داده‌های موجود: {list(dataset_configs.keys())}")
+    raise ValueError(f"مجموعه داده نامعتبر: {dataset_name}")
 
-# Load dataset
+# بارگذاری مجموعه داده
 from data.dataset import Dataset_selector
 try:
     dataset = Dataset_selector(**dataset_configs[dataset_name])
-    logging.info(f"{dataset_name} dataset loaded successfully")
+    logging.info(f"مجموعه داده {dataset_name} با موفقیت بارگذاری شد")
 except Exception as e:
-    logging.error(f"Error loading {dataset_name} dataset: {e}")
+    logging.error(f"خطا در بارگذاری مجموعه داده {dataset_name}: {e}")
     raise
 
-# Function to process model output
+# تابع پردازش خروجی مدل
 def process_model_output(outputs):
     try:
         if isinstance(outputs, tuple):
-            outputs = outputs[0]  # Select first element if tuple
+            outputs = outputs[0].clone()  # انتخاب اولین عنصر تاپل و کپی برای جلوگیری از عملیات درجا
         if outputs.dim() > 1:
             outputs = outputs.squeeze(1)
         return outputs
     except Exception as e:
-        logging.error(f"Error processing model output: {e}")
+        logging.error(f"خطا در پردازش خروجی مدل: {e}")
         raise
 
-# Evaluation function
+# تابع ارزیابی
 def evaluate(model, dataloader, criterion):
     model.eval()
     running_loss = 0.0
@@ -140,14 +146,14 @@ def evaluate(model, dataloader, criterion):
                 predictions.extend(predicted.cpu().numpy())
                 true_labels.extend(labels.cpu().numpy())
             except Exception as e:
-                logging.error(f"Error during evaluation forward pass: {e}")
+                logging.error(f"خطا در پاس رو به جلو ارزیابی: {e}")
                 raise
     accuracy = accuracy_score(true_labels, predictions) * 100
     f1 = f1_score(true_labels, predictions, average='binary') * 100
     avg_loss = running_loss / len(dataloader)
     return accuracy, f1, avg_loss
 
-# Training function
+# تابع آموزش
 def train_model(model, trainloader, valloader, criterion, optimizer, num_epochs=5):
     metrics = {'train_loss': [], 'val_accuracy': [], 'val_f1': [], 'val_loss': []}
     for epoch in range(num_epochs):
@@ -158,28 +164,32 @@ def train_model(model, trainloader, valloader, criterion, optimizer, num_epochs=
             inputs, labels = inputs.to(device), labels.to(device).float()
             optimizer.zero_grad()
             try:
-                outputs = process_model_output(model(inputs))
+                # غیرفعال کردن موقت ردیابی گرادیان برای جلوگیری از خطای عملیات درجا
+                with torch.no_grad():
+                    raw_outputs = model(inputs)
+                outputs = process_model_output(raw_outputs)  # کپی خروجی برای جلوگیری از تغییرات درجا
+                outputs.requires_grad_(True)  # فعال کردن گرادیان برای لوجیت‌های پردازش‌شده
                 loss = criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
                 running_loss += loss.item()
             except Exception as e:
-                logging.error(f"Error during training forward pass: {e}")
+                logging.error(f"خطا در پاس رو به جلو آموزش: {e}")
                 raise
         metrics['train_loss'].append(running_loss / len(trainloader))
-        logging.info(f"Epoch {epoch+1}, Train Loss: {running_loss / len(trainloader):.4f}")
+        logging.info(f"اپوک {epoch+1}, خطای آموزشی: {running_loss / len(trainloader):.4f}")
         
-        # Evaluate on validation set
+        # ارزیابی روی مجموعه اعتبارسنجی
         accuracy, f1, val_loss = evaluate(model, valloader, criterion)
         metrics['val_accuracy'].append(accuracy)
         metrics['val_f1'].append(f1)
         metrics['val_loss'].append(val_loss)
-        logging.info(f"Epoch {epoch+1}, Validation Accuracy: {accuracy:.2f}%, F1-Score: {f1:.2f}%, Validation Loss: {val_loss:.4f}")
+        logging.info(f"اپوک {epoch+1}, دقت اعتبارسنجی: {accuracy:.2f}%, امتیاز F1: {f1:.2f}%, خطای اعتبارسنجی: {val_loss:.4f}")
     return metrics
 
-# Test without fine-tuning
+# آزمایش بدون فاین‌تیونینگ
 criterion = nn.BCEWithLogitsLoss()
-logging.info(f"\nTesting {dataset_name} without fine-tuning...")
+logging.info(f"\nآزمایش {dataset_name} بدون فاین‌تیونینگ...")
 try:
     accuracy, f1, loss = evaluate(model, dataset.loader_test, criterion)
     results_without_finetune = {
@@ -187,21 +197,21 @@ try:
         'f1_score': f1,
         'loss': loss
     }
-    logging.info(f"{dataset_name} Without Fine-tuning - Accuracy: {accuracy:.2f}%, F1-Score: {f1:.2f}%, Loss: {loss:.4f}")
+    logging.info(f"{dataset_name} بدون فاین‌تیونینگ - دقت: {accuracy:.2f}%, امتیاز F1: {f1:.2f}%, خطا: {loss:.4f}")
 except Exception as e:
-    logging.error(f"Error during evaluation without fine-tuning: {e}")
+    logging.error(f"خطا در ارزیابی بدون فاین‌تیونینگ: {e}")
     raise
 
-# Fine-tuning
-logging.info(f"\nFine-tuning on {dataset_name}...")
+# فاین‌تیونینگ
+logging.info(f"\nفاین‌تیونینگ روی {dataset_name}...")
 try:
     model = torch.load('/kaggle/input/pruned_resnet50_140k/pytorch/default/1/pruned_model (3).pt', map_location=device, weights_only=False)
     model = model.to(device)
 except Exception as e:
-    logging.error(f"Error loading model for fine-tuning: {e}")
+    logging.error(f"خطا در بارگذاری مدل برای فاین‌تیونینگ: {e}")
     raise
 
-# Freeze initial layers
+# فریز کردن لایه‌های اولیه
 for param in model.parameters():
     param.requires_grad = False
 for param in model.layer4.parameters():
@@ -211,10 +221,10 @@ for param in model.fc.parameters():
 
 optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=0.001)
 
-# Train the model
+# آموزش مدل
 metrics = train_model(model, dataset.loader_train, dataset.loader_val, criterion, optimizer, num_epochs=5)
 
-# Test on test set
+# آزمایش روی مجموعه تست
 try:
     accuracy, f1, loss = evaluate(model, dataset.loader_test, criterion)
     results_with_finetune = {
@@ -222,22 +232,28 @@ try:
         'f1_score': f1,
         'loss': loss
     }
-    logging.info(f"{dataset_name} With Fine-tuning - Accuracy: {accuracy:.2f}%, F1-Score: {f1:.2f}%, Loss: {loss:.4f}")
+    logging.info(f"{dataset_name} با فاین‌تیونینگ - دقت: {accuracy:.2f}%, امتیاز F1: {f1:.2f}%, خطا: {loss:.4f}")
 except Exception as e:
-    logging.error(f"Error during evaluation with fine-tuning: {e}")
+    logging.error(f"خطا در ارزیابی با فاین‌تیونینگ: {e}")
     raise
 
-# Save the fine-tuned model
+# ذخیره مدل فاین‌تیون‌شده
 try:
     torch.save(model, f'finetuned_{dataset_name}.pt')
-    logging.info(f"Fine-tuned model saved as finetuned_{dataset_name}.pt")
+    logging.info(f"مدل فاین‌تیون‌شده با نام finetuned_{dataset_name}.pt ذخیره شد")
 except Exception as e:
-    logging.error(f"Error saving fine-tuned model: {e}")
+    logging.error(f"خطا در ذخیره مدل فاین‌تیون‌شده: {e}")
     raise
 
-# Summary of results
-logging.info("\nSummary of Results:")
-logging.info("\nWithout Fine-tuning:")
-logging.info(f"{dataset_name}: Accuracy = {results_without_finetune['accuracy']:.2f}%, F1-Score = {results_without_finetune['f1_score']:.2f}%, Loss = {results_without_finetune['loss']:.4f}")
-logging.info("\nWith Fine-tuning:")
-logging.info(f"{dataset_name}: Accuracy = {results_with_finetune['accuracy']:.2f}%, F1-Score = {results_with_finetune['f1_score']:.2f}%, Loss = {results_with_finetune['loss']:.4f}")
+# خلاصه نتایج
+logging.info("\nخلاصه نتایج:")
+logging.info("\nبدون فاین‌تیونینگ:")
+logging.info(f"{dataset_name}: دقت = {results_without_finetune['accuracy']:.2f}%, امتیاز F1 = {results_without_finetune['f1_score']:.2f}%, خطا = {results_without_finetune['loss']:.4f}")
+logging.info("\nبا فاین‌تیونینگ:")
+logging.info(f"{dataset_name}: دقت = {results_with_finetune['accuracy']:.2f}%, امتیاز F1 = {results_with_finetune['f1_score']:.2f}%, خطا = {results_with_finetune['loss']:.4f}")
+
+# رسم نمودار متریک‌ها (اختیاری)
+import matplotlib.pyplot as plt
+plt.figure(figsize=(10, 5))
+plt.subplot(1, 2, 1)
+plt.plot(range(1, len(metrics['train_loss']) + 1), metrics['train_loss'], label='خطای آموزشی', color='#
