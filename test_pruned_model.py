@@ -131,7 +131,7 @@ def load_pruned_model(model_path):
     # بارگذاری state_dict از فایل مدل
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     try:
-        checkpoint = torch.load(model_path, map_location=device, weights_only=False))
+        checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     except Exception as e:
         print(f"Error loading model file: {e}")
         sys.exit(1)
