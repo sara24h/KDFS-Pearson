@@ -1,252 +1,118 @@
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-import sys
-import os
-import argparse
-from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
-import numpy as np
+from data.dataset import Dataset_selector
+from tqdm import tqdm
 
-# وارد کردن کلاس‌های دیتاست
-sys.path.append('/kaggle/working/')
-from data.dataset import FaceDataset, Dataset_selector
-
-# تابع آموزش و فاین‌تیون مدل
-def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=10, device='cuda'):
-    for epoch in range(num_epochs):
-        # حالت آموزش
-        model.train()
-        running_loss = 0.0
-        for inputs, labels in train_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            if isinstance(outputs, tuple):
-                outputs = outputs[0]  # انتخاب خروجی اول از tuple
-            outputs = outputs.squeeze()  # حذف ابعاد اضافی برای BCEWithLogitsLoss
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item()
-
-        print(f'Epoch {epoch+1}, Train Loss: {running_loss/len(train_loader):.4f}')
-
-        # حالت اعتبارسنجی
-        model.eval()
-        correct = 0
-        total = 0
-        val_loss = 0.0
-        with torch.no_grad():
-            for inputs, labels in val_loader:
-                inputs, labels = inputs.to(device), labels.to(device)
-                outputs = model(inputs)
-                if isinstance(outputs, tuple):
-                    outputs = outputs[0]  # انتخاب خروجی اول از tuple
-                outputs = outputs.squeeze()
-                loss = criterion(outputs, labels)
-                val_loss += loss.item()
-                predicted = (torch.sigmoid(outputs) > 0.5).float()
-                total += labels.size(0)
-                correct += (predicted == labels).sum().item()
-        print(f'Validation Accuracy: {100 * correct / total:.2f}%, Validation Loss: {val_loss/len(val_loader):.4f}')
-
-# تابع ارزیابی مدل
-def evaluate_model(model, test_loader, dataset_name, device='cuda'):
+# تابع تست مدل
+def test_model(model, test_loader, device, dataset_name):
     model.eval()
-    criterion = nn.BCEWithLogitsLoss()
-    running_loss = 0.0
-    all_labels = []
-    all_preds = []
-    
+    correct = 0
+    total = 0
     with torch.no_grad():
-        for inputs, labels in test_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs)
-            if isinstance(outputs, tuple):
-                outputs = outputs[0]  # انتخاب خروجی اول از tuple
+        for images, labels in tqdm(test_loader, desc=f"Testing {dataset_name}", ncols=100):
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True).float()
+            outputs, _ = model(images)
             outputs = outputs.squeeze()
-            loss = criterion(outputs, labels)
-            running_loss += loss.item()
-            predicted = (torch.sigmoid(outputs) > 0.5).float()
-            all_labels.extend(labels.cpu().numpy())
-            all_preds.extend(predicted.cpu().numpy())
-    
-    # تبدیل به آرایه numpy
-    all_labels = np.array(all_labels)
-    all_preds = np.array(all_preds)
-    
-    # محاسبه معیارها
-    accuracy = 100 * (all_preds == all_labels).sum() / len(all_labels)
-    avg_loss = running_loss / len(test_loader)
-    precision = precision_score(all_labels, all_preds, zero_division=0)
-    recall = recall_score(all_labels, all_preds, zero_division=0)
-    f1 = f1_score(all_labels, all_preds, zero_division=0)
-    
-    # محاسبه ماتریس درهم‌ریختگی
-    cm = confusion_matrix(all_labels, all_preds)
-    tn, fp, fn, tp = cm.ravel() if cm.size == 4 else (0, 0, 0, 0)
-    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-    
-    # چاپ نتایج
-    print(f'\n{dataset_name} Evaluation:')
-    print(f'Accuracy: {accuracy:.2f}%')
-    print(f'Loss: {avg_loss:.4f}')
-    print(f'Precision: {precision:.4f}')
-    print(f'Recall: {recall:.4f}')
-    print(f'F1 Score: {f1:.4f}')
-    print(f'Specificity: {specificity:.4f}')
-    print(f'Confusion Matrix:\n{cm}')
-    
-    return {
-        'accuracy': accuracy,
-        'loss': avg_loss,
-        'precision': precision,
-        'recall': recall,
-        'f1': f1,
-        'specificity': specificity,
-        'confusion_matrix': cm
-    }
+            preds = (torch.sigmoid(outputs) > 0.5).float()
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+    accuracy = 100.0 * correct / total
+    print(f"Accuracy on {dataset_name} test dataset: {accuracy:.2f}%")
+    return accuracy
 
-# تنظیم دستگاه
+# تنظیمات عمومی
+saved_model_path = "/kaggle/input/pruned_resnet50_140k/pytorch/default/1/pruned_model (3).pt"  # مسیر مدل ذخیره‌شده
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+eval_batch_size = 64
+num_workers = 8
+pin_memory = True
 
-# تعریف آرگومان‌های خط فرمان
-parser = argparse.ArgumentParser(description='Fine-tune on 140k and test on selected dataset')
-parser.add_argument('--dataset', type=str, required=True, choices=['hardfake', 'rvf10k', '140k', '190k', '200k', '330k'],
-                    help='Dataset to use for testing (e.g., rvf10k)')
-args = parser.parse_args()
-selected_dataset = args.dataset
+# لود مدل
+model = torch.load(saved_model_path, map_location=device)
+model.to(device)
+model.eval()
+print("Model loaded successfully.")
 
-# تعریف دیتاست‌ها برای تست
-datasets = {
-    'rvf10k': {
-        'dataset_mode': 'rvf10k',
-        'rvf10k_train_csv': '/kaggle/input/rvf10k/train.csv',
-        'rvf10k_valid_csv': '/kaggle/input/rvf10k/valid.csv',
-        'rvf10k_root_dir': '/kaggle/input/rvf10k',
-        'eval_batch_size': 64,
-        'num_workers': 4,
-        'pin_memory': True,
-        'ddp': False,
+# لیست دیتاست‌ها و تنظیمات مربوطه
+datasets = [
+    {
+        "mode": "hardfake",
+        "params": {
+            "hardfake_csv_file": "/path/to/hardfakevsrealfaces/data.csv",
+            "hardfake_root_dir": "/path/to/hardfakevsrealfaces",
+        }
     },
-    '140k': {
-        'dataset_mode': '140k',
-        'realfake140k_train_csv': '/kaggle/input/140k-real-and-fake-faces/train.csv',
-        'realfake140k_valid_csv': '/kaggle/input/140k-real-and-fake-faces/valid.csv',
-        'realfake140k_test_csv': '/kaggle/input/140k-real-and-fake-faces/test.csv',
-        'realfake140k_root_dir': '/kaggle/input/140k-real-and-fake-faces',
-        'train_batch_size': 64,
-        'eval_batch_size': 64,
-        'num_workers': 4,
-        'pin_memory': True,
-        'ddp': False,
+    {
+        "mode": "rvf10k",
+        "params": {
+            "rvf10k_train_csv": "/path/to/rvf10k/train.csv",
+            "rvf10k_valid_csv": "/path/to/rvf10k/valid.csv",
+            "rvf10k_root_dir": "/path/to/rvf10k",
+        }
+    },
+    {
+        "mode": "140k",
+        "params": {
+            "realfake140k_train_csv": "/path/to/140k-real-and-fake-faces/train.csv",
+            "realfake140k_valid_csv": "/path/to/140k-real-and-fake-faces/valid.csv",
+            "realfake140k_test_csv": "/path/to/140k-real-and-fake-faces/test.csv",
+            "realfake140k_root_dir": "/path/to/140k-real-and-fake-faces",
+        }
+    },
+    {
+        "mode": "190k",
+        "params": {
+            "realfake190k_root_dir": "/path/to/deepfake-and-real-images/Dataset",
+        }
+    },
+    {
+        "mode": "200k",
+        "params": {
+            "realfake200k_train_csv": "/path/to/200k-real-and-fake-faces/train_labels.csv",
+            "realfake200k_val_csv": "/path/to/200k-real-and-fake-faces/val_labels.csv",
+            "realfake200k_test_csv": "/path/to/200k-real-and-fake-faces/test_labels.csv",
+            "realfake200k_root_dir": "/path/to/200k-real-and-fake-faces",
+        }
+    },
+    {
+        "mode": "330k",
+        "params": {
+            "realfake330k_root_dir": "/path/to/deepfake-dataset",
+        }
     }
-}
+]
 
-# بررسی دیتاست انتخاب‌شده
-if selected_dataset not in datasets:
-    raise ValueError(f"Invalid dataset name: {selected_dataset}. Choose from {list(datasets.keys())}")
+# تست مدل روی تمام دیتاست‌ها
+results = {}
+for dataset in datasets:
+    try:
+        dataset_mode = dataset["mode"]
+        params = dataset["params"]
+        params.update({
+            "dataset_mode": dataset_mode,
+            "eval_batch_size": eval_batch_size,
+            "num_workers": num_workers,
+            "pin_memory": pin_memory,
+            "ddp": False
+        })
 
-# بارگذاری مدل
-model_path = "/kaggle/input/pruned_resnet50_140k/pytorch/default/1/pruned_model (3).pt"
-try:
-    model = torch.load(model_path, map_location=device, weights_only=False)
-    model = model.to(device)
-except Exception as e:
-    print(f"Error loading model: {e}")
-    raise RuntimeError("Failed to load the model. Please check the model file or try a different approach.")
+        # ایجاد Dataset_selector
+        print(f"\nLoading test dataset for {dataset_mode}...")
+        dataset_selector = Dataset_selector(**params)
+        test_loader = dataset_selector.loader_test
+        print(f"Test loader batches for {dataset_mode}: {len(test_loader)}")
 
-# بررسی و تنظیم لایه نهایی (در صورت نیاز)
-try:
-    if hasattr(model, 'fc') and model.fc.out_features != 1:
-        model.fc = nn.Linear(model.fc.in_features, 1)
-        model = model.to(device)
-except AttributeError:
-    print("Model does not have 'fc' layer, assuming it is configured for binary classification.")
+        # تست مدل
+        accuracy = test_model(model, test_loader, device, dataset_mode)
+        results[dataset_mode] = accuracy
+    except Exception as e:
+        print(f"Error processing {dataset_mode}: {str(e)}")
+        results[dataset_mode] = None
 
-# بررسی ساختار خروجی مدل
-try:
-    dataset = Dataset_selector(**datasets[selected_dataset])
-    sample_inputs, sample_labels = next(iter(dataset.loader_test))
-    sample_inputs = sample_inputs.to(device)
-    model.eval()
-    with torch.no_grad():
-        sample_output = model(sample_inputs)
-        if isinstance(sample_output, tuple):
-            sample_output = sample_output[0]
-        print("Sample model output:", sample_output)
-        print("Sample probabilities:", torch.sigmoid(sample_output))
-        print("Sample predictions:", (torch.sigmoid(sample_output) > 0.5).float())
-        print("Sample true labels:", sample_labels)
-except Exception as e:
-    print(f"Error testing model output: {e}")
-
-# ارزیابی مدل قبل از فاین‌تیون
-print(f"\nEvaluating on {selected_dataset} dataset (before fine-tuning)...")
-try:
-    dataset = Dataset_selector(**datasets[selected_dataset])
-    results_before = evaluate_model(model, dataset.loader_test, selected_dataset, device=device)
-except Exception as e:
-    print(f"Error evaluating {selected_dataset} (before fine-tuning): {e}")
-    results_before = None
-
-# تعریف دیتاست برای فاین‌تیون (140k)
-finetune_dataset = Dataset_selector(**datasets['140k'])
-
-# دسترسی به DataLoaderها برای فاین‌تیون
-train_loader = finetune_dataset.loader_train
-val_loader = finetune_dataset.loader_val
-
-# تنظیم معیار خطا و بهینه‌ساز
-criterion = nn.BCEWithLogitsLoss()
-optimizer = optim.SGD(model.parameters(), lr=0.001, momentum=0.9)
-
-# فاین‌تیون مدل
-print("\nStarting fine-tuning on 140k dataset...")
-try:
-    train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=10, device=device)
-except Exception as e:
-    print(f"Error during fine-tuning: {e}")
-
-# ذخیره مدل فاین‌تیون‌شده
-try:
-    torch.save(model.state_dict(), '/kaggle/working/finetuned_resnet50_140k.pt')
-    print("Fine-tuned model saved to /kaggle/working/finetuned_resnet50_140k.pt")
-except Exception as e:
-    print(f"Error saving fine-tuned model: {e}")
-
-# ارزیابی مدل بعد از فاین‌تیون
-print(f"\nEvaluating on {selected_dataset} dataset (after fine-tuning)...")
-try:
-    dataset = Dataset_selector(**datasets[selected_dataset])
-    results_after = evaluate_model(model, dataset.loader_test, selected_dataset, device=device)
-except Exception as e:
-    print(f"Error evaluating {selected_dataset} (after fine-tuning): {e}")
-    results_after = None
-
-# نمایش مقایسه نتایج قبل و بعد از فاین‌تیون
-print(f"\nComparison of Evaluation Results for {selected_dataset} (Before vs After Fine-Tuning):")
-print("Before Fine-Tuning:")
-if results_before:
-    print(f"  Accuracy: {results_before['accuracy']:.2f}%")
-    print(f"  Loss: {results_before['loss']:.4f}")
-    print(f"  Precision: {results_before['precision']:.4f}")
-    print(f"  Recall: {results_before['recall']:.4f}")
-    print(f"  F1 Score: {results_before['f1']:.4f}")
-    print(f"  Specificity: {results_before['specificity']:.4f}")
-    print(f"  Confusion Matrix:\n{results_before['confusion_matrix']}")
-else:
-    print("  Evaluation failed")
-
-print("After Fine-Tuning:")
-if results_after:
-    print(f"  Accuracy: {results_after['accuracy']:.2f}%")
-    print(f"  Loss: {results_after['loss']:.4f}")
-    print(f"  Precision: {results_after['precision']:.4f}")
-    print(f"  Recall: {results_after['recall']:.4f}")
-    print(f"  F1 Score: {results_after['f1']:.4f}")
-    print(f"  Specificity: {results_after['specificity']:.4f}")
-    print(f"  Confusion Matrix:\n{results_after['confusion_matrix']}")
-else:
-    print("  Evaluation failed")
+# چاپ نتایج نهایی
+print("\nSummary of results:")
+for dataset_mode, accuracy in results.items():
+    if accuracy is not None:
+        print(f"{dataset_mode}: {accuracy:.2f}%")
+    else:
+        print(f"{dataset_mode}: Failed to process")
