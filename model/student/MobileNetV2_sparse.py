@@ -296,7 +296,7 @@ class MobileNetV2_sparse(MaskedNet):
                 m.bias.data.zero_()
 
 
-def MobileNetV2_sparse_imagenet(
+def MobileNetV2_sparse_deepfake(
     gumbel_start_temperature=2, gumbel_end_temperature=0.5, num_epochs=350
 ):
     return MobileNetV2_sparse(
