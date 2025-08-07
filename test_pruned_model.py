@@ -7,11 +7,17 @@ from torch.utils.data import DataLoader
 from thop import profile
 import os
 import warnings
+import argparse 
+
 warnings.filterwarnings("ignore")
 
-# تنظیم دستگاه
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
+
+parser = argparse.ArgumentParser(description='Test a model on a specified dataset.')
+parser.add_argument('--dataset', type=str, required=True, choices=['hardfake', 'rvf10k', '140k', '190k', '200k', '330k'],
+                    help='Name of the dataset to test (e.g., hardfake, rvf10k, 140k, 190k, 200k, 330k)')
+args = parser.parse_args()
 
 # لود مدل
 try:
@@ -83,8 +89,8 @@ dataset_configs = {
     }
 }
 
-# انتخاب دیتاست از متغیر محیطی
-dataset_name = os.getenv('SELECTED_DATASET')
+# انتخاب دیتاست از آرگومان خط فرمان
+dataset_name = args.dataset
 if dataset_name not in dataset_configs:
     raise ValueError(f"Invalid dataset: {dataset_name}. Available datasets: {list(dataset_configs.keys())}")
 
@@ -176,10 +182,8 @@ results_with_finetune = {
 }
 print(f"{dataset_name} With Fine-tuning - Accuracy: {accuracy:.2f}%, F1-Score: {f1:.2f}%, Loss: {loss:.4f}")
 
-# ذخیره مدل فاین‌تیون‌شده
 torch.save(model, f'finetuned_{dataset_name}.pt')
 
-# گزارش نتایج
 print("\nSummary of Results:")
 print("\nWithout Fine-tuning:")
 print(f"{dataset_name}: Accuracy = {results_without_finetune['accuracy']:.2f}%, F1-Score = {results_without_finetune['f1_score']:.2f}%, Loss = {results_without_finetune['loss']:.4f}")
