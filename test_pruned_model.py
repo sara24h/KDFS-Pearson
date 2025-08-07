@@ -10,7 +10,7 @@ import seaborn as sns
 
 def load_model(model_path):
     """بارگذاری مدل از فایل .pt"""
-    model = torch.load(model_path, map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+    model = torch.load(model_path, map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),weights_only=False)
     model.eval()
     return model
 
