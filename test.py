@@ -24,7 +24,7 @@ class Test:
         self.device = args.device
         self.test_batch_size = args.test_batch_size
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
-        self.dataset_mode = args.dataset_mode  # 'hardfake', 'rvf10k', '140k', '200k', '190k', '330k'
+        self.dataset_mode = args.dataset_mode  # 'hardfake', 'rvf10k', '140k', '200k', '330k'
 
         # Verify CUDA availability
         if self.device == 'cuda' and not torch.cuda.is_available():
@@ -188,7 +188,7 @@ class Test:
                 Params_baseline,
                 Params,
                 Params_reduction,
-            ) = get_flops_and_params(args=self.args, model=model)
+            ) = get_flops_and_params(args=self.args)  # Removed model argument
             print(
                 f"[{test_name}] Params_baseline: {Params_baseline:.2f}M, Params: {Params:.2f}M, "
                 f"Params reduction: {Params_reduction:.2f}%"
