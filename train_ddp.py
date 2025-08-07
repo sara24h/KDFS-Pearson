@@ -13,7 +13,7 @@ from tqdm import tqdm
 from torch.cuda.amp import autocast, GradScaler
 from data.dataset import Dataset_selector
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, ResNet_50_sparse_rvf10k, SoftMaskedConv2d
-from model.student.MobilenetV2_sparse import MobileNetV2_sparse_deepfake
+from model.student.MobileNetV2_sparse import MobileNetV2_sparse_deepfake
 from utils import utils, loss, meter, scheduler
 from thop import profile
 from model.teacher.ResNet import ResNet_50_hardfakevsreal
