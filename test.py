@@ -20,19 +20,20 @@ class Test:
         self.dataset_dir = args.dataset_dir
         self.num_workers = args.num_workers
         self.pin_memory = args.pin_memory
-        self.arch = args.arch
+        self.arch = args.arch  # Expected to be 'ResNet_50'
         self.device = args.device
         self.test_batch_size = args.test_batch_size
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
-        self.dataset_mode = args.dataset_mode
-        self.saved_model_path = args.saved_model_path
+        self.dataset_mode = args.dataset_mode  # 'hardfake', 'rvf10k', '140k', '200k', '190k', '330k'
 
+        # Verify CUDA availability
         if self.device == 'cuda' and not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available! Please check GPU setup.")
 
     def dataload(self):
         print("==> Loading test dataset..")
         try:
+            # Verify dataset paths
             if self.dataset_mode == 'hardfake':
                 csv_path = os.path.join(self.dataset_dir, 'data.csv')
                 if not os.path.exists(csv_path):
@@ -51,6 +52,11 @@ class Test:
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
 
+            elif self.dataset_mode == '330k':
+                if not os.path.exists(self.dataset_dir):
+                    raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
+
+            # Initialize dataset based on mode
             if self.dataset_mode == 'hardfake':
                 dataset = Dataset_selector(
                     dataset_mode='hardfake',
@@ -92,18 +98,29 @@ class Test:
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
                 dataset = Dataset_selector(
-                    dataset_mode='200k',
-                    realfake200k_train_csv=os.path.join(self.dataset_dir, 'train_labels.csv'),
-                    realfake200k_val_csv=os.path.join(self.dataset_dir, 'val_labels.csv'),
-                    realfake200k_test_csv=os.path.join(self.dataset_dir, 'test_labels.csv'),
-                    realfake200k_root_dir=os.path.join(self.dataset_dir, 'my_real_vs_ai_dataset/my_real_vs_ai_dataset'),
+                dataset_mode='200k',
+                realfake200k_train_csv=os.path.join(self.dataset_dir, 'train_labels.csv'),
+                realfake200k_val_csv=os.path.join(self.dataset_dir, 'val_labels.csv'),
+                realfake200k_test_csv=os.path.join(self.dataset_dir, 'test_labels.csv'),
+                realfake200k_root_dir=os.path.join(self.dataset_dir, 'my_real_vs_ai_dataset/my_real_vs_ai_dataset'), 
+                train_batch_size=self.test_batch_size,
+                eval_batch_size=self.test_batch_size,
+                num_workers=self.num_workers,
+                pin_memory=self.pin_memory,
+                ddp=False
+            )
+
+            elif self.dataset_mode == '330k':
+                dataset = Dataset_selector(
+                    dataset_mode='330k',
+                    realfake330k_root_dir=self.dataset_dir,
                     train_batch_size=self.test_batch_size,
                     eval_batch_size=self.test_batch_size,
                     num_workers=self.num_workers,
                     pin_memory=self.pin_memory,
                     ddp=False
                 )
-
+         
             self.test_loader = dataset.loader_test
             print(f"{self.dataset_mode} test dataset loaded! Total batches: {len(self.test_loader)}")
         except Exception as e:
@@ -115,6 +132,7 @@ class Test:
         try:
             print(f"Loading sparse student model for dataset mode: {self.dataset_mode}")
             self.student = ResNet_50_sparse_hardfakevsreal()
+            # Load checkpoint
             if not os.path.exists(self.sparsed_student_ckpt_path):
                 raise FileNotFoundError(f"Checkpoint file not found: {self.sparsed_student_ckpt_path}")
             ckpt_student = torch.load(self.sparsed_student_ckpt_path, map_location="cpu", weights_only=True)
@@ -176,30 +194,13 @@ class Test:
                 f"Flops_baseline: {Flops_baseline:.2f}M, Flops: {Flops:.2f}M, "
                 f"Flops reduction: {Flops_reduction:.2f}%"
             )
-
-            # Save the pruned model (architecture + weights) with .pt extension
-            print("==> Saving pruned model...")
-            try:
-                os.makedirs(os.path.dirname(self.saved_model_path), exist_ok=True)
-                # Remove any existing extension and force .pt
-                base_path, _ = os.path.splitext(self.saved_model_path)
-                self.saved_model_path = base_path + '.pt'
-                torch.save(self.student, self.saved_model_path)
-                print(f"Pruned model saved to {self.saved_model_path}")
-            except Exception as e:
-                print(f"Error saving model: {str(e)}")
-                raise
-
+           
         except Exception as e:
             print(f"Error during testing: {str(e)}")
             raise
 
     def main(self):
-        print(f"Running phase: test")
-        print(f"Dataset mode: {self.dataset_mode}")
-        print(f"Device: {self.device}")
-        print(f"Architecture: {self.arch}")
-        print("Using standard PyTorch DataLoader.")
+        print(f"Starting test pipeline with dataset mode: {self.dataset_mode}")
         try:
             print(f"PyTorch version: {torch.__version__}")
             print(f"CUDA available: {torch.cuda.is_available()}")
