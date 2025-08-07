@@ -78,7 +78,33 @@ dataset_configs = {
     },
     '200k': {
         'dataset_mode': '200k',
-        'realfake200kroom_data = Dataset_selector(**dataset_configs[dataset_name])
+        'realfake200k_train_csv': '/kaggle/input/200k-real-and-fake-faces/train_labels.csv',
+        'realfake200k_val_csv': '/kaggle/input/200k-real-and-fake-faces/val_labels.csv',
+        'realfake200k_test_csv': '/kaggle/input/200k-real-and-fake-faces/test_labels.csv',
+        'realfake200k_root_dir': '/kaggle/input/200k-real-and-fake-faces',
+        'train_batch_size': 64,
+        'eval_batch_size': 64,
+        'ddp': False
+    },
+    '330k': {
+        'dataset_mode': '330k',
+        'realfake330k_root_dir': '/kaggle/input/deepfake-dataset',
+        'train_batch_size': 64,
+        'eval_batch_size': 64,
+        'ddp': False
+    }
+}
+
+# Select dataset
+dataset_name = args.dataset
+if dataset_name not in dataset_configs:
+    logging.error(f"Invalid dataset: {dataset_name}. Available datasets: {list(dataset_configs.keys())}")
+    raise ValueError(f"Invalid dataset: {dataset_name}")
+
+# Load dataset
+from data.dataset import Dataset_selector
+try:
+    dataset = Dataset_selector(**dataset_configs[dataset_name])
     logging.info(f"{dataset_name} dataset loaded successfully")
 except Exception as e:
     logging.error(f"Error loading {dataset_name} dataset: {e}")
