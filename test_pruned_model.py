@@ -56,56 +56,56 @@ class ResNet_pruned(nn.Module):
             Bottleneck_pruned(
                 in_channels=64, planes1=11, planes2=7, planes3=57,
                 downsample=nn.Sequential(
-                    nn.Conv2d(64, 256, kernel_size=1, stride=1, bias=False),
-                    nn.BatchNorm2d(256)
+                    nn.Conv2d(64, 57, kernel_size=1, stride=1, bias=False),  # تغییر به 57
+                    nn.BatchNorm2d(57)
                 )
             ),
-            Bottleneck_pruned(in_channels=256, planes1=7, planes2=10, planes3=43),
-            Bottleneck_pruned(in_channels=256, planes1=10, planes2=8, planes3=41)
+            Bottleneck_pruned(in_channels=57, planes1=7, planes2=10, planes3=57),  # تغییر in_channels به 57
+            Bottleneck_pruned(in_channels=57, planes1=10, planes2=8, planes3=57)   # تغییر in_channels به 57
         )
         
         # Layer 2
         self.layer2 = nn.Sequential(
             Bottleneck_pruned(
-                in_channels=256, planes1=28, planes2=19, planes3=96, stride=2,
+                in_channels=57, planes1=28, planes2=19, planes3=96, stride=2,
                 downsample=nn.Sequential(
-                    nn.Conv2d(256, 512, kernel_size=1, stride=2, bias=False),
-                    nn.BatchNorm2d(512))
+                    nn.Conv2d(57, 96, kernel_size=1, stride=2, bias=False),  # تغییر به 96
+                    nn.BatchNorm2d(96))
             ),
-            Bottleneck_pruned(in_channels=512, planes1=25, planes2=22, planes3=94),
-            Bottleneck_pruned(in_channels=512, planes1=25, planes2=13, planes3=77),
-            Bottleneck_pruned(in_channels=512, planes1=18, planes2=16, planes3=59)
+            Bottleneck_pruned(in_channels=96, planes1=25, planes2=22, planes3=96),  # تغییر in_channels به 96
+            Bottleneck_pruned(in_channels=96, planes1=25, planes2=13, planes3=96),  # تغییر in_channels به 96
+            Bottleneck_pruned(in_channels=96, planes1=18, planes2=16, planes3=96)   # تغییر in_channels به 96
         )
         
         # Layer 3
         self.layer3 = nn.Sequential(
             Bottleneck_pruned(
-                in_channels=512, planes1=30, planes2=39, planes3=113, stride=2,
+                in_channels=96, planes1=30, planes2=39, planes3=113, stride=2,
                 downsample=nn.Sequential(
-                    nn.Conv2d(512, 1024, kernel_size=1, stride=2, bias=False),
-                    nn.BatchNorm2d(1024))
+                    nn.Conv2d(96, 113, kernel_size=1, stride=2, bias=False),  # تغییر به 113
+                    nn.BatchNorm2d(113))
             ),
-            Bottleneck_pruned(in_channels=1024, planes1=51, planes2=18, planes3=112),
-            Bottleneck_pruned(in_channels=1024, planes1=46, planes2=15, planes3=71),
-            Bottleneck_pruned(in_channels=1024, planes1=47, planes2=15, planes3=67),
-            Bottleneck_pruned(in_channels=1024, planes1=28, planes2=8, planes3=51),
-            Bottleneck_pruned(in_channels=1024, planes1=30, planes2=11, planes3=44)
+            Bottleneck_pruned(in_channels=113, planes1=51, planes2=18, planes3=113),  # تغییر in_channels به 113
+            Bottleneck_pruned(in_channels=113, planes1=46, planes2=15, planes3=113),  # تغییر in_channels به 113
+            Bottleneck_pruned(in_channels=113, planes1=47, planes2=15, planes3=113),  # تغییر in_channels به 113
+            Bottleneck_pruned(in_channels=113, planes1=28, planes2=8, planes3=113),   # تغییر in_channels به 113
+            Bottleneck_pruned(in_channels=113, planes1=30, planes2=11, planes3=113)   # تغییر in_channels به 113
         )
         
         # Layer 4
         self.layer4 = nn.Sequential(
             Bottleneck_pruned(
-                in_channels=1024, planes1=35, planes2=50, planes3=66, stride=2,
+                in_channels=113, planes1=35, planes2=50, planes3=66, stride=2,
                 downsample=nn.Sequential(
-                    nn.Conv2d(1024, 2048, kernel_size=1, stride=2, bias=False),
-                    nn.BatchNorm2d(2048))
+                    nn.Conv2d(113, 66, kernel_size=1, stride=2, bias=False),  # تغییر به 66
+                    nn.BatchNorm2d(66))
             ),
-            Bottleneck_pruned(in_channels=2048, planes1=86, planes2=12, planes3=64),
-            Bottleneck_pruned(in_channels=2048, planes1=57, planes2=18, planes3=102)
+            Bottleneck_pruned(in_channels=66, planes1=86, planes2=12, planes3=66),  # تغییر in_channels به 66
+            Bottleneck_pruned(in_channels=66, planes1=57, planes2=18, planes3=66)   # تغییر in_channels به 66
         )
         
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(2048, 1)
+        self.fc = nn.Linear(66, 1)  # تغییر به 66 برای مطابقت با خروجی layer4
 
     def forward(self, x):
         x = self.conv1(x)
