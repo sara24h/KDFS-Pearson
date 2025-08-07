@@ -21,7 +21,7 @@ from data.dataset import FaceDataset, Dataset_selector
 from model.teacher.ResNet import ResNet_50_hardfakevsreal
 from model.teacher.Mobilenetv2 import MobileNetV2_deepfake
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, ResNet_50_sparse_rvf10k
-from model.student.MobilenetV2_sparse import MobileNetV2_sparse_deepfake
+from model.student.MobileNetV2_sparse import MobileNetV2_sparse_deepfake
 from utils import utils, loss, meter, scheduler
 from train import Train
 from test import Test
