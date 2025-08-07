@@ -127,14 +127,14 @@ class Test:
         print(f"==> در حال ساخت مدل {'فاین‌تیون‌شده (با فریز لایه‌ها)' if fine_tuned else 'بدون فاین‌تیون'}...")
         try:
             model = ResNet_50_sparse_hardfakevsreal()
-            
-            # بارگذاری چک‌پوینت
+        
+        # بارگذاری چک‌پوینت
             if not os.path.exists(self.sparsed_student_ckpt_path):
                 raise FileNotFoundError(f"فایل چک‌پوینت پیدا نشد: {self.sparsed_student_ckpt_path}")
             ckpt_student = torch.load(self.sparsed_student_ckpt_path, map_location="cpu", weights_only=True)
             state_dict = ckpt_student["student"] if "student" in ckpt_student else ckpt_student
             try:
-                model.load_state_dict(state_dict, strict=True)
+               model.load_state_dict(state_dict, strict=True)
             except RuntimeError as e:
                 print(f"بارگذاری state_dict با strict=True ناموفق بود: {str(e)}")
                 print("تلاش با strict=False برای شناسایی کلیدهای ناسازگار...")
@@ -142,13 +142,13 @@ class Test:
                 print("با strict=False بارگذاری شد؛ کلیدهای گمشده یا غیرمنتظره را بررسی کنید.")
 
             if fine_tuned:
-                # فریز کردن همه لایه‌ها به جز لایه آخر (لایه خطی)
+            # فریز کردن همه لایه‌ها به جز layer4 و fc
                 for name, param in model.named_parameters():
-                    if 'fc' not in name:  # فریز کردن همه لایه‌ها به جز لایه fc (لایه خطی)
+                    if 'layer4' not in name and 'fc' not in name:
                         param.requires_grad = False
-                print("لایه‌های مدل به جز لایه fc فریز شدند.")
+                print("لایه‌های مدل به جز layer4 و fc فریز شدند.")
             else:
-                # بدون فریز کردن لایه‌ها
+            # بدون فریز کردن لایه‌ها
                 for param in model.parameters():
                     param.requires_grad = True
                 print("هیچ لایه‌ای فریز نشد.")
