@@ -189,6 +189,8 @@ class InvertedResidual_sparse(nn.Module):
 
 # In file: /kaggle/working/KDFS-Pearson/model/student/MobileNetV2_sparse.py
 
+# In file: /kaggle/working/KDFS-Pearson/model/student/MobileNetV2_sparse.py
+
 class MobileNetV2_sparse(MaskedNet):
     def __init__(
         self,
@@ -201,13 +203,13 @@ class MobileNetV2_sparse(MaskedNet):
         super().__init__(gumbel_start_temperature, gumbel_end_temperature, num_epochs)
         
         # --- START: CORRECTED CODE ---
-        # Define the teacher model's feature dimensions at each stage
-        # These values are for a standard MobileNetV2 with width_mult=1.0
+        # Define the teacher model's feature dimensions at each key stage.
+        # These are standard for MobileNetV2 with width_mult=1.0.
         teacher_feature_dims = {
-            "stage1": 16,
-            "stage2": 32,
-            "stage3": 96,
-            "stage4": 320
+            "stage1": 16,  # After the first block
+            "stage2": 32,  # After the third block group
+            "stage3": 96,  # After the fifth block group
+            "stage4": 320, # After the seventh block group
         }
         # --- END: CORRECTED CODE ---
         
@@ -222,12 +224,12 @@ class MobileNetV2_sparse(MaskedNet):
             [6, 320, 1, 1],
         ]
 
-        input_channel = _make_divisible(32 * width_mult, 4 if width_mult == 0.1 else 8)
+        input_channel = _make_divisible(32 * width_mult, 8)
         layers = [conv_3x3_bn(3, input_channel, 2)]
         
         block = InvertedResidual_sparse
         for num, (t, c, n, s) in enumerate(self.cfgs):
-            output_channel = _make_divisible(c * width_mult, 4 if width_mult == 0.1 else 8)
+            output_channel = _make_divisible(c * width_mult, 8)
             for i in range(n):
                 layers.append(
                     block(input_channel, output_channel, s if i == 0 else 1, t)
@@ -235,24 +237,21 @@ class MobileNetV2_sparse(MaskedNet):
                 input_channel = output_channel
 
             # --- START: CORRECTED CODE ---
-            # Define convert layers to match the teacher's dimensions
-            if num == 0:  # After stage with 16 channels
+            # Define convert layers to match the student's channels to the teacher's.
+            if num == 0:  # After cfg block with 16 channels
                 self.convert1 = nn.Conv2d(output_channel, teacher_feature_dims["stage1"], kernel_size=1)
-            if num == 2:  # After stage with 32 channels
+            if num == 2:  # After cfg block with 32 channels
                 self.convert2 = nn.Conv2d(output_channel, teacher_feature_dims["stage2"], kernel_size=1)
-            if num == 4:  # After stage with 96 channels
+            if num == 4:  # After cfg block with 96 channels
                 self.convert3 = nn.Conv2d(output_channel, teacher_feature_dims["stage3"], kernel_size=1)
-            if num == 6:  # After stage with 320 channels
+            if num == 6:  # After cfg block with 320 channels
                 self.convert4 = nn.Conv2d(output_channel, teacher_feature_dims["stage4"], kernel_size=1)
             # --- END: CORRECTED CODE ---
             
-        self.features = nn.Sequential(*layers)
+        self.features = nn.ModuleList(layers) # Use ModuleList for better iteration control
         
-        output_channel_final = (
-            _make_divisible(1280 * width_mult, 4 if width_mult == 0.1 else 8)
-            if width_mult > 1.0
-            else 1280
-        )
+        output_channel_final = _make_divisible(1280 * width_mult, 8) if width_mult > 1.0 else 1280
+        
         self.conv = conv_1x1_bn_sparse(input_channel, output_channel_final)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.classifier = nn.Linear(output_channel_final, num_classes)
@@ -263,51 +262,43 @@ class MobileNetV2_sparse(MaskedNet):
 
     def forward(self, x):
         feature_list = []
-        out = x
+        
+        # --- START: CORRECTED FORWARD PASS ---
+        # Block indices for feature extraction in a standard MobileNetV2
+        # `self.features` has 1 initial conv + 17 InvertedResidual blocks = 18 layers
+        feature_extraction_indices = {1, 3, 6, 13, 17}
 
+        out = x
         for i, block in enumerate(self.features):
-            # The first layer is a standard nn.Sequential, not our sparse block
-            if i == 0:
+            if i == 0: # The first conv_3x3_bn block
                 out = block(out)
-            else:
+            else: # InvertedResidual_sparse blocks
                 out = block(out, self.ticket)
 
-            # Match student features to teacher features using convert layers
-            # Note: The indices for feature extraction need to match teacher's architecture
-            if i == 1: # End of stage 1 (t=1, c=16, n=1, s=1)
+            # Extract features at the end of key stages
+            if i == 1:
                 feature_list.append(self.convert1(out))
-            elif i == 3: # End of stage 2 (t=6, c=24, n=2, s=2)
-                # This seems to be where the student architecture differs from teacher. Let's adjust.
-                pass # We will handle all features at the end of the main blocks
-            elif i == 6: # End of stage 3 (t=6, c=32, n=3, s=2)
+            elif i == 6:
                 feature_list.append(self.convert2(out))
-            elif i == 10: # End of stage 4 (t=6, c=64, n=4, s=2)
-                pass
-            elif i == 13: # End of stage 5 (t=6, c=96, n=3, s=1)
+            elif i == 13:
                 feature_list.append(self.convert3(out))
-            elif i == 16: # End of stage 6 (t=6, c=160, n=3, s=2)
-                pass
-            elif i == 17: # End of stage 7 (t=6, c=320, n=1, s=1)
+            elif i == 17:
                 feature_list.append(self.convert4(out))
+        # --- END: CORRECTED FORWARD PASS ---
+
+        # The final layers
+        out = self.conv(out)
+        out = self.avgpool(out)
+        out = out.view(out.size(0), -1)
+        out = self.classifier(out)
         
-        out_conv = self.conv(out) # Use out, not x
-        
-        out_pooled = self.avgpool(out_conv)
-        out_flat = out_pooled.view(out_pooled.size(0), -1)
-        final_logits = self.classifier(out_flat)
-        
-        return final_logits, feature_list
+        return out, feature_list
 
     def _initialize_weights(self):
-        # This method can remain unchanged
+        # This method remains unchanged
         for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, math.sqrt(2.0 / n))
-                if m.bias is not None:
-                    m.bias.data.zero_()
-            elif isinstance(m, SoftMaskedConv2d):
-                n = m.kernel_size * m.kernel_size * m.out_channels
+            if isinstance(m, (nn.Conv2d, SoftMaskedConv2d)):
+                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels if isinstance(m, nn.Conv2d) else m.kernel_size * m.kernel_size * m.out_channels
                 m.weight.data.normal_(0, math.sqrt(2.0 / n))
                 if m.bias is not None:
                     m.bias.data.zero_()
