@@ -84,7 +84,7 @@ class TrainDDP:
             raise ValueError("dataset_mode must be 'hardfake', 'rvf10k', '140k', '200k', '190k', or '330k'")
 
         # اعتبارسنجی arch
-        if self.arch not in ['resnet50', 'mobilenetv2']:
+        if self.arch.lower() not in ['resnet50', 'mobilenetv2']:
             raise ValueError("arch must be 'resnet50' or 'mobilenetv2'")
 
     def dist_init(self):
