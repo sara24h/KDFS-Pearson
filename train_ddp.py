@@ -232,84 +232,74 @@ class TrainDDP:
         if self.arch == 'resnet50':
             teacher_model = ResNet_50_hardfakevsreal()
         elif self.arch == 'mobilenetv2':
+            # Use the standard MobileNetV2 architecture for the teacher
             teacher_model = MobileNetV2_deepfake()
         else:
             raise ValueError(f"Unsupported architecture: {self.arch}")
 
-        # بارگذاری وزن‌های معلم
-        ckpt_teacher = torch.load(self.teacher_ckpt_path, map_location="cpu", weights_only=True)
-        # Get the state dictionary, handling different checkpoint formats
-        state_dict = ckpt_teacher.get('config_state_dict', ckpt_teacher)
+        # --- FIX 1: Robustly load teacher weights ---
+        # This code removes the 'module.' prefix added by DDP
+        ckpt_teacher = torch.load(self.teacher_ckpt_path, map_location="cpu")
+        # Handle different checkpoint saving conventions
+        state_dict = ckpt_teacher.get('config_state_dict', ckpt_teacher.get('student', ckpt_teacher))
 
-        # ---- START: ADDED CODE TO FIX WEIGHT LOADING ----
-        # Check if the checkpoint was saved from a DDP model
         if list(state_dict.keys())[0].startswith('module.'):
             from collections import OrderedDict
             new_state_dict = OrderedDict()
             for k, v in state_dict.items():
-                name = k.replace('module.', '', 1) # remove `module.` prefix
+                name = k.replace('module.', '', 1)  # remove `module.`
                 new_state_dict[name] = v
-            state_dict = new_state_dict # Update state_dict to the cleaned version
-        # ---- END: ADDED CODE ----
-
-        # Now load the (potentially cleaned) state_dict
+            state_dict = new_state_dict
+        
         teacher_model.load_state_dict(state_dict, strict=True)
         self.teacher = teacher_model.cuda()
 
         if self.rank == 0:
             self.logger.info("Testing teacher model on validation batch...")
             with torch.no_grad():
-                correct = 0
-                total = 0
+                correct, total = 0, 0
                 for images, targets in self.val_loader:
-                    images = images.cuda()
-                    targets = targets.cuda().float()
+                    images, targets = images.cuda(), targets.cuda().float()
                     logits, _ = self.teacher(images)
                     logits = logits.squeeze(1)
                     preds = (torch.sigmoid(logits) > 0.5).float()
                     correct += (preds == targets).sum().item()
                     total += images.size(0)
-                    break # Only test on one batch
+                    break 
                 accuracy = 100. * correct / total
                 self.logger.info(f"Teacher accuracy on validation batch: {accuracy:.2f}%")
 
         if self.rank == 0:
             self.logger.info("Building student model")
 
-        # انتخاب مدل دانش‌آموز بر اساس arch و dataset_mode
+        # Select the correct sparse student model class
         if self.arch == 'resnet50':
-            if self.dataset_mode == "hardfake":
-                self.student = ResNet_50_sparse_hardfakevsreal(
-                    gumbel_start_temperature=self.gumbel_start_temperature,
-                    gumbel_end_temperature=self.gumbel_end_temperature,
-                    num_epochs=self.num_epochs,
-                )
-            else:  # rvf10k, 140k, 200k, 190k, or 330k
-                self.student = ResNet_50_sparse_rvf10k(
-                    gumbel_start_temperature=self.gumbel_start_temperature,
-                    gumbel_end_temperature=self.gumbel_end_temperature,
-                    num_epochs=self.num_epochs,
-                )
+            StudentModelClass = ResNet_50_sparse_rvf10k if self.dataset_mode != "hardfake" else ResNet_50_sparse_hardfakevsreal
         elif self.arch == 'mobilenetv2':
-            self.student = MobileNetV2_sparse_deepfake(
-                gumbel_start_temperature=self.gumbel_start_temperature,
-                gumbel_end_temperature=self.gumbel_end_temperature,
-                num_epochs=self.num_epochs,
-            )
+            StudentModelClass = MobileNetV2_sparse_deepfake
         else:
-            raise ValueError(f"Unsupported architecture: {self.arch}")
+            raise ValueError(f"Unsupported architecture for student: {self.arch}")
+
+        # Instantiate the student model
+        self.student = StudentModelClass(
+            gumbel_start_temperature=self.gumbel_start_temperature,
+            gumbel_end_temperature=self.gumbel_end_temperature,
+            num_epochs=self.num_epochs,
+        )
 
         self.student.dataset_type = self.args.dataset_type
-        num_ftrs = self.student.classifier[-1].in_features if self.arch == 'mobilenetv2' else self.student.fc.in_features
         
-        if self.arch.lower() == 'mobilenetv2':
+        # --- FIX 2: Correctly modify student architecture BEFORE DDP wrapping ---
+        # This code correctly accesses the final layer and replaces it.
+        if self.arch == 'mobilenetv2':
+            # Direct access, no [-1] index, on the unwrapped model
             num_ftrs = self.student.classifier.in_features
-            self.student.classifier[-1] = nn.Linear(num_ftrs, 1)
-            
-        else:
+            self.student.classifier = nn.Linear(num_ftrs, 1)
+        else: # For ResNet
             num_ftrs = self.student.fc.in_features
             self.student.fc = nn.Linear(num_ftrs, 1)
             
+        # Move to GPU and then wrap with DDP
         self.student = self.student.cuda()
         self.student = DDP(self.student, device_ids=[self.local_rank])
 
