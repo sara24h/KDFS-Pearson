@@ -33,7 +33,6 @@ class Test:
         self.student = None
 
     def dataload(self):
-        # این متد بدون تغییر باقی می‌ماند
         print("==> Loading datasets using Dataset_selector...")
         
         params = {
@@ -45,6 +44,7 @@ class Test:
             'ddp': False
         }
         
+        # بر اساس دیتاست، مسیرهای مربوطه را به دیکشنری اضافه می‌کنیم
         if self.dataset_mode == 'hardfake':
             params['hardfake_csv_file'] = os.path.join(self.dataset_dir, 'data.csv')
             params['hardfake_root_dir'] = self.dataset_dir
@@ -94,7 +94,6 @@ class Test:
         print("Test loader is ready (using 330k normalization).")
 
     def build_model(self):
-        # این متد بدون تغییر باقی می‌ماند
         print("==> Building student model..")
         self.student = ResNet_50_sparse_hardfakevsreal()
         
@@ -109,15 +108,16 @@ class Test:
         print(f"Model loaded on {self.device}")
 
     def test(self):
-        # این متد بدون تغییر باقی می‌ماند
         meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
         desc = "Test (with 330k norm)"
         self.student.eval()
         self.student.ticket = True
         with torch.no_grad():
             for images, targets in tqdm(self.test_loader, desc=desc, ncols=100):
-                images, targets = images.to(self.device, non_blocking=True)
+                # هر تانسور را جداگانه به دستگاه منتقل می‌کنیم
+                images = images.to(self.device, non_blocking=True)
                 targets = targets.to(self.device, non_blocking=True).float()
+                
                 logits_student, _ = self.student(images)
                 logits_student = logits_student.squeeze()
                 preds = (torch.sigmoid(logits_student) > 0.5).float()
@@ -131,14 +131,13 @@ class Test:
         if not os.path.exists(self.result_dir):
             os.makedirs(self.result_dir)
             
-        # === تغییر اصلی: فریز کردن همه لایه‌ها به جز لایه آخر (fc) ===
+        # استراتژی Feature Extractor: فقط لایه آخر (fc) آموزش داده می‌شود
         for name, param in self.student.named_parameters():
             if 'fc' in name:
                 param.requires_grad = True
-                print(f"Unfreezing: {name}") # برای اطمینان از اینکه لایه درست باز شده
+                print(f"Unfreezing for training: {name}")
             else:
                 param.requires_grad = False
-        # =========================================================
 
         optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, self.student.parameters()),
@@ -187,7 +186,7 @@ class Test:
 
             if meter_top1_val.avg > best_val_acc:
                 best_val_acc = meter_top1_val.avg
-                print(f"🎉 New best model found with Val Acc: {best_val_acc:.2f}%. Saving to {best_model_path}")
+                print(f"New best model found with Val Acc: {best_val_acc:.2f}%. Saving to {best_model_path}")
                 torch.save(self.student.state_dict(), best_model_path)
         
         print(f"\nFine-tuning finished. Loading best model with Val Acc: {best_val_acc:.2f}%")
@@ -197,7 +196,6 @@ class Test:
             print("Warning: No best model was saved. The model from the last epoch will be used for testing.")
 
     def main(self):
-        # این متد بدون تغییر باقی می‌ماند
         print(f"Starting pipeline with dataset mode: {self.dataset_mode}")
         self.dataload()
         self.build_model()
