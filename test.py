@@ -168,44 +168,51 @@ class Test:
         print(f"==> Starting fine-tuning for {self.f_epochs} epochs with learning rate {self.f_lr}..")
         try:
             model.train()
-            model.ticket = True
+            model.ticket = True  # اگه این برای اسپارس‌سازی ضروریه، نگهش دارید
 
-            # Freeze all layers except the final fully connected layer (fc) and the last convolutional block (layer4) by default
-            print("Freezing all layers except the final fully connected layer (fc) and the last convolutional block (layer4)...")
-            frozen_layers = []
-            trainable_layers = []
-            for name, param in model.named_parameters():
-                if 'fc' in name or 'layer4' in name:
-                    param.requires_grad = True
-                    trainable_layers.append(name)
-                else:
-                    param.requires_grad = False
-                    frozen_layers.append(name)
-            print("Frozen layers:", frozen_layers)
+        # فریز کردن همه لایه‌ها
+            for param in model.parameters():
+                param.requires_grad = False
+        # باز کردن layer4 و fc
+            for param in model.layer4.parameters():
+                param.requires_grad = True
+            for param in model.fc.parameters():
+                param.requires_grad = True
+
+            print("Frozen layers except layer4 and fc.")
+            trainable_layers = [name for name, param in model.named_parameters() if param.requires_grad]
             print("Trainable layers:", trainable_layers)
 
-            # Only include parameters that require gradients in the optimizer
             optimizer = torch.optim.Adam(
                 filter(lambda p: p.requires_grad, model.parameters()),
-                lr=self.f_lr
-            )
+                lr=self.f_lr,
+                weight_decay=1e-4  # اضافه کردن Weight Decay مشابه کد دوم
+            ) 
             criterion = torch.nn.BCEWithLogitsLoss()
+            scaler = torch.amp.GradScaler('cuda') if self.device == 'cuda' else None  # اضافه کردن GradScaler
 
             for epoch in range(self.f_epochs):
                 meter_loss = meter.AverageMeter("Loss", ":6.4f")
                 meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
-                
+            
                 with tqdm(total=len(self.train_loader), ncols=100, desc=f"Epoch {epoch+1}/{self.f_epochs}") as _tqdm:
                     for images, targets in self.train_loader:
                         images = images.to(self.device, non_blocking=True)
                         targets = targets.to(self.device, non_blocking=True).float()
-                        
+                    
                         optimizer.zero_grad()
-                        logits_student, _ = model(images)
-                        logits_student = logits_student.squeeze()
-                        loss = criterion(logits_student, targets)
-                        loss.backward()
-                        optimizer.step()
+                        with torch.amp.autocast('cuda', enabled=self.device == 'cuda'):  # اضافه کردن Mixed Precision
+                            logits_student, _ = model(images)
+                            logits_student = logits_student.squeeze()
+                            loss = criterion(logits_student, targets)
+                    
+                        if self.device == 'cuda':
+                            scaler.scale(loss).backward()
+                            scaler.step(optimizer)
+                            scaler.update()
+                        else:
+                            loss.backward()
+                            optimizer.step()
 
                         preds = (torch.sigmoid(logits_student) > 0.5).float()
                         correct = (preds == targets).sum().item()
@@ -219,6 +226,38 @@ class Test:
                         time.sleep(0.01)
 
                 print(f"[Fine-Tune Epoch {epoch+1}] Loss: {meter_loss.avg:.4f}, Acc@1: {meter_top1.avg:.2f}%")
+
+            # اعتبارسنجی
+                if hasattr(self, 'loader_val') and self.loader_val:
+                    model.eval()
+                    val_loss = 0.0
+                    correct_val = 0
+                    total_val = 0
+                    with torch.no_grad():
+                        for images, targets in self.loader_val:
+                            images = images.to(self.device, non_blocking=True)
+                            targets = targets.to(self.device, non_blocking=True).float()
+                            with torch.amp.autocast('cuda', enabled=self.device == 'cuda'):
+                                logits_student, _ = model(images)
+                                logits_student = logits_student.squeeze()
+                                loss = criterion(logits_student, targets)
+                            val_loss += loss.item()
+                            preds = (torch.sigmoid(logits_student) > 0.5).float()
+                            correct_val += (preds == targets).sum().item()
+                            total_val += targets.size(0)
+                    val_loss = val_loss / len(self.loader_val)
+                    val_accuracy = 100 * correct_val / total_val
+                    print(f"Validation Loss: {val_loss:.4f}, Validation Accuracy: {val_accuracy:.2f}%")
+
+                # ذخیره بهترین مدل
+                    if val_accuracy > getattr(self, 'best_val_acc', 0.0):
+                        self.best_val_acc = val_accuracy
+                        best_model_path = os.path.join('checkpoints', f'sparse_resnet50_best.pth')
+                        os.makedirs('checkpoints', exist_ok=True)
+                        torch.save(model.state_dict(), best_model_path)
+                        print(f"Saved best model with validation accuracy: {val_accuracy:.2f}% at epoch {epoch+1}")
+
+
 
         except Exception as e:
             print(f"Error during fine-tuning: {str(e)}")
