@@ -26,8 +26,8 @@ def parse_args():
     parser.add_argument('--train_batch_size', type=int, default=32, help='Batch size for training')
     parser.add_argument('--sparsed_student_ckpt_path', type=str, default='checkpoint.pth', help='Path to save/load sparse student checkpoint')
     parser.add_argument('--dataset_mode', type=str, default='hardfake', choices=['hardfake', 'rvf10k', '140k', '200k', '330k'], help='Dataset mode')
-    parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs for fine-tuning')
-    parser.add_argument('--learning_rate', type=float, default=0.001, help='Learning rate for fine-tuning')
+    parser.add_argument('--f_epochs', type=int, default=10, help='Number of epochs for fine-tuning')
+    parser.add_argument('--f_lr', type=float, default=0.001, help='Learning rate for fine-tuning')
     return parser.parse_args()
 
 class Test:
