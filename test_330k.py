@@ -165,9 +165,7 @@ class Test:
                 
             print(f"Epoch {epoch+1}/{self.args.f_epochs}, Loss: {meter_loss.avg:.4f}, Acc@1: {meter_top1.avg:.2f}%")
         
-        save_path = os.path.join(self.result_dir, f'finetuned_model_{self.dataset_mode}.pth')
-        torch.save(self.student.state_dict(), save_path)
-        print(f"Finetuned model saved to {save_path}")
+
 
     def main(self):
         print(f"Starting pipeline with dataset mode: {self.dataset_mode}")
