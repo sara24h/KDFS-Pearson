@@ -42,8 +42,8 @@ class Test:
         self.train_batch_size = args.train_batch_size
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
         self.dataset_mode = args.dataset_mode
-        self.num_epochs = args.num_epochs
-        self.learning_rate = args.learning_rate
+        self.f_epochs = args.f_epochs
+        self.f_lr = args.f_lr
 
         if self.device == 'cuda' and not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available! Please check GPU setup.")
@@ -177,18 +177,18 @@ class Test:
             raise
 
     def finetune(self, model):
-        print(f"==> Starting fine-tuning for {self.num_epochs} epochs with learning rate {self.learning_rate}..")
+        print(f"==> Starting fine-tuning for {self.f_epochs} epochs with learning rate {self.f_lr}..")
         try:
             model.train()
             model.ticket = True
-            optimizer = torch.optim.Adam(model.parameters(), lr=self.learning_rate)
+            optimizer = torch.optim.Adam(model.parameters(), lr=self.f_lr)
             criterion = torch.nn.BCEWithLogitsLoss()
 
-            for epoch in range(self.num_epochs):
+            for epoch in range(self.f_epochs):
                 meter_loss = meter.AverageMeter("Loss", ":6.4f")
                 meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
                 
-                with tqdm(total=len(self.train_loader), ncols=100, desc=f"Epoch {epoch+1}/{self.num_epochs}") as _tqdm:
+                with tqdm(total=len(self.train_loader), ncols=100, desc=f"Epoch {epoch+1}/{self.f_epochs}") as _tqdm:
                     for images, targets in self.train_loader:
                         images = images.to(self.device, non_blocking=True)
                         targets = targets.to(self.device, non_blocking=True).float()
