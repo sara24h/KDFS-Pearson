@@ -25,6 +25,7 @@ class Test:
         self.test_batch_size = args.test_batch_size
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
         self.dataset_mode = args.dataset_mode  # 'hardfake', 'rvf10k', '140k', '200k', '190k', '330k'
+        self.result_dir = args.result_dir  # Directory to save finetuned model
 
         # Verify CUDA availability
         if self.device == 'cuda' and not torch.cuda.is_available():
@@ -54,17 +55,9 @@ class Test:
             elif self.dataset_mode == '330k':
                 if not os.path.exists(self.dataset_dir):
                     raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
-
-            # Define test transform with 330k normalization parameters
-            image_size = (256, 256) if self.dataset_mode in ['rvf10k', '140k', '190k', '200k', '330k'] else (300, 300)
-            transform_test = transforms.Compose([
-                transforms.Resize(image_size),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.4923, 0.4042, 0.3624],  # 330k mean
-                    std=[0.2446, 0.2198, 0.2141]    # 330k std
-                ),
-            ])
+            elif self.dataset_mode == '190k':
+                if not os.path.exists(self.dataset_dir):
+                    raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
 
             # Initialize dataset based on mode
             if self.dataset_mode == 'hardfake':
@@ -126,11 +119,54 @@ class Test:
                     pin_memory=self.pin_memory,
                     ddp=False
                 )
+            elif self.dataset_mode == '190k':
+                dataset = Dataset_selector(
+                    dataset_mode='190k',
+                    realfake190k_root_dir=self.dataset_dir,
+                    train_batch_size=self.test_batch_size,
+                    eval_batch_size=self.test_batch_size,
+                    num_workers=self.num_workers,
+                    pin_memory=self.pin_memory,
+                    ddp=False
+                )
 
-            # Load train and test loaders
-            self.train_loader = dataset.loader_train
-            # Override test_loader with 330k normalization
+            # Define transforms with 330k normalization for both train and test
+            image_size = (256, 256) if self.dataset_mode in ['rvf10k', '140k', '190k', '200k', '330k'] else (300, 300)
+            transform_train = transforms.Compose([
+                transforms.Resize(image_size),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomCrop(image_size[0], padding=8),
+                transforms.RandomRotation(20),
+                transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3),
+                transforms.RandomAffine(degrees=0, translate=(0.15, 0.15), scale=(0.8, 1.2)),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.4923, 0.4042, 0.3624],  # 330k mean
+                    std=[0.2446, 0.2198, 0.2141]    # 330k std
+                ),
+            ])
+            transform_test = transforms.Compose([
+                transforms.Resize(image_size),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.4923, 0.4042, 0.3624],  # 330k mean
+                    std=[0.2446, 0.2198, 0.2141]    # 330k std
+                ),
+            ])
+
+            # Load train and test datasets with 330k normalization
+            train_dataset = dataset.loader_train.dataset
+            train_dataset.transform = transform_train  # Apply 330k normalization
+            self.train_loader = DataLoader(
+                train_dataset,
+                batch_size=self.test_batch_size,
+                shuffle=True,
+                num_workers=self.num_workers,
+                pin_memory=self.pin_memory,
+                sampler=dataset.loader_train.sampler if hasattr(dataset.loader_train, 'sampler') else None
+            )
             test_dataset = dataset.loader_test.dataset
+            test_dataset.transform = transform_test  # Apply 330k normalization
             self.test_loader = DataLoader(
                 test_dataset,
                 batch_size=self.test_batch_size,
@@ -217,14 +253,14 @@ class Test:
 
     def finetune(self):
         print("==> Fine-tuning the model..")
-        # فریز کردن همه لایه‌ها به جز layer4 و fc
+        # Freeze all layers except layer4 and fc
         for name, param in self.student.named_parameters():
             if 'layer4' not in name and 'fc' not in name:
                 param.requires_grad = False
             else:
                 param.requires_grad = True
         
-        # تنظیم بهینه‌ساز برای به‌روزرسانی پارامترهای غیرفریز شده
+        # Set optimizer for updating unfrozen parameters
         optimizer = torch.optim.SGD(
             filter(lambda p: p.requires_grad, self.student.parameters()),
             lr=self.args.f_lr,
@@ -232,13 +268,13 @@ class Test:
             weight_decay=5e-4
         )
         
-        # تعریف تابع خطا (برای دسته‌بندی دودویی)
+        # Define loss function (for binary classification)
         criterion = torch.nn.BCEWithLogitsLoss()
         
-        # تنظیم حالت مدل برای آموزش
-        self.student.ticket = False  # غیرفعال کردن ticket برای آموزش
+        # Set model to training mode
+        self.student.ticket = False  # Disable ticket mode for training
         
-        # حلقه آموزشی
+        # Training loop
         for epoch in range(self.args.f_epochs):
             self.student.train()
             meter_loss = meter.AverageMeter("Loss", ":6.4f")
@@ -268,6 +304,11 @@ class Test:
                     time.sleep(0.01)
             
             print(f"Epoch {epoch+1}/{self.args.f_epochs}, Loss: {meter_loss.avg:.4f}, Acc@1: {meter_top1.avg:.2f}%")
+        
+        # Save finetuned model
+        save_path = os.path.join(self.args.result_dir, f'finetuned_model_{self.dataset_mode}.pth')
+        torch.save(self.student.state_dict(), save_path)
+        print(f"Finetuned model saved to {save_path}")
 
     def main(self):
         print(f"Starting pipeline with dataset mode: {self.dataset_mode}")
