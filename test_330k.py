@@ -129,11 +129,10 @@ class Test:
         for name, param in self.student.named_parameters():
             param.requires_grad = 'layer4' in name or 'fc' in name
 
-        optimizer = torch.optim.SGD(
+        optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, self.student.parameters()),
             lr=self.args.f_lr,
-            momentum=0.9,
-            weight_decay=5e-4
+            weight_decay=1e-4 
         )
         criterion = torch.nn.BCEWithLogitsLoss()
         
