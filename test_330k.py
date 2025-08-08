@@ -28,31 +28,39 @@ class Test:
             raise RuntimeError("CUDA is not available! Please check GPU setup.")
             
         self.train_loader = None
-        self.test_loader = None # فقط یک لودر تست خواهیم داشت
+        self.test_loader = None
         self.student = None
 
     def dataload(self):
         print("==> Loading datasets using Dataset_selector...")
         
-        # ۱. ساخت کارخانه دیتاست برای گرفتن لودر آموزش و دیتاست خام تست
-        dataset_manager = Dataset_selector(
-            dataset_mode=self.dataset_mode,
-            realfake200k_root_dir=self.dataset_dir,
-            realfake200k_train_csv=os.path.join(self.dataset_dir, 'train_labels.csv'),
-            realfake200k_val_csv=os.path.join(self.dataset_dir, 'val_labels.csv'),
-            realfake200k_test_csv=os.path.join(self.dataset_dir, 'test_labels.csv'),
-            train_batch_size=self.args.f_train_batch_size,
-            eval_batch_size=self.test_batch_size,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            ddp=False
-        )
+        # دیکشنری پارامترها برای ارسال به Dataset_selector
+        # این بخش برای خوانایی بهتر جدا شده است
+        params = {
+            'dataset_mode': self.dataset_mode,
+            'train_batch_size': self.test_batch_size, # <<<--- اصلاحیه: از test_batch_size استفاده می‌کنیم
+            'eval_batch_size': self.test_batch_size,
+            'num_workers': self.num_workers,
+            'pin_memory': self.pin_memory,
+            'ddp': False
+        }
+        
+        # بر اساس دیتاست، مسیرهای مربوطه را به دیکشنری اضافه می‌کنیم
+        if self.dataset_mode == 'hardfake':
+            params['hardfake_csv_file'] = os.path.join(self.dataset_dir, 'data.csv')
+            params['hardfake_root_dir'] = self.dataset_dir
+        elif self.dataset_mode == '200k':
+            params['realfake200k_root_dir'] = self.dataset_dir
+            params['realfake200k_train_csv'] = os.path.join(self.dataset_dir, 'train_labels.csv')
+            params['realfake200k_val_csv'] = os.path.join(self.dataset_dir, 'val_labels.csv')
+            params['realfake200k_test_csv'] = os.path.join(self.dataset_dir, 'test_labels.csv')
+        # ... می‌توانید سایر دیتاست‌ها را به همین شکل اضافه کنید
 
-        # ۲. لودر آموزش را برای فاین‌تیون برمی‌داریم (با نرمال‌سازی دیتاست هدف)
+        dataset_manager = Dataset_selector(**params)
+
         self.train_loader = dataset_manager.loader_train
         print(f"Train loader for fine-tuning is ready (using {self.dataset_mode} normalization).")
 
-        # ۳. لودر تست را با نرمال‌سازی ثابت 330k می‌سازیم
         print("==> Creating the test loader with 330k normalization...")
         image_size = (256, 256) if self.dataset_mode != 'hardfake' else (300, 300)
         
@@ -60,24 +68,25 @@ class Test:
             transforms.Resize(image_size),
             transforms.ToTensor(),
             transforms.Normalize(
-                mean=[0.4923, 0.4042, 0.3624],  # 330k mean
-                std=[0.2446, 0.2198, 0.2141]   # 330k std
+                mean=[0.4923, 0.4042, 0.3624],
+                std=[0.2446, 0.2198, 0.2141]
             ),
         ])
         
-        # از دیتاست خام تست که توسط کارخانه ساخته شده استفاده می‌کنیم
         test_dataset_raw = dataset_manager.loader_test.dataset
-        test_dataset_raw.transform = transform_test_330k # و فقط transform آن را عوض می‌کنیم
+        test_dataset_raw.transform = transform_test_330k
         
         self.test_loader = DataLoader(
             test_dataset_raw,
             batch_size=self.test_batch_size,
             shuffle=False,
             num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            sampler=None
+            pin_memory=self.pin_memory
         )
         print("Test loader is ready (using 330k normalization).")
+
+    # ... بقیه متدهای build_model, test, finetune, main بدون تغییر باقی می‌مانند ...
+    # (برای کامل بودن، می‌توانید آن‌ها را از پاسخ قبلی کپی کنید)
 
     def build_model(self):
         print("==> Building student model..")
@@ -93,7 +102,7 @@ class Test:
         self.student.to(self.device)
         print(f"Model loaded on {self.device}")
 
-    def test(self): # <--- متد تست ساده‌تر شد، دیگر ورودی ندارد
+    def test(self):
         meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
         desc = "Test (with 330k norm)"
 
@@ -101,7 +110,6 @@ class Test:
         self.student.ticket = True
         
         with torch.no_grad():
-            # همیشه از self.test_loader استفاده می‌کند
             for images, targets in tqdm(self.test_loader, desc=desc, ncols=100):
                 images = images.to(self.device, non_blocking=True)
                 targets = targets.to(self.device, non_blocking=True).float()
@@ -117,7 +125,6 @@ class Test:
         print(f"[{desc}] Dataset: {self.dataset_mode}, Final Prec@1: {meter_top1.avg:.2f}%")
 
     def finetune(self):
-        # این متد بدون تغییر باقی می‌ماند
         print("==> Fine-tuning the model..")
         for name, param in self.student.named_parameters():
             param.requires_grad = 'layer4' in name or 'fc' in name
@@ -169,10 +176,10 @@ class Test:
         self.build_model()
         
         print("\n--- Testing BEFORE fine-tuning ---")
-        self.test() # <--- فقط یک نوع تست انجام می‌شود
+        self.test()
         
         print("\n--- Starting fine-tuning ---")
         self.finetune()
         
         print("\n--- Testing AFTER fine-tuning ---")
-        self.test() # <--- دوباره همان تست برای مقایسه انجام می‌شود
+        self.test()
