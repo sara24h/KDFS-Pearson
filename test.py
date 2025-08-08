@@ -28,7 +28,6 @@ def parse_args():
     parser.add_argument('--dataset_mode', type=str, default='hardfake', choices=['hardfake', 'rvf10k', '140k', '200k', '330k'], help='Dataset mode')
     parser.add_argument('--f_epochs', type=int, default=10, help='Number of epochs for fine-tuning')
     parser.add_argument('--f_lr', type=float, default=0.001, help='Learning rate for fine-tuning')
-    parser.add_argument('--freeze_layers', action='store_true', help='Freeze all layers except the final fully connected layer (fc) and the last convolutional block (layer4) during fine-tuning')
     return parser.parse_args()
 
 class Test:
@@ -45,7 +44,6 @@ class Test:
         self.dataset_mode = args.dataset_mode
         self.f_epochs = args.f_epochs
         self.f_lr = args.f_lr
-        self.freeze_layers = args.freeze_layers
 
         if self.device == 'cuda' and not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available! Please check GPU setup.")
@@ -184,24 +182,19 @@ class Test:
             model.train()
             model.ticket = True
 
-            # Freeze all layers except the final fully connected layer (fc) and the last convolutional block (layer4)
-            if self.freeze_layers:
-                print("Freezing all layers except the final fully connected layer (fc) and the last convolutional block (layer4)...")
-                frozen_layers = []
-                trainable_layers = []
-                for name, param in model.named_parameters():
-                    if 'fc' in name or 'layer4' in name:
-                        param.requires_grad = True
-                        trainable_layers.append(name)
-                    else:
-                        param.requires_grad = False
-                        frozen_layers.append(name)
-                print("Frozen layers:", frozen_layers)
-                print("Trainable layers:", trainable_layers)
-            else:
-                print("All layers are trainable.")
-                for name, param in model.named_parameters():
+            # Freeze all layers except the final fully connected layer (fc) and the last convolutional block (layer4) by default
+            print("Freezing all layers except the final fully connected layer (fc) and the last convolutional block (layer4)...")
+            frozen_layers = []
+            trainable_layers = []
+            for name, param in model.named_parameters():
+                if 'fc' in name or 'layer4' in name:
                     param.requires_grad = True
+                    trainable_layers.append(name)
+                else:
+                    param.requires_grad = False
+                    frozen_layers.append(name)
+            print("Frozen layers:", frozen_layers)
+            print("Trainable layers:", trainable_layers)
 
             # Only include parameters that require gradients in the optimizer
             optimizer = torch.optim.Adam(
