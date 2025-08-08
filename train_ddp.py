@@ -301,10 +301,15 @@ class TrainDDP:
 
         self.student.dataset_type = self.args.dataset_type
         num_ftrs = self.student.classifier[-1].in_features if self.arch == 'mobilenetv2' else self.student.fc.in_features
-        if self.arch == 'mobilenetv2':
+        
+        if self.arch.lower() == 'mobilenetv2':
+            num_ftrs = self.student.classifier.in_features
             self.student.classifier[-1] = nn.Linear(num_ftrs, 1)
+            
         else:
+            num_ftrs = self.student.fc.in_features
             self.student.fc = nn.Linear(num_ftrs, 1)
+            
         self.student = self.student.cuda()
         self.student = DDP(self.student, device_ids=[self.local_rank])
 
