@@ -57,8 +57,11 @@ class Test:
             params['realfake140k_valid_csv'] = os.path.join(self.dataset_dir, 'valid.csv')
             params['realfake140k_test_csv'] = os.path.join(self.dataset_dir, 'test.csv')
             params['realfake140k_root_dir'] = self.dataset_dir
+        # در متد dataload
         elif self.dataset_mode == '200k':
-            params['realfake200k_root_dir'] = self.dataset_dir
+    # ساختن مسیر صحیح و عمیق‌تر به پوشه تصاویر
+            image_root_dir = os.path.join(self.dataset_dir, 'my_real_vs_ai_dataset', 'my_real_vs_ai_dataset')
+            params['realfake200k_root_dir'] = image_root_dir 
             params['realfake200k_train_csv'] = os.path.join(self.dataset_dir, 'train_labels.csv')
             params['realfake200k_val_csv'] = os.path.join(self.dataset_dir, 'val_labels.csv')
             params['realfake200k_test_csv'] = os.path.join(self.dataset_dir, 'test_labels.csv')
