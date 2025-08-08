@@ -139,7 +139,7 @@ class TrainDDP:
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,
             ddp=True,
-            dataset_dir=self.dataset_dir,
+            #dataset_dir=self.dataset_dir,
             rvf10k_train_csv=self.args.rvf10k_train_csv,
             rvf10k_valid_csv=self.args.rvf10k_valid_csv
         )
