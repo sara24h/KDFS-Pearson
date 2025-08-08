@@ -28,6 +28,7 @@ class Test:
             raise RuntimeError("CUDA is not available! Please check GPU setup.")
             
         self.train_loader = None
+        self.val_loader = None
         self.test_loader = None
         self.student = None
 
@@ -35,31 +36,45 @@ class Test:
         print("==> Loading datasets using Dataset_selector...")
         
         # دیکشنری پارامترها برای ارسال به Dataset_selector
-        # این بخش برای خوانایی بهتر جدا شده است
         params = {
             'dataset_mode': self.dataset_mode,
-            'train_batch_size': self.test_batch_size, # <<<--- اصلاحیه: از test_batch_size استفاده می‌کنیم
+            'train_batch_size': self.test_batch_size,
             'eval_batch_size': self.test_batch_size,
             'num_workers': self.num_workers,
             'pin_memory': self.pin_memory,
             'ddp': False
         }
         
+        # === بخش کامل شده برای همه دیتاست‌ها ===
         # بر اساس دیتاست، مسیرهای مربوطه را به دیکشنری اضافه می‌کنیم
         if self.dataset_mode == 'hardfake':
             params['hardfake_csv_file'] = os.path.join(self.dataset_dir, 'data.csv')
             params['hardfake_root_dir'] = self.dataset_dir
+        elif self.dataset_mode == 'rvf10k':
+            params['rvf10k_train_csv'] = os.path.join(self.dataset_dir, 'train.csv')
+            params['rvf10k_valid_csv'] = os.path.join(self.dataset_dir, 'valid.csv')
+            params['rvf10k_root_dir'] = self.dataset_dir
+        elif self.dataset_mode == '140k':
+            params['realfake140k_train_csv'] = os.path.join(self.dataset_dir, 'train.csv')
+            params['realfake140k_valid_csv'] = os.path.join(self.dataset_dir, 'valid.csv')
+            params['realfake140k_test_csv'] = os.path.join(self.dataset_dir, 'test.csv')
+            params['realfake140k_root_dir'] = self.dataset_dir
         elif self.dataset_mode == '200k':
             params['realfake200k_root_dir'] = self.dataset_dir
             params['realfake200k_train_csv'] = os.path.join(self.dataset_dir, 'train_labels.csv')
             params['realfake200k_val_csv'] = os.path.join(self.dataset_dir, 'val_labels.csv')
             params['realfake200k_test_csv'] = os.path.join(self.dataset_dir, 'test_labels.csv')
-        # ... می‌توانید سایر دیتاست‌ها را به همین شکل اضافه کنید
+        elif self.dataset_mode == '190k':
+            params['realfake190k_root_dir'] = self.dataset_dir
+        elif self.dataset_mode == '330k':
+            params['realfake330k_root_dir'] = self.dataset_dir
+        # ==========================================
 
         dataset_manager = Dataset_selector(**params)
 
         self.train_loader = dataset_manager.loader_train
-        print(f"Train loader for fine-tuning is ready (using {self.dataset_mode} normalization).")
+        self.val_loader = dataset_manager.loader_val
+        print(f"Train/Val loaders ready (using {self.dataset_mode} normalization).")
 
         print("==> Creating the test loader with 330k normalization...")
         image_size = (256, 256) if self.dataset_mode != 'hardfake' else (300, 300)
@@ -85,9 +100,6 @@ class Test:
         )
         print("Test loader is ready (using 330k normalization).")
 
-    # ... بقیه متدهای build_model, test, finetune, main بدون تغییر باقی می‌مانند ...
-    # (برای کامل بودن، می‌توانید آن‌ها را از پاسخ قبلی کپی کنید)
-
     def build_model(self):
         print("==> Building student model..")
         self.student = ResNet_50_sparse_hardfakevsreal()
@@ -105,78 +117,94 @@ class Test:
     def test(self):
         meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
         desc = "Test (with 330k norm)"
-
         self.student.eval()
         self.student.ticket = True
-        
         with torch.no_grad():
             for images, targets in tqdm(self.test_loader, desc=desc, ncols=100):
                 images = images.to(self.device, non_blocking=True)
                 targets = targets.to(self.device, non_blocking=True).float()
-                
                 logits_student, _ = self.student(images)
                 logits_student = logits_student.squeeze()
-                
                 preds = (torch.sigmoid(logits_student) > 0.5).float()
                 correct = (preds == targets).sum().item()
                 prec1 = 100.0 * correct / images.size(0)
                 meter_top1.update(prec1, images.size(0))
-
         print(f"[{desc}] Dataset: {self.dataset_mode}, Final Prec@1: {meter_top1.avg:.2f}%")
 
     def finetune(self):
-        print("==> Fine-tuning the model..")
+        print("==> Fine-tuning the model by unfreezing more layers..")
+        if not os.path.exists(self.result_dir):
+            os.makedirs(self.result_dir)
+            
         for name, param in self.student.named_parameters():
-            param.requires_grad = 'layer4' in name or 'fc' in name
+            if 'layer4' in name or 'layer3' in name or 'fc' in name:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
 
         optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, self.student.parameters()),
             lr=self.args.f_lr,
-            weight_decay=1e-4 
+            weight_decay=1e-4
         )
         criterion = torch.nn.BCEWithLogitsLoss()
         
         self.student.ticket = False
         
+        best_val_acc = 0.0
+        best_model_path = os.path.join(self.result_dir, f'finetuned_model_best_{self.dataset_mode}.pth')
+
         for epoch in range(self.args.f_epochs):
             self.student.train()
             meter_loss = meter.AverageMeter("Loss", ":6.4f")
-            meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
+            meter_top1_train = meter.AverageMeter("Train Acc@1", ":6.2f")
             
-            for images, targets in tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.args.f_epochs}", ncols=100):
-                images = images.to(self.device)
-                targets = targets.to(self.device).float()
-                
+            for images, targets in tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.args.f_epochs} [Train]", ncols=100):
+                images, targets = images.to(self.device), targets.to(self.device).float()
                 optimizer.zero_grad()
-                logits_student, _ = self.student(images)
-                logits_student = logits_student.squeeze()
-                
-                loss = criterion(logits_student, targets)
+                logits, _ = self.student(images)
+                logits = logits.squeeze()
+                loss = criterion(logits, targets)
                 loss.backward()
                 optimizer.step()
-
-                preds = (torch.sigmoid(logits_student) > 0.5).float()
+                preds = (torch.sigmoid(logits) > 0.5).float()
                 correct = (preds == targets).sum().item()
                 prec1 = 100.0 * correct / images.size(0)
-                
                 meter_loss.update(loss.item(), images.size(0))
-                meter_top1.update(prec1, images.size(0))
-                
-            print(f"Epoch {epoch+1}/{self.args.f_epochs}, Loss: {meter_loss.avg:.4f}, Acc@1: {meter_top1.avg:.2f}%")
-        
+                meter_top1_train.update(prec1, images.size(0))
 
+            self.student.eval()
+            meter_top1_val = meter.AverageMeter("Val Acc@1", ":6.2f")
+            with torch.no_grad():
+                for images, targets in tqdm(self.val_loader, desc=f"Epoch {epoch+1}/{self.args.f_epochs} [Val]", ncols=100):
+                    images, targets = images.to(self.device), targets.to(self.device).float()
+                    logits, _ = self.student(images)
+                    logits = logits.squeeze()
+                    preds = (torch.sigmoid(logits) > 0.5).float()
+                    correct = (preds == targets).sum().item()
+                    prec1 = 100.0 * correct / images.size(0)
+                    meter_top1_val.update(prec1, images.size(0))
+            
+            print(f"Epoch {epoch+1}: Train Loss: {meter_loss.avg:.4f}, Train Acc: {meter_top1_train.avg:.2f}%, Val Acc: {meter_top1_val.avg:.2f}%")
+
+            if meter_top1_val.avg > best_val_acc:
+                best_val_acc = meter_top1_val.avg
+                print(f"🎉 New best model found with Val Acc: {best_val_acc:.2f}%. Saving to {best_model_path}")
+                torch.save(self.student.state_dict(), best_model_path)
+        
+        print(f"\nFine-tuning finished. Loading best model with Val Acc: {best_val_acc:.2f}%")
+        if os.path.exists(best_model_path):
+            self.student.load_state_dict(torch.load(best_model_path))
+        else:
+            print("Warning: No best model was saved. The model from the last epoch will be used for testing.")
 
     def main(self):
         print(f"Starting pipeline with dataset mode: {self.dataset_mode}")
-        
         self.dataload()
         self.build_model()
-        
         print("\n--- Testing BEFORE fine-tuning ---")
         self.test()
-        
         print("\n--- Starting fine-tuning ---")
         self.finetune()
-        
         print("\n--- Testing AFTER fine-tuning ---")
         self.test()
