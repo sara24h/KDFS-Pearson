@@ -39,25 +39,37 @@ class Test:
                 csv_path = os.path.join(self.dataset_dir, 'data.csv')
                 if not os.path.exists(csv_path):
                     raise FileNotFoundError(f"CSV file not found: {csv_path}")
+                mean = [0.5124, 0.4165, 0.3684]
+                std = [0.2363, 0.2087, 0.2029]
             elif self.dataset_mode == 'rvf10k':
                 train_csv = os.path.join(self.dataset_dir, 'train.csv')
                 valid_csv = os.path.join(self.dataset_dir, 'valid.csv')
                 if not os.path.exists(train_csv) or not os.path.exists(valid_csv):
                     raise FileNotFoundError(f"CSV files not found: {train_csv}, {valid_csv}")
+                mean = [0.5212, 0.4260, 0.3811]
+                std = [0.2486, 0.2238, 0.2211]
             elif self.dataset_mode == '140k':
                 test_csv = os.path.join(self.dataset_dir, 'test.csv')
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
+                mean = [0.5207, 0.4258, 0.3806]
+                std = [0.2490, 0.2239, 0.2212]
             elif self.dataset_mode == '200k':
                 test_csv = os.path.join(self.dataset_dir, 'test_labels.csv')
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
-            elif self.dataset_mode == '330k':
-                if not os.path.exists(self.dataset_dir):
-                    raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
+                mean = [0.4868, 0.3972, 0.3624]
+                std = [0.2296, 0.2066, 0.2009]
             elif self.dataset_mode == '190k':
                 if not os.path.exists(self.dataset_dir):
                     raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
+                mean = [0.4668, 0.3816, 0.3414]
+                std = [0.2410, 0.2161, 0.2081]
+            elif self.dataset_mode == '330k':
+                if not os.path.exists(self.dataset_dir):
+                    raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
+                mean = [0.4923, 0.4042, 0.3624]
+                std = [0.2446, 0.2198, 0.2141]
 
             # Initialize dataset based on mode
             if self.dataset_mode == 'hardfake':
@@ -109,16 +121,6 @@ class Test:
                     pin_memory=self.pin_memory,
                     ddp=False
                 )
-            elif self.dataset_mode == '330k':
-                dataset = Dataset_selector(
-                    dataset_mode='330k',
-                    realfake330k_root_dir=self.dataset_dir,
-                    train_batch_size=self.test_batch_size,
-                    eval_batch_size=self.test_batch_size,
-                    num_workers=self.num_workers,
-                    pin_memory=self.pin_memory,
-                    ddp=False
-                )
             elif self.dataset_mode == '190k':
                 dataset = Dataset_selector(
                     dataset_mode='190k',
@@ -129,8 +131,18 @@ class Test:
                     pin_memory=self.pin_memory,
                     ddp=False
                 )
+            elif self.dataset_mode == '330k':
+                dataset = Dataset_selector(
+                    dataset_mode='330k',
+                    realfake330k_root_dir=self.dataset_dir,
+                    train_batch_size=self.test_batch_size,
+                    eval_batch_size=self.test_batch_size,
+                    num_workers=self.num_workers,
+                    pin_memory=self.pin_memory,
+                    ddp=False
+                )
 
-            # Define transforms with 330k normalization for both train and test
+            # Define transforms with dataset-specific normalization for training and testing
             image_size = (256, 256) if self.dataset_mode in ['rvf10k', '140k', '190k', '200k', '330k'] else (300, 300)
             transform_train = transforms.Compose([
                 transforms.Resize(image_size),
@@ -140,12 +152,16 @@ class Test:
                 transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3),
                 transforms.RandomAffine(degrees=0, translate=(0.15, 0.15), scale=(0.8, 1.2)),
                 transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.4923, 0.4042, 0.3624],  # 330k mean
-                    std=[0.2446, 0.2198, 0.2141]    # 330k std
-                ),
+                transforms.Normalize(mean=mean, std=std),  # Dataset-specific normalization
             ])
             transform_test = transforms.Compose([
+                transforms.Resize(image_size),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=mean, std=std),  # Dataset-specific normalization
+            ])
+
+            # Optional: Test loader with 330k normalization for comparison
+            transform_test_330k = transforms.Compose([
                 transforms.Resize(image_size),
                 transforms.ToTensor(),
                 transforms.Normalize(
@@ -154,9 +170,9 @@ class Test:
                 ),
             ])
 
-            # Load train and test datasets with 330k normalization
+            # Load train and test datasets
             train_dataset = dataset.loader_train.dataset
-            train_dataset.transform = transform_train  # Apply 330k normalization
+            train_dataset.transform = transform_train  # Apply dataset-specific normalization
             self.train_loader = DataLoader(
                 train_dataset,
                 batch_size=self.test_batch_size,
@@ -166,7 +182,7 @@ class Test:
                 sampler=dataset.loader_train.sampler if hasattr(dataset.loader_train, 'sampler') else None
             )
             test_dataset = dataset.loader_test.dataset
-            test_dataset.transform = transform_test  # Apply 330k normalization
+            test_dataset.transform = transform_test  # Apply dataset-specific normalization
             self.test_loader = DataLoader(
                 test_dataset,
                 batch_size=self.test_batch_size,
@@ -175,7 +191,19 @@ class Test:
                 pin_memory=self.pin_memory,
                 sampler=dataset.loader_test.sampler if hasattr(dataset.loader_test, 'sampler') else None
             )
-            print(f"{self.dataset_mode} datasets loaded! Train batches: {len(self.train_loader)}, Test batches: {len(self.test_loader)}")
+            # Optional: Test loader with 330k normalization
+            test_dataset_330k = dataset.loader_test.dataset
+            test_dataset_330k.transform = transform_test_330k  # Apply 330k normalization
+            self.test_loader_330k = DataLoader(
+                test_dataset_330k,
+                batch_size=self.test_batch_size,
+                shuffle=False,
+                num_workers=self.num_workers,
+                pin_memory=self.pin_memory,
+                sampler=dataset.loader_test.sampler if hasattr(dataset.loader_test, 'sampler') else None
+            )
+            print(f"{self.dataset_mode} datasets loaded! Train batches: {len(self.train_loader)}, "
+                  f"Test batches: {len(self.test_loader)}, Test batches (330k norm): {len(self.test_loader_330k)}")
         except Exception as e:
             print(f"Error loading dataset: {str(e)}")
             raise
@@ -204,15 +232,17 @@ class Test:
             print(f"Error building model: {str(e)}")
             raise
 
-    def test(self):
+    def test(self, use_330k_norm=False):
         meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
+        loader = self.test_loader_330k if use_330k_norm else self.test_loader
+        desc = "Test (330k norm)" if use_330k_norm else "Test (dataset-specific norm)"
 
         self.student.eval()
         self.student.ticket = True  # Enable ticket mode for sparse model
         try:
             with torch.no_grad():
-                with tqdm(total=len(self.test_loader), ncols=100, desc="Test") as _tqdm:
-                    for images, targets in self.test_loader:
+                with tqdm(total=len(loader), ncols=100, desc=desc) as _tqdm:
+                    for images, targets in loader:
                         images = images.to(self.device, non_blocking=True)
                         targets = targets.to(self.device, non_blocking=True).float()
                         
@@ -228,7 +258,7 @@ class Test:
                         _tqdm.update(1)
                         time.sleep(0.01)
 
-            print(f"[Test] Dataset: {self.dataset_mode}, Prec@1: {meter_top1.avg:.2f}%")
+            print(f"[{desc}] Dataset: {self.dataset_mode}, Prec@1: {meter_top1.avg:.2f}%")
 
             # Calculate FLOPs and parameters
             (
@@ -321,11 +351,15 @@ class Test:
 
             self.dataload()
             self.build_model()
-            print("تست قبل از فاین‌تیونینگ:")
-            self.test()
+            print("تست قبل از فاین‌تیونینگ (با نرمال‌سازی خاص دیتاست):")
+            self.test(use_330k_norm=False)
+            print("تست قبل از فاین‌تیونینگ (با نرمال‌سازی 330k):")
+            self.test(use_330k_norm=True)
             self.finetune()
-            print("تست بعد از فاین‌تیونینگ:")
-            self.test()
+            print("تست بعد از فاین‌تیونینگ (با نرمال‌سازی خاص دیتاست):")
+            self.test(use_330k_norm=False)
+            print("تست بعد از فاین‌تیونینگ (با نرمال‌سازی 330k):")
+            self.test(use_330k_norm=True)
         except Exception as e:
             print(f"Error in pipeline: {str(e)}")
             raise
