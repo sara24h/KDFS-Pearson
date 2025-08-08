@@ -1,27 +1,11 @@
-"""
-Creates a MobileNetV2 Model as defined in:
-Mark Sandler, Andrew Howard, Menglong Zhu, Andrey Zhmoginov, Liang-Chieh Chen. (2018). 
-MobileNetV2: Inverted Residuals and Linear Bottlenecks
-arXiv preprint arXiv:1801.04381.
-import from https://github.com/tonylins/pytorch-mobilenet-v2
-"""
+import torch
+from torch import nn
+from typing import Callable, List, Optional
 
-import torch.nn as nn
-import math
-
-__all__ = ["mobilenetv2"]
-
-
-def _make_divisible(v, divisor, min_value=None):
+def _make_divisible(v: float, divisor: int, min_value: Optional[int] = None) -> int:
     """
     This function is taken from the original tf repo.
     It ensures that all layers have a channel number that is divisible by 8
-    It can be seen here:
-    https://github.com/tensorflow/models/blob/master/research/slim/nets/mobilenet/mobilenet.py
-    :param v:
-    :param divisor:
-    :param min_value:
-    :return:
     """
     if min_value is None:
         min_value = divisor
@@ -32,142 +16,167 @@ def _make_divisible(v, divisor, min_value=None):
     return new_v
 
 
-def conv_3x3_bn(inp, oup, stride):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, 3, stride, 1, bias=False),
-        nn.BatchNorm2d(oup),
-        nn.ReLU6(inplace=True),
-    )
-
-
-def conv_1x1_bn(inp, oup):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, 1, 1, 0, bias=False),
-        nn.BatchNorm2d(oup),
-        nn.ReLU6(inplace=True),
-    )
+class ConvBNActivation(nn.Sequential):
+    def __init__(
+        self,
+        in_planes: int,
+        out_planes: int,
+        kernel_size: int = 3,
+        stride: int = 1,
+        groups: int = 1,
+        norm_layer: Optional[Callable[..., nn.Module]] = None,
+        activation_layer: Optional[Callable[..., nn.Module]] = None,
+        dilation: int = 1,
+    ) -> None:
+        padding = (kernel_size - 1) // 2 * dilation
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+        if activation_layer is None:
+            activation_layer = nn.ReLU6
+        super().__init__(
+            nn.Conv2d(in_planes, out_planes, kernel_size, stride, padding, dilation=dilation, groups=groups, bias=False),
+            norm_layer(out_planes),
+            activation_layer(inplace=True),
+        )
+        self.out_channels = out_planes
 
 
 class InvertedResidual(nn.Module):
-    def __init__(self, inp, oup, stride, expand_ratio):
+    def __init__(
+        self, inp: int, oup: int, stride: int, expand_ratio: int, norm_layer: Optional[Callable[..., nn.Module]] = None
+    ) -> None:
         super().__init__()
-        assert stride in [1, 2]
+        self.stride = stride
+        if stride not in [1, 2]:
+            raise ValueError(f"stride should be 1 or 2 instead of {stride}")
 
-        hidden_dim = round(inp * expand_ratio)
-        self.identity = stride == 1 and inp == oup
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
 
-        if expand_ratio == 1:
-            self.conv = nn.Sequential(
+        hidden_dim = int(round(inp * expand_ratio))
+        self.use_res_connect = self.stride == 1 and inp == oup
+
+        layers: List[nn.Module] = []
+        if expand_ratio != 1:
+            # pw
+            layers.append(
+                ConvBNActivation(inp, hidden_dim, kernel_size=1, norm_layer=norm_layer, activation_layer=nn.ReLU6)
+            )
+        layers.extend(
+            [
                 # dw
-                nn.Conv2d(
-                    hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False
+                ConvBNActivation(
+                    hidden_dim, hidden_dim, stride=stride, groups=hidden_dim, norm_layer=norm_layer, activation_layer=nn.ReLU6
                 ),
-                nn.BatchNorm2d(hidden_dim),
-                nn.ReLU6(inplace=True),
                 # pw-linear
                 nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup),
-            )
-        else:
-            self.conv = nn.Sequential(
-                # pw
-                nn.Conv2d(inp, hidden_dim, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(hidden_dim),
-                nn.ReLU6(inplace=True),
-                # dw
-                nn.Conv2d(
-                    hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False
-                ),
-                nn.BatchNorm2d(hidden_dim),
-                nn.ReLU6(inplace=True),
-                # pw-linear
-                nn.Conv2d(hidden_dim, oup, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup),
-            )
+                norm_layer(oup),
+            ]
+        )
+        self.conv = nn.Sequential(*layers)
+        self.out_channels = oup
+        self._is_cn = stride > 1
 
-    def forward(self, x):
-        if self.identity:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.use_res_connect:
             return x + self.conv(x)
         else:
             return self.conv(x)
 
 
 class MobileNetV2(nn.Module):
-    def __init__(self, num_classes=1, width_mult=1.0):
+    def __init__(
+        self,
+        num_classes: int = 1,
+        width_mult: float = 1.0,
+        inverted_residual_setting = None,
+        round_nearest: int = 8,
+        block: Optional[Callable[..., nn.Module]] = None,
+        norm_layer: Optional[Callable[..., nn.Module]] = None,
+    ) -> None:
         super().__init__()
-        # setting of inverted residual blocks
-        self.cfgs = [
-            # t, c, n, s
-            [1, 16, 1, 1],
-            [6, 24, 2, 2],
-            [6, 32, 3, 2],
-            [6, 64, 4, 2],
-            [6, 96, 3, 1],
-            [6, 160, 3, 2],
-            [6, 320, 1, 1],
-        ]
 
-        # building first layer
-        input_channel = _make_divisible(32 * width_mult, 4 if width_mult == 0.1 else 8)
-        layers = [conv_3x3_bn(3, input_channel, 2)]
-        # building inverted residual blocks
-        block = InvertedResidual
-        for t, c, n, s in self.cfgs:
-            output_channel = _make_divisible(
-                c * width_mult, 4 if width_mult == 0.1 else 8
+        if block is None:
+            block = InvertedResidual
+        if norm_layer is None:
+            norm_layer = nn.BatchNorm2d
+
+        input_channel = 32
+        last_channel = 1280
+
+        if inverted_residual_setting is None:
+            inverted_residual_setting = [
+                # t, c, n, s
+                [1, 16, 1, 1],
+                [6, 24, 2, 2],
+                [6, 32, 3, 2],
+                [6, 64, 4, 2],
+                [6, 96, 3, 1],
+                [6, 160, 3, 2],
+                [6, 320, 1, 1],
+            ]
+
+        if len(inverted_residual_setting) == 0 or len(inverted_residual_setting[0]) != 4:
+            raise ValueError(
+                f"inverted_residual_setting should be non-empty or a 4-element list, got {inverted_residual_setting}"
             )
+
+        input_channel = _make_divisible(input_channel * width_mult, round_nearest)
+        self.last_channel = _make_divisible(last_channel * max(1.0, width_mult), round_nearest)
+        features: List[nn.Module] = [
+            ConvBNActivation(3, input_channel, stride=2, norm_layer=norm_layer, activation_layer=nn.ReLU6)
+        ]
+        for t, c, n, s in inverted_residual_setting:
+            output_channel = _make_divisible(c * width_mult, round_nearest)
             for i in range(n):
-                layers.append(
-                    block(input_channel, output_channel, s if i == 0 else 1, t)
-                )
+                stride = s if i == 0 else 1
+                features.append(block(input_channel, output_channel, stride, expand_ratio=t, norm_layer=norm_layer))
                 input_channel = output_channel
-        self.features = nn.Sequential(*layers)
-        # building last several layers
-        output_channel = (
-            _make_divisible(1280 * width_mult, 4 if width_mult == 0.1 else 8)
-            if width_mult > 1.0
-            else 1280
+        features.append(
+            ConvBNActivation(
+                input_channel, self.last_channel, kernel_size=1, norm_layer=norm_layer, activation_layer=nn.ReLU6
+            )
         )
-        self.conv = conv_1x1_bn(input_channel, output_channel)
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.classifier = nn.Linear(output_channel, num_classes)
+        self.features = nn.Sequential(*features)
 
-        self._initialize_weights()
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.2),
+            nn.Linear(self.last_channel, num_classes),
+        )
 
-    def forward(self, x):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.zeros_(m.bias)
+
+    def _forward_impl(self, x: torch.Tensor):
         feature_list = []
 
         for i, block in enumerate(self.features):
             x = block(x)
-            if i == 1:
-                feature_list.append(x)
-            elif i == 6:
-                feature_list.append(x)
-            elif i == 13:
-                feature_list.append(x)
-            elif i == 17:
-                feature_list.append(x)
-        # x = self.features(x)
-        x = self.conv(x)
-        x = self.avgpool(x)
-        x = x.view(x.size(0), -1)
+
+            if i in [3, 6, 13, 17]: 
+                 feature_list.append(x)
+
+        x = nn.functional.adaptive_avg_pool2d(x, (1, 1))
+        x = torch.flatten(x, 1)
         x = self.classifier(x)
-        return x, feature_list
 
-    def _initialize_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, math.sqrt(2.0 / n))
-                if m.bias is not None:
-                    m.bias.data.zero_()
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
-            elif isinstance(m, nn.Linear):
-                m.weight.data.normal_(0, 0.01)
-                m.bias.data.zero_()
+        while len(feature_list) < 4:
+            feature_list.append(feature_list[-1])
 
+        return x, feature_list[:4] # Return 4 features
 
-def MobileNetV2_deepfake():
-    return MobileNetV2(num_classes=1, width_mult=1.0)
+    def forward(self, x: torch.Tensor):
+        return self._forward_impl(x)
+
+def MobileNetV2_deepfake(**kwargs):
+ 
+    return MobileNetV2(**kwargs)
