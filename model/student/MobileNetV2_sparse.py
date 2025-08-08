@@ -1,4 +1,4 @@
-
+%%writefile /kaggle/working/KDFS-Pearson/model/student/MobileNetV2_sparse.py
 import torch
 import torch.nn as nn
 import math
@@ -16,11 +16,8 @@ class MaskedNet(nn.Module):
         self.gumbel_start_temperature = gumbel_start_temperature
         self.gumbel_end_temperature = gumbel_end_temperature
         self.num_epochs = num_epochs
-
         self.gumbel_temperature = gumbel_start_temperature
-
         self.ticket = False
-
         self.mask_modules = []
 
     def checkpoint(self):
@@ -55,14 +52,12 @@ class MaskedNet(nn.Module):
 
     def get_flops(self):
         Flops_total = torch.tensor(0)
-        # Flops_conv = feature_map_h * feature_map_w * k * k * c_in * c_out
-        # Flops_bn = feature_map_h * feature_map_w * c_in
         Flops_total = (
             Flops_total + 112 * 112 * 3 * 3 * 3 * 32 + 112 * 112 * 32
-        )  # first conv and bn layer
+        )
         Flops_total = (
             Flops_total + 112 * 112 * 3 * 3 * 32 + 112 * 112 * 32
-        )  # first dw conv and bn layer
+        )
         for i, m in enumerate(self.mask_modules):
             Flops_dw_conv = 0
             Flops_dw_bn = 0
@@ -85,7 +80,6 @@ class MaskedNet(nn.Module):
                     * m.mask.sum()
                 )
             Flops_bn = m.feature_map_h * m.feature_map_w * m.mask.sum()
-            # dw conv
             if (i - 1) % 2 == 0:
                 Flops_dw_conv = (
                     m.feature_map_h
@@ -102,20 +96,9 @@ class MaskedNet(nn.Module):
 
 
 def _make_divisible(v, divisor, min_value=None):
-    """
-    This function is taken from the original tf repo.
-    It ensures that all layers have a channel number that is divisible by 8
-    It can be seen here:
-    https://github.com/tensorflow/models/blob/master/research/slim/nets/mobilenet/mobilenet.py
-    :param v:
-    :param divisor:
-    :param min_value:
-    :return:
-    """
     if min_value is None:
         min_value = divisor
     new_v = max(min_value, int(v + divisor / 2) // divisor * divisor)
-    # Make sure that round down does not go down by more than 10%.
     if new_v < 0.9 * v:
         new_v += divisor
     return new_v
@@ -141,41 +124,30 @@ class InvertedResidual_sparse(nn.Module):
     def __init__(self, inp, oup, stride, expand_ratio):
         super().__init__()
         assert stride in [1, 2]
-
         hidden_dim = round(inp * expand_ratio)
         self.identity = stride == 1 and inp == oup
-
         if expand_ratio == 1:
             self.conv = nn.Sequential(
-                # dw
-                nn.Conv2d(
-                    hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False
-                ),
+                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
                 nn.BatchNorm2d(hidden_dim),
                 nn.ReLU6(inplace=True),
-                # pw-linear
                 SoftMaskedConv2d(hidden_dim, oup, 1, 1, 0, bias=False),
                 nn.BatchNorm2d(oup),
             )
         else:
             self.conv = nn.Sequential(
-                # pw
                 SoftMaskedConv2d(inp, hidden_dim, 1, 1, 0, bias=False),
                 nn.BatchNorm2d(hidden_dim),
                 nn.ReLU6(inplace=True),
-                # dw
-                nn.Conv2d(
-                    hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False
-                ),
+                nn.Conv2d(hidden_dim, hidden_dim, 3, stride, 1, groups=hidden_dim, bias=False),
                 nn.BatchNorm2d(hidden_dim),
                 nn.ReLU6(inplace=True),
-                # pw-linear
                 SoftMaskedConv2d(hidden_dim, oup, 1, 1, 0, bias=False),
                 nn.BatchNorm2d(oup),
             )
 
     def forward(self, x, ticket):
-        out = x.clone()
+        out = x
         for layer in self.conv:
             if isinstance(layer, SoftMaskedConv2d):
                 out = layer(out, ticket)
@@ -186,10 +158,6 @@ class InvertedResidual_sparse(nn.Module):
         else:
             return out
 
-
-# In file: /kaggle/working/KDFS-Pearson/model/student/MobileNetV2_sparse.py
-
-# In file: /kaggle/working/KDFS-Pearson/model/student/MobileNetV2_sparse.py
 
 class MobileNetV2_sparse(MaskedNet):
     def __init__(
@@ -202,26 +170,17 @@ class MobileNetV2_sparse(MaskedNet):
     ):
         super().__init__(gumbel_start_temperature, gumbel_end_temperature, num_epochs)
         
-        # --- START: CORRECTED CODE ---
         # Define the teacher model's feature dimensions at each key stage.
-        # These are standard for MobileNetV2 with width_mult=1.0.
         teacher_feature_dims = {
-            "stage1": 16,  # After the first block
-            "stage2": 32,  # After the third block group
-            "stage3": 96,  # After the fifth block group
-            "stage4": 320, # After the seventh block group
+            "stage1": 16,
+            "stage2": 32,
+            "stage3": 96,
+            "stage4": 320
         }
-        # --- END: CORRECTED CODE ---
         
         self.cfgs = [
-            # t, c, n, s
-            [1, 16, 1, 1],
-            [6, 24, 2, 2],
-            [6, 32, 3, 2],
-            [6, 64, 4, 2],
-            [6, 96, 3, 1],
-            [6, 160, 3, 2],
-            [6, 320, 1, 1],
+            [1, 16, 1, 1], [6, 24, 2, 2], [6, 32, 3, 2], [6, 64, 4, 2],
+            [6, 96, 3, 1], [6, 160, 3, 2], [6, 320, 1, 1],
         ]
 
         input_channel = _make_divisible(32 * width_mult, 8)
@@ -236,57 +195,56 @@ class MobileNetV2_sparse(MaskedNet):
                 )
                 input_channel = output_channel
 
-            # --- START: CORRECTED CODE ---
             # Define convert layers to match the student's channels to the teacher's.
-            if num == 0:  # After cfg block with 16 channels
+            if num == 0:
                 self.convert1 = nn.Conv2d(output_channel, teacher_feature_dims["stage1"], kernel_size=1)
-            if num == 2:  # After cfg block with 32 channels
+            if num == 2:
                 self.convert2 = nn.Conv2d(output_channel, teacher_feature_dims["stage2"], kernel_size=1)
-            if num == 4:  # After cfg block with 96 channels
+            if num == 4:
                 self.convert3 = nn.Conv2d(output_channel, teacher_feature_dims["stage3"], kernel_size=1)
-            if num == 6:  # After cfg block with 320 channels
+            if num == 6:
                 self.convert4 = nn.Conv2d(output_channel, teacher_feature_dims["stage4"], kernel_size=1)
-            # --- END: CORRECTED CODE ---
             
-        self.features = nn.ModuleList(layers) # Use ModuleList for better iteration control
+        self.features = nn.ModuleList(layers)
         
         output_channel_final = _make_divisible(1280 * width_mult, 8) if width_mult > 1.0 else 1280
-        
         self.conv = conv_1x1_bn_sparse(input_channel, output_channel_final)
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.classifier = nn.Linear(output_channel_final, num_classes)
-
         self.mask_modules = [m for m in self.modules() if isinstance(m, SoftMaskedConv2d)]
-
         self._initialize_weights()
 
     def forward(self, x):
         feature_list = []
-        
-        # --- START: CORRECTED FORWARD PASS ---
-        # Block indices for feature extraction in a standard MobileNetV2
-        # `self.features` has 1 initial conv + 17 InvertedResidual blocks = 18 layers
-        feature_extraction_indices = {1, 3, 6, 13, 17}
-
         out = x
-        for i, block in enumerate(self.features):
-            if i == 0: # The first conv_3x3_bn block
-                out = block(out)
-            else: # InvertedResidual_sparse blocks
-                out = block(out, self.ticket)
+        
+        # The first layer is a standard conv_3x3_bn
+        out = self.features[0](out) 
+        
+        # Iterate through the InvertedResidual_sparse blocks (from index 1 to 17)
+        # The block indices for feature extraction are 1, 6, 13, 17
+        if len(self.features) > 1:
+            out = self.features[1](out, self.ticket)
+            feature_list.append(self.convert1(out))
+            
+        for i in range(2, 7):
+            if len(self.features) > i:
+                out = self.features[i](out, self.ticket)
+        if len(self.features) > 6:
+             feature_list.append(self.convert2(out))
+             
+        for i in range(7, 14):
+            if len(self.features) > i:
+                out = self.features[i](out, self.ticket)
+        if len(self.features) > 13:
+             feature_list.append(self.convert3(out))
+             
+        for i in range(14, 18):
+            if len(self.features) > i:
+                out = self.features[i](out, self.ticket)
+        if len(self.features) > 17:
+             feature_list.append(self.convert4(out))
 
-            # Extract features at the end of key stages
-            if i == 1:
-                feature_list.append(self.convert1(out))
-            elif i == 6:
-                feature_list.append(self.convert2(out))
-            elif i == 13:
-                feature_list.append(self.convert3(out))
-            elif i == 17:
-                feature_list.append(self.convert4(out))
-        # --- END: CORRECTED FORWARD PASS ---
-
-        # The final layers
         out = self.conv(out)
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
@@ -295,7 +253,6 @@ class MobileNetV2_sparse(MaskedNet):
         return out, feature_list
 
     def _initialize_weights(self):
-        # This method remains unchanged
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, SoftMaskedConv2d)):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels if isinstance(m, nn.Conv2d) else m.kernel_size * m.kernel_size * m.out_channels
@@ -308,7 +265,6 @@ class MobileNetV2_sparse(MaskedNet):
             elif isinstance(m, nn.Linear):
                 m.weight.data.normal_(0, 0.01)
                 m.bias.data.zero_()
-
 
 def MobileNetV2_sparse_deepfake(
     gumbel_start_temperature=2, gumbel_end_temperature=0.5, num_epochs=350
