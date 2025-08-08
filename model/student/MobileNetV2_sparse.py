@@ -1,4 +1,4 @@
-%%writefile /kaggle/working/KDFS-Pearson/model/student/MobileNetV2_sparse.py
+
 import torch
 import torch.nn as nn
 import math
