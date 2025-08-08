@@ -25,8 +25,6 @@ class Test:
         self.test_batch_size = args.test_batch_size
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
         self.dataset_mode = args.dataset_mode  # 'hardfake', 'rvf10k', '140k', '200k', '330k'
-        self.learning_rate = args.learning_rate  # New parameter for learning rate
-        self.num_epochs = args.num_epochs  # New parameter for number of epochs
 
         # Verify CUDA availability
         if self.device == 'cuda' and not torch.cuda.is_available():
@@ -148,7 +146,7 @@ class Test:
                 print(f"Using non-fine-tuned model with random or pre-trained weights for dataset mode: {self.dataset_mode}")
                 # Optionally, load pre-trained ImageNet weights here if available
                 # For example: model.load_state_dict(torch.hub.load_state_dict_from_url('url_to_imagenet_weights'), strict=False)
-
+            
             model.to(self.device)
             print(f"Model loaded on {self.device}")
             return model
@@ -167,7 +165,7 @@ class Test:
                     for images, targets in self.test_loader:
                         images = images.to(self.device, non_blocking=True)
                         targets = targets.to(self.device, non_blocking=True).float()
-
+                        
                         logits_student, _ = model(images)
                         logits_student = logits_student.squeeze()
                         preds = (torch.sigmoid(logits_student) > 0.5).float()
@@ -214,10 +212,6 @@ class Test:
 
             # Load dataset
             self.dataload()
-
-            # Print learning rate and number of epochs
-            print(f"Learning rate: {self.learning_rate}")
-            print(f"Number of epochs: {self.num_epochs}")
 
             # Test without fine-tuning
             model_no_ft = self.build_model(fine_tuned=False)
