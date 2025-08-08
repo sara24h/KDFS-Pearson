@@ -363,6 +363,18 @@ def parse_args():
         default="./pruned_model.pth",
         help="Path to save the pruned model",
     )
+    parser.add_argument(
+        "--f_epochs",
+        type=int,
+        default=10,
+        help="Number of epochs for fine-tuning",
+    )
+    parser.add_argument(
+        "--f_lr",
+        type=float,
+        default=0.001,
+        help="Learning rate for fine-tuning",
+    )
 
     return parser.parse_args()
 
