@@ -24,7 +24,6 @@ def parse_args():
     parser.add_argument('--device', type=str, default='cuda', help='Device to use (cuda or cpu)')
     parser.add_argument('--test_batch_size', type=int, default=32, help='Batch size for testing')
     parser.add_argument('--train_batch_size', type=int, default=32, help='Batch size for training')
-    parser.add_argument('--sparsed_student_ckpt_path', type=str, default='checkpoint.pth', help='Path to save/load sparse student checkpoint')
     parser.add_argument('--dataset_mode', type=str, default='hardfake', choices=['hardfake', 'rvf10k', '140k', '200k', '330k'], help='Dataset mode')
     parser.add_argument('--f_epochs', type=int, default=10, help='Number of epochs for fine-tuning')
     parser.add_argument('--f_lr', type=float, default=0.001, help='Learning rate for fine-tuning')
@@ -40,7 +39,6 @@ class Test:
         self.device = args.device
         self.test_batch_size = args.test_batch_size
         self.train_batch_size = args.train_batch_size
-        self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
         self.dataset_mode = args.dataset_mode
         self.f_epochs = args.f_epochs
         self.f_lr = args.f_lr
@@ -108,18 +106,8 @@ class Test:
             model = ResNet_50_sparse_hardfakevsreal()
             if fine_tuned:
                 print(f"Loading fine-tuned sparse student model for dataset mode: {self.dataset_mode}")
-                if os.path.exists(self.sparsed_student_ckpt_path):
-                    ckpt_student = torch.load(self.sparsed_student_ckpt_path, map_location="cpu", weights_only=True)
-                    state_dict = ckpt_student["student"] if "student" in ckpt_student else ckpt_student
-                    try:
-                        model.load_state_dict(state_dict, strict=True)
-                    except RuntimeError as e:
-                        print(f"State dict loading failed with strict=True: {str(e)}")
-                        print("Trying with strict=False to identify mismatched keys...")
-                        model.load_state_dict(state_dict, strict=False)
-                        print("Loaded with strict=False; check for missing or unexpected keys.")
-                else:
-                    print(f"No checkpoint found at {self.sparsed_student_ckpt_path}. Starting with fresh model for fine-tuning.")
+                # No checkpoint loading since we are not saving/loading
+                print("No checkpoint loading as saving is disabled. Using fresh model for fine-tuning.")
             else:
                 print(f"Using non-fine-tuned model with random or pre-trained weights for dataset mode: {self.dataset_mode}")
             
@@ -232,14 +220,16 @@ class Test:
 
                 print(f"[Fine-Tune Epoch {epoch+1}] Loss: {meter_loss.avg:.4f}, Acc@1: {meter_top1.avg:.2f}%")
 
-            # Save the fine-tuned model
-            torch.save({"student": model.state_dict()}, self.sparsed_student_ckpt_path)
-            print(f"Fine-tuned model saved to {self.sparsed_student_ckpt_path}")
         except Exception as e:
             print(f"Error during fine-tuning: {str(e)}")
             raise
 
     def main(self):
+        # Clear GPU memory and set environment variables to avoid CUDA errors
+        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        torch.cuda.empty_cache()
+
         print(f"Starting pipeline with dataset mode: {self.dataset_mode}")
         try:
             print(f"PyTorch version: {torch.__version__}")
@@ -259,7 +249,7 @@ class Test:
             self.test(model_no_ft, "Without Fine-Tuning")
 
             # Test with fine-tuning
-            model_ft = self.build_model(fine_tuned=True)
+            model_ft = self.build_model(fine_tuned=False)  # Use the fine-tuned model in memory
             self.test(model_ft, "With Fine-Tuning")
         except Exception as e:
             print(f"Error in pipeline: {str(e)}")
