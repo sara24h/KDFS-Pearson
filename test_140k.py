@@ -7,8 +7,6 @@ import numpy as np
 from sklearn.metrics import precision_score, recall_score, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
-
-# Assuming these files are in the correct project path
 from data.dataset import Dataset_selector
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 from utils import meter
@@ -272,9 +270,11 @@ class Test:
                 meter_loss.update(loss.item(), images.size(0))
                 meter_top1_train.update(prec1, images.size(0))
 
+            # Compute validation metrics but do not print them
             val_metrics = self.compute_metrics(self.val_loader, description=f"Epoch_{epoch+1}_{self.args.f_epochs}_Val")
             val_acc = val_metrics['accuracy']
             
+            # Print only train loss and accuracy for the epoch
             print(f"Epoch {epoch+1}: Train Loss: {meter_loss.avg:.4f}, Train Acc: {meter_top1_train.avg:.2f}%")
 
             scheduler.step()
@@ -289,6 +289,18 @@ class Test:
             self.student.load_state_dict(torch.load(best_model_path))
         else:
             print("Warning: No best model was saved. The model from the last epoch will be used for testing.")
+        
+        # Compute and print final validation metrics after fine-tuning
+        final_val_metrics = self.compute_metrics(self.val_loader, description="Final_Validation")
+        print(f"\nFinal Validation Metrics after Fine-tuning:")
+        print(f"Accuracy: {final_val_metrics['accuracy']:.2f}%")
+        print(f"Precision: {final_val_metrics['precision']:.4f}")
+        print(f"Recall: {final_val_metrics['recall']:.4f}")
+        print(f"Specificity: {final_val_metrics['specificity']:.4f}")
+        print(f"\nConfusion Matrix:")
+        print(f"{'':>10} {'Predicted Real':>15} {'Predicted Fake':>15}")
+        print(f"{'Actual Real':>10} {final_val_metrics['confusion_matrix'][0,0]:>15} {final_val_metrics['confusion_matrix'][0,1]:>15}")
+        print(f"{'Actual Fake':>10} {final_val_metrics['confusion_matrix'][1,0]:>15} {final_val_metrics['confusion_matrix'][1,1]:>15}")
 
     def main(self):
         print(f"Starting pipeline with dataset mode: {self.dataset_mode}")
