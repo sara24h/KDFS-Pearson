@@ -170,7 +170,6 @@ class MobileNetV2_sparse(MaskedNet):
     ):
         super().__init__(gumbel_start_temperature, gumbel_end_temperature, num_epochs)
         
-        # Define the teacher model's feature dimensions at each key stage.
         teacher_feature_dims = {
             "stage1": 16,
             "stage2": 32,
@@ -195,7 +194,6 @@ class MobileNetV2_sparse(MaskedNet):
                 )
                 input_channel = output_channel
 
-            # Define convert layers to match the student's channels to the teacher's.
             if num == 0:
                 self.convert1 = nn.Conv2d(output_channel, teacher_feature_dims["stage1"], kernel_size=1)
             if num == 2:
@@ -218,11 +216,11 @@ class MobileNetV2_sparse(MaskedNet):
         feature_list = []
         out = x
         
-        # The first layer is a standard conv_3x3_bn
+        # لایه اول یک کانولوشن معمولی است
         out = self.features[0](out) 
         
-        # Iterate through the InvertedResidual_sparse blocks (from index 1 to 17)
-        # The block indices for feature extraction are 1, 6, 13, 17
+        # استخراج ویژگی‌ها در نقاط کلیدی
+        # ایندکس‌ها بر اساس معماری استاندارد MobileNetV2 هستند
         if len(self.features) > 1:
             out = self.features[1](out, self.ticket)
             feature_list.append(self.convert1(out))
@@ -245,6 +243,7 @@ class MobileNetV2_sparse(MaskedNet):
         if len(self.features) > 17:
              feature_list.append(self.convert4(out))
 
+        # لایه‌های نهایی
         out = self.conv(out)
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
