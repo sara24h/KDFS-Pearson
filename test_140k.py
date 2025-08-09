@@ -133,7 +133,7 @@ class Test:
         self.student.to(self.device)
         print(f"Model loaded on {self.device}")
 
-    def compute_metrics(self, loader, description="Test", print_metrics=True):
+    def compute_metrics(self, loader, description="Test", print_metrics=True, save_confusion_matrix=True):
         meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
         all_preds = []
         all_targets = []
@@ -176,7 +176,6 @@ class Test:
         precision = precision_score(all_targets, all_preds, average='binary')
         recall = recall_score(all_targets, all_preds, average='binary')
         
-        # Compute per-class metrics
         precision_per_class = precision_score(all_targets, all_preds, average=None, labels=[0, 1])
         recall_per_class = recall_score(all_targets, all_preds, average=None, labels=[0, 1])
         
@@ -204,25 +203,23 @@ class Test:
         cm = confusion_matrix(all_targets, all_preds)
         classes = ['Real', 'Fake']
         
-        if print_metrics:
+        if save_confusion_matrix:
             print(f"\n[{description}] Confusion Matrix:")
             print(f"{'':>10} {'Predicted Real':>15} {'Predicted Fake':>15}")
             print(f"{'Actual Real':>10} {cm[0,0]:>15} {cm[0,1]:>15}")
             print(f"{'Actual Fake':>10} {cm[1,0]:>15} {cm[1,1]:>15}")
-        
-        plt.figure(figsize=(8, 6))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
-        plt.title(f'Confusion Matrix - {description}')
-        plt.ylabel('Actual')
-        plt.xlabel('Predicted')
-        
-        # Sanitize description for file name
-        sanitized_description = description.lower().replace(" ", "_").replace("/", "_")
-        plot_path = os.path.join(self.result_dir, f'confusion_matrix_{sanitized_description}.png')
-        os.makedirs(os.path.dirname(plot_path), exist_ok=True)  # Ensure directory exists
-        plt.savefig(plot_path)
-        plt.close()
-        if print_metrics:
+            
+            plt.figure(figsize=(8, 6))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
+            plt.title(f'Confusion Matrix - {description}')
+            plt.ylabel('Actual')
+            plt.xlabel('Predicted')
+            
+            sanitized_description = description.lower().replace(" ", "_").replace("/", "_")
+            plot_path = os.path.join(self.result_dir, f'confusion_matrix_{sanitized_description}.png')
+            os.makedirs(os.path.dirname(plot_path), exist_ok=True)
+            plt.savefig(plot_path)
+            plt.close()
             print(f"Confusion matrix saved to: {plot_path}")
         
         return {
@@ -291,12 +288,12 @@ class Test:
                 meter_loss.update(loss.item(), images.size(0))
                 meter_top1_train.update(prec1, images.size(0))
 
-            # Compute validation metrics without printing (for model selection)
-            val_metrics = self.compute_metrics(self.val_loader, description=f"Epoch_{epoch+1}_{self.args.f_epochs}_Val", print_metrics=False)
+            # Compute validation metrics
+            val_metrics = self.compute_metrics(self.val_loader, description=f"Epoch_{epoch+1}_{self.args.f_epochs}_Val", print_metrics=False, save_confusion_matrix=False)
             val_acc = val_metrics['accuracy']
             
-            # Print only train loss and accuracy for the epoch
-            print(f"Epoch {epoch+1}: Train Loss: {meter_loss.avg:.4f}, Train Acc: {meter_top1_train.avg:.2f}%")
+            # Print train and validation metrics for the epoch
+            print(f"Epoch {epoch+1}: Train Loss: {meter_loss.avg:.4f}, Train Acc: {meter_top1_train.avg:.2f}%, Val Acc: {val_acc:.2f}%")
 
             scheduler.step()
 
@@ -312,7 +309,7 @@ class Test:
             print("Warning: No best model was saved. The model from the last epoch will be used for testing.")
         
         # Compute and print final test metrics after fine-tuning
-        final_test_metrics = self.compute_metrics(self.test_loader, description="Final_Test", print_metrics=True)
+        final_test_metrics = self.compute_metrics(self.test_loader, description="Final_Test", print_metrics=True, save_confusion_matrix=True)
         print(f"\nFinal Test Metrics after Fine-tuning:")
         print(f"Accuracy: {final_test_metrics['accuracy']:.2f}%")
         print(f"Precision: {final_test_metrics['precision']:.4f}")
