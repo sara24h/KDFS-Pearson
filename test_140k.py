@@ -133,7 +133,7 @@ class Test:
         self.student.to(self.device)
         print(f"Model loaded on {self.device}")
 
-    def compute_metrics(self, loader, description="Test"):
+    def compute_metrics(self, loader, description="Test", print_metrics=True):
         meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
         all_preds = []
         all_targets = []
@@ -176,22 +176,39 @@ class Test:
         precision = precision_score(all_targets, all_preds, average='binary')
         recall = recall_score(all_targets, all_preds, average='binary')
         
-        tn, fp, fn, tp = confusion_matrix(all_targets, all_preds).ravel()
-        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        # Compute per-class metrics
+        precision_per_class = precision_score(all_targets, all_preds, average=None, labels=[0, 1])
+        recall_per_class = recall_score(all_targets, all_preds, average=None, labels=[0, 1])
         
-        print(f"[{description}] Final Metrics:")
-        print(f"Accuracy: {accuracy:.2f}%")
-        print(f"Precision: {precision:.4f}")
-        print(f"Recall: {recall:.4f}")
-        print(f"Specificity: {specificity:.4f}")
+        tn, fp, fn, tp = confusion_matrix(all_targets, all_preds).ravel()
+        specificity_real = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        specificity_fake = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        
+        if print_metrics:
+            print(f"[{description}] Overall Metrics:")
+            print(f"Accuracy: {accuracy:.2f}%")
+            print(f"Precision: {precision:.4f}")
+            print(f"Recall: {recall:.4f}")
+            print(f"Specificity: {specificity_real:.4f}")
+            
+            print(f"\n[{description}] Per-Class Metrics:")
+            print(f"Class Real (0):")
+            print(f"  Precision: {precision_per_class[0]:.4f}")
+            print(f"  Recall: {recall_per_class[0]:.4f}")
+            print(f"  Specificity: {specificity_real:.4f}")
+            print(f"Class Fake (1):")
+            print(f"  Precision: {precision_per_class[1]:.4f}")
+            print(f"  Recall: {recall_per_class[1]:.4f}")
+            print(f"  Specificity: {specificity_fake:.4f}")
         
         cm = confusion_matrix(all_targets, all_preds)
         classes = ['Real', 'Fake']
         
-        print(f"\n[{description}] Confusion Matrix:")
-        print(f"{'':>10} {'Predicted Real':>15} {'Predicted Fake':>15}")
-        print(f"{'Actual Real':>10} {cm[0,0]:>15} {cm[0,1]:>15}")
-        print(f"{'Actual Fake':>10} {cm[1,0]:>15} {cm[1,1]:>15}")
+        if print_metrics:
+            print(f"\n[{description}] Confusion Matrix:")
+            print(f"{'':>10} {'Predicted Real':>15} {'Predicted Fake':>15}")
+            print(f"{'Actual Real':>10} {cm[0,0]:>15} {cm[0,1]:>15}")
+            print(f"{'Actual Fake':>10} {cm[1,0]:>15} {cm[1,1]:>15}")
         
         plt.figure(figsize=(8, 6))
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
@@ -205,13 +222,17 @@ class Test:
         os.makedirs(os.path.dirname(plot_path), exist_ok=True)  # Ensure directory exists
         plt.savefig(plot_path)
         plt.close()
-        print(f"Confusion matrix saved to: {plot_path}")
+        if print_metrics:
+            print(f"Confusion matrix saved to: {plot_path}")
         
         return {
             'accuracy': accuracy,
             'precision': precision,
             'recall': recall,
-            'specificity': specificity,
+            'specificity': specificity_real,
+            'precision_per_class': precision_per_class,
+            'recall_per_class': recall_per_class,
+            'specificity_per_class': [specificity_real, specificity_fake],
             'confusion_matrix': cm,
             'sample_info': sample_info
         }
@@ -229,7 +250,7 @@ class Test:
         print("==> Fine-tuning using FEATURE EXTRACTOR strategy on 'fc' and 'layer4'...")
         if not os.path.exists(self.result_dir):
             os.makedirs(self.result_dir)
-            
+        
         for name, param in self.student.named_parameters():
             if 'fc' in name or 'layer4' in name:
                 param.requires_grad = True
@@ -270,8 +291,8 @@ class Test:
                 meter_loss.update(loss.item(), images.size(0))
                 meter_top1_train.update(prec1, images.size(0))
 
-            # Compute validation metrics but do not print them
-            val_metrics = self.compute_metrics(self.val_loader, description=f"Epoch_{epoch+1}_{self.args.f_epochs}_Val")
+            # Compute validation metrics without printing (for model selection)
+            val_metrics = self.compute_metrics(self.val_loader, description=f"Epoch_{epoch+1}_{self.args.f_epochs}_Val", print_metrics=False)
             val_acc = val_metrics['accuracy']
             
             # Print only train loss and accuracy for the epoch
@@ -290,35 +311,23 @@ class Test:
         else:
             print("Warning: No best model was saved. The model from the last epoch will be used for testing.")
         
-        # Compute and print final validation metrics after fine-tuning
-        final_val_metrics = self.compute_metrics(self.val_loader, description="Final_Validation")
-        print(f"\nFinal Validation Metrics after Fine-tuning:")
-        print(f"Accuracy: {final_val_metrics['accuracy']:.2f}%")
-        print(f"Precision: {final_val_metrics['precision']:.4f}")
-        print(f"Recall: {final_val_metrics['recall']:.4f}")
-        print(f"Specificity: {final_val_metrics['specificity']:.4f}")
+        # Compute and print final test metrics after fine-tuning
+        final_test_metrics = self.compute_metrics(self.test_loader, description="Final_Test", print_metrics=True)
+        print(f"\nFinal Test Metrics after Fine-tuning:")
+        print(f"Accuracy: {final_test_metrics['accuracy']:.2f}%")
+        print(f"Precision: {final_test_metrics['precision']:.4f}")
+        print(f"Recall: {final_test_metrics['recall']:.4f}")
+        print(f"Specificity: {final_test_metrics['specificity']:.4f}")
+        print(f"\nPer-Class Metrics:")
+        print(f"Class Real (0):")
+        print(f"  Precision: {final_test_metrics['precision_per_class'][0]:.4f}")
+        print(f"  Recall: {final_test_metrics['recall_per_class'][0]:.4f}")
+        print(f"  Specificity: {final_test_metrics['specificity_per_class'][0]:.4f}")
+        print(f"Class Fake (1):")
+        print(f"  Precision: {final_test_metrics['precision_per_class'][1]:.4f}")
+        print(f"  Recall: {final_test_metrics['recall_per_class'][1]:.4f}")
+        print(f"  Specificity: {final_test_metrics['specificity_per_class'][1]:.4f}")
         print(f"\nConfusion Matrix:")
         print(f"{'':>10} {'Predicted Real':>15} {'Predicted Fake':>15}")
-        print(f"{'Actual Real':>10} {final_val_metrics['confusion_matrix'][0,0]:>15} {final_val_metrics['confusion_matrix'][0,1]:>15}")
-        print(f"{'Actual Fake':>10} {final_val_metrics['confusion_matrix'][1,0]:>15} {final_val_metrics['confusion_matrix'][1,1]:>15}")
-
-    def main(self):
-        print(f"Starting pipeline with dataset mode: {self.dataset_mode}")
-        self.dataload()
-        self.build_model()
-        
-        print("\n--- Testing BEFORE fine-tuning ---")
-        initial_metrics = self.compute_metrics(self.test_loader, "Initial_Test")
-        self.display_samples(initial_metrics['sample_info'], "Initial Test", num_samples=30)
-        
-        print("\n--- Starting fine-tuning ---")
-        self.finetune()
-        
-        print("\n--- Testing AFTER fine-tuning with best model ---")
-        final_metrics = self.compute_metrics(self.test_loader, "Final_Test")
-        self.display_samples(final_metrics['sample_info'], "Final Test", num_samples=30)
-        
-        if self.new_test_loader:
-            print("\n--- Testing on NEW dataset ---")
-            new_metrics = self.compute_metrics(self.new_test_loader, "New_Dataset_Test")
-            self.display_samples(new_metrics['sample_info'], "New Dataset Test", num_samples=30)
+        print(f"{'Actual Real':>10} {final_test_metrics['confusion_matrix'][0,0]:>15} {final_test_metrics['confusion_matrix'][0,1]:>15}")
+        print(f"{'Actual Fake':>10} {final_test_metrics['confusion_matrix'][1,0]:>15} {final_test_metrics['confusion_matrix'][1,1]:>15}")
