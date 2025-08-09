@@ -1,12 +1,10 @@
 import os
-import argparse
 import torch
 from tqdm import tqdm
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
-# فرض بر این است که این فایل‌ها در کنار اسکریپت اصلی شما قرار دارند
-# اگر در پوشه دیگری هستند، مسیر را اصلاح کنید
+# فرض بر این است که این فایل‌ها در مسیر درست پروژه شما قرار دارند
 from data.dataset import Dataset_selector
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 from utils import meter
@@ -20,7 +18,7 @@ class Test:
         self.pin_memory = args.pin_memory
         self.arch = args.arch
         self.device = args.device
-        self.train_batch_size = args.train_batch_size # این خط اضافه شد تا در تابع dataload در دسترس باشد
+        self.train_batch_size = args.train_batch_size
         self.test_batch_size = args.test_batch_size
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
         self.dataset_mode = args.dataset_mode
@@ -119,13 +117,12 @@ class Test:
     def test(self, loader, description="Test"):
         meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
         self.student.eval()
-        self.student.ticket = True # فرض بر این است که این برای حالت تست است
+        self.student.ticket = True
         with torch.no_grad():
             for images, targets in tqdm(loader, desc=description, ncols=100):
                 images = images.to(self.device, non_blocking=True)
                 targets = targets.to(self.device, non_blocking=True).float()
                 
-                # فرض بر این است که مدل شما یک تاپل برمی‌گرداند
                 logits, _ = self.student(images)
                 logits = logits.squeeze()
                 preds = (torch.sigmoid(logits) > 0.5).float()
@@ -210,9 +207,3 @@ class Test:
         
         print("\n--- Testing AFTER fine-tuning with best model ---")
         self.test(self.test_loader, "Final Test")
-
-
-    args = parser.parse_args()
-
-    pipeline = Test(args)
-    pipeline.main()
