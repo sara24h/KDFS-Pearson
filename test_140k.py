@@ -126,22 +126,34 @@ class Test:
         print(f"[{desc}] Dataset: {self.dataset_mode}, Final Prec@1: {meter_top1.avg:.2f}%")
 
     def finetune(self):
-        print("==> Fine-tuning using FEATURE EXTRACTOR strategy...")
+        print("==> Fine-tuning by unfreezing fc and layer4...")
         if not os.path.exists(self.result_dir):
             os.makedirs(self.result_dir)
             
+        for param in self.student.parameters():
+            param.requires_grad = False
+
         for name, param in self.student.named_parameters():
-            if 'fc' in name:
+            if name.startswith('fc') or name.startswith('layer4'):
                 param.requires_grad = True
                 print(f"Unfreezing for training: {name}")
-            else:
-                param.requires_grad = False
+                
+        params_backbone = [
+            p for name, p in self.student.named_parameters() 
+            if name.startswith('layer4') and p.requires_grad
+        ]
 
-        optimizer = torch.optim.AdamW(
-            filter(lambda p: p.requires_grad, self.student.parameters()),
-            lr=self.args.f_lr,
-            weight_decay=1e-4
-        )
+        params_fc = [
+            p for name, p in self.student.named_parameters() 
+            if name.startswith('fc') and p.requires_grad
+        ]
+
+        optimizer = torch.optim.AdamW([
+            {'params': params_backbone, 'lr': self.args.f_lr / 10},
+            {'params': params_fc, 'lr': self.args.f_lr}           
+        ], weight_decay=1e-4) 
+        
+
         criterion = torch.nn.BCEWithLogitsLoss()
         
         self.student.ticket = False
