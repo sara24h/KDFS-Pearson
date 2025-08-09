@@ -3,26 +3,30 @@ import torch
 from tqdm import tqdm
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
-
-# فرض بر این است که این فایل‌ها در مسیر درست پروژه شما قرار دارند
 from data.dataset import Dataset_selector
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 from utils import meter
-
+from sklearn.metrics import confusion_matrix, precision_score, recall_score, f1_score, accuracy_score
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
 
 class Test:
-    def __init__(self, args):
-        self.args = args
-        self.dataset_dir = args.dataset_dir
-        self.num_workers = args.num_workers
-        self.pin_memory = args.pin_memory
-        self.arch = args.arch
-        self.device = args.device
-        self.train_batch_size = args.train_batch_size
-        self.test_batch_size = args.test_batch_size
-        self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
-        self.dataset_mode = args.dataset_mode
-        self.result_dir = args.result_dir
+    def __init__(self, dataset_dir, sparsed_student_ckpt_path, dataset_mode, result_dir, 
+                 train_batch_size, test_batch_size, num_workers, pin_memory, 
+                 device, f_epochs, f_lr):
+        
+        self.dataset_dir = dataset_dir
+        self.sparsed_student_ckpt_path = sparsed_student_ckpt_path
+        self.dataset_mode = dataset_mode
+        self.result_dir = result_dir
+        self.train_batch_size = train_batch_size
+        self.test_batch_size = test_batch_size
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
+        self.device = device
+        self.f_epochs = f_epochs
+        self.f_lr = f_lr
 
         if self.device == 'cuda' and not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available! Please check GPU setup.")
@@ -114,10 +118,12 @@ class Test:
         self.student.to(self.device)
         print(f"Model loaded on {self.device}")
 
-    def test(self, loader, description="Test"):
-        meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
+    def test(self, loader, description="Test", is_finetuned=False):
         self.student.eval()
-        self.student.ticket = True
+        
+        all_targets = []
+        all_preds = []
+        
         with torch.no_grad():
             for images, targets in tqdm(loader, desc=description, ncols=100):
                 images = images.to(self.device, non_blocking=True)
@@ -126,11 +132,80 @@ class Test:
                 logits, _ = self.student(images)
                 logits = logits.squeeze()
                 preds = (torch.sigmoid(logits) > 0.5).float()
-                correct = (preds == targets).sum().item()
-                prec1 = 100.0 * correct / images.size(0)
-                meter_top1.update(prec1, images.size(0))
-        print(f"[{description}] Final Prec@1: {meter_top1.avg:.2f}%")
-        return meter_top1.avg
+                
+                all_targets.extend(targets.cpu().numpy())
+                all_preds.extend(preds.cpu().numpy())
+
+        all_targets = np.array(all_targets)
+        all_preds = np.array(all_preds)
+        
+        # محاسبه معیارهای کلی (Overall Metrics)
+        test_accuracy = accuracy_score(all_targets, all_preds)
+        precision_macro = precision_score(all_targets, all_preds, average='macro', zero_division=0)
+        recall_macro = recall_score(all_targets, all_preds, average='macro', zero_division=0)
+        f1_macro = f1_score(all_targets, all_preds, average='macro', zero_division=0)
+        
+        print(f"\n--- Overall Metrics for {description} ---")
+        print(f"Test Accuracy: {test_accuracy:.4f}")
+        print(f"Precision (Macro Avg): {precision_macro:.4f}")
+        print(f"Recall (Macro Avg): {recall_macro:.4f}")
+        print(f"F1 Score (Macro Avg): {f1_macro:.4f}")
+        
+        # محاسبه معیارهای مربوط به هر کلاس (Class-specific Metrics)
+        class_names = ['Real', 'Fake'] # فرض بر این است که 0=Real, 1=Fake
+        
+        print("\n--- Class-specific Metrics ---")
+        cm = confusion_matrix(all_targets, all_preds)
+        tn, fp, fn, tp = cm.ravel()
+        
+        # معیارها برای کلاس 'Real' (لیبل 0)
+        prec_real = precision_score(all_targets, all_preds, pos_label=0, zero_division=0)
+        rec_real = recall_score(all_targets, all_preds, pos_label=0, zero_division=0)
+        f1_real = f1_score(all_targets, all_preds, pos_label=0, zero_division=0)
+        specificity_real = tn / (tn + fp) if (tn + fp) != 0 else 0.0
+
+        print("Metrics for class 'Real' (label 0):")
+        print(f"  - Precision: {prec_real:.4f}")
+        print(f"  - Recall: {rec_real:.4f}")
+        print(f"  - F1 Score: {f1_real:.4f}")
+        print(f"  - Specificity: {specificity_real:.4f}")
+        
+        prec_fake = precision_score(all_targets, all_preds, pos_label=1, zero_division=0)
+        rec_fake = recall_score(all_targets, all_preds, pos_label=1, zero_division=0)
+        f1_fake = f1_score(all_targets, all_preds, pos_label=1, zero_division=0)
+
+        specificity_fake = tn / (tn + fp) if (tn + fp) != 0 else 0.0
+        
+        print("Metrics for class 'Fake' (label 1):")
+        print(f"  - Precision: {prec_fake:.4f}")
+        print(f"  - Recall: {rec_fake:.4f}")
+        print(f"  - F1 Score: {f1_fake:.4f}")
+        print(f"  - Specificity: {specificity_fake:.4f}")
+            
+        # رسم ماتریس درهم‌ریختگی (Confusion Matrix)
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=class_names, yticklabels=class_names)
+        plt.xlabel('Predicted')
+        plt.ylabel('Actual')
+        plt.title(f'Confusion Matrix {description}')
+        
+        if not os.path.exists(self.result_dir):
+            os.makedirs(self.result_dir)
+            
+        if is_finetuned:
+            plt.savefig(os.path.join(self.result_dir, 'confusion_matrix_after_finetune.png'))
+        else:
+            plt.savefig(os.path.join(self.result_dir, 'confusion_matrix_before_finetune.png'))
+        plt.close()
+
+        print("\n--- 30 Random Test Samples ---")
+        indices = np.random.choice(len(all_targets), 30, replace=False)
+        for i, idx in enumerate(indices):
+            true_label = "Real" if all_targets[idx] == 0 else "Fake"
+            pred_label = "Real" if all_preds[idx] == 0 else "Fake"
+            print(f"Sample {i+1}: True Label -> {true_label}, Predicted Label -> {pred_label}")
+            
+        return test_accuracy
 
     def finetune(self):
         print("==> Fine-tuning using FEATURE EXTRACTOR strategy on 'fc' and 'layer4'...")
@@ -146,7 +221,7 @@ class Test:
 
         optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, self.student.parameters()),
-            lr=self.args.f_lr,
+            lr=self.f_lr,
             weight_decay=1e-4
         )
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
@@ -157,12 +232,12 @@ class Test:
         best_val_acc = 0.0
         best_model_path = os.path.join(self.result_dir, f'finetuned_model_best_{self.dataset_mode}.pth')
 
-        for epoch in range(self.args.f_epochs):
+        for epoch in range(self.f_epochs):
             self.student.train()
             meter_loss = meter.AverageMeter("Loss", ":6.4f")
             meter_top1_train = meter.AverageMeter("Train Acc@1", ":6.2f")
             
-            for images, targets in tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.args.f_epochs} [Train]", ncols=100):
+            for images, targets in tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.f_epochs} [Train]", ncols=100):
                 images, targets = images.to(self.device), targets.to(self.device).float()
                 optimizer.zero_grad()
                 logits, _ = self.student(images)
@@ -177,7 +252,7 @@ class Test:
                 meter_loss.update(loss.item(), images.size(0))
                 meter_top1_train.update(prec1, images.size(0))
 
-            val_acc = self.test(self.val_loader, description=f"Epoch {epoch+1}/{self.args.f_epochs} [Val]")
+            val_acc = self.test(self.val_loader, description=f"Epoch {epoch+1}/{self.f_epochs} [Val]")
             
             print(f"Epoch {epoch+1}: Train Loss: {meter_loss.avg:.4f}, Train Acc: {meter_top1_train.avg:.2f}%, Val Acc: {val_acc:.2f}%")
 
@@ -200,10 +275,37 @@ class Test:
         self.build_model()
         
         print("\n--- Testing BEFORE fine-tuning ---")
-        self.test(self.test_loader, "Initial Test")
+        self.test(self.test_loader, "Initial Test", is_finetuned=False)
         
         print("\n--- Starting fine-tuning ---")
         self.finetune()
         
         print("\n--- Testing AFTER fine-tuning with best model ---")
-        self.test(self.test_loader, "Final Test")
+        self.test(self.test_loader, "Final Test", is_finetuned=True)
+
+if __name__ == '__main__':
+    
+    dataset_dir = '/kaggle/input/rvf10k'
+    sparsed_student_ckpt_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt'
+    dataset_mode = '140k' #
+    result_dir = './results'
+    train_batch_size = 32
+    test_batch_size = 64
+    num_workers = 4
+    pin_memory = True
+    device = 'cuda' 
+    f_epochs = 10
+    f_lr = 0.0001
+    
+    pipeline = Test(dataset_dir=dataset_dir, 
+                    sparsed_student_ckpt_path=sparsed_student_ckpt_path, 
+                    dataset_mode=dataset_mode, 
+                    result_dir=result_dir, 
+                    train_batch_size=train_batch_size, 
+                    test_batch_size=test_batch_size, 
+                    num_workers=num_workers, 
+                    pin_memory=pin_memory, 
+                    device=device, 
+                    f_epochs=f_epochs, 
+                    f_lr=f_lr)
+    pipeline.main()
