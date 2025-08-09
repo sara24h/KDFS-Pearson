@@ -12,6 +12,7 @@ import seaborn as sns
 import numpy as np
 
 class Test:
+
     def __init__(self, dataset_dir, sparsed_student_ckpt_path, dataset_mode, result_dir, 
                  train_batch_size, test_batch_size, num_workers, pin_memory, 
                  device, f_epochs, f_lr):
@@ -24,12 +25,11 @@ class Test:
         self.test_batch_size = test_batch_size
         self.num_workers = num_workers
         self.pin_memory = pin_memory
-        self.device = device
+        self.device = torch.device(device if torch.cuda.is_available() and device == 'cuda' else 'cpu')
         self.f_epochs = f_epochs
         self.f_lr = f_lr
 
-        if self.device == 'cuda' and not torch.cuda.is_available():
-            raise RuntimeError("CUDA is not available! Please check GPU setup.")
+        print(f"**Device selected:** {self.device}")
             
         self.train_loader = None
         self.val_loader = None
@@ -37,6 +37,7 @@ class Test:
         self.student = None
 
     def dataload(self):
+        """بارگذاری مجموعه داده‌ها با استفاده از تنظیمات از پیش تعیین‌شده."""
         print("==> Loading datasets...")
         
         image_size = (256, 256)
@@ -66,7 +67,7 @@ class Test:
             'pin_memory': self.pin_memory,
             'ddp': False
         }
-        
+
         if self.dataset_mode == 'hardfake':
             params['hardfake_csv_file'] = os.path.join(self.dataset_dir, 'data.csv')
             params['hardfake_root_dir'] = self.dataset_dir
@@ -104,6 +105,7 @@ class Test:
         print(f"All loaders for '{self.dataset_mode}' are now configured with 140k normalization.")
 
     def build_model(self):
+        """ساخت مدل دانشجوی (student) و بارگذاری وزن‌های از پیش آموزش‌دیده."""
         print("==> Building student model...")
         self.student = ResNet_50_sparse_hardfakevsreal()
         
@@ -114,11 +116,13 @@ class Test:
         ckpt_student = torch.load(self.sparsed_student_ckpt_path, map_location="cpu")
         state_dict = ckpt_student.get("student", ckpt_student)
         
+        # بارگذاری وزن‌ها، با نادیده گرفتن لایه‌هایی که تطابق ندارند
         self.student.load_state_dict(state_dict, strict=False)
         self.student.to(self.device)
         print(f"Model loaded on {self.device}")
 
     def test(self, loader, description="Test", is_finetuned=False):
+        """ارزیابی مدل بر روی یک مجموعه داده."""
         self.student.eval()
         
         all_targets = []
@@ -170,11 +174,11 @@ class Test:
         print(f"  - F1 Score: {f1_real:.4f}")
         print(f"  - Specificity: {specificity_real:.4f}")
         
+        # معیارها برای کلاس 'Fake' (لیبل 1)
         prec_fake = precision_score(all_targets, all_preds, pos_label=1, zero_division=0)
         rec_fake = recall_score(all_targets, all_preds, pos_label=1, zero_division=0)
         f1_fake = f1_score(all_targets, all_preds, pos_label=1, zero_division=0)
-
-        specificity_fake = tn / (tn + fp) if (tn + fp) != 0 else 0.0
+        specificity_fake = tp / (tp + fn) if (tp + fn) != 0 else 0.0
         
         print("Metrics for class 'Fake' (label 1):")
         print(f"  - Precision: {prec_fake:.4f}")
@@ -208,10 +212,14 @@ class Test:
         return test_accuracy
 
     def finetune(self):
+        """
+        اجرای استراتژی fine-tuning بر روی لایه‌های 'fc' و 'layer4' مدل.
+        """
         print("==> Fine-tuning using FEATURE EXTRACTOR strategy on 'fc' and 'layer4'...")
         if not os.path.exists(self.result_dir):
             os.makedirs(self.result_dir)
             
+        # فریز کردن تمام پارامترها به جز 'fc' و 'layer4'
         for name, param in self.student.named_parameters():
             if 'fc' in name or 'layer4' in name:
                 param.requires_grad = True
@@ -227,7 +235,7 @@ class Test:
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
         criterion = torch.nn.BCEWithLogitsLoss()
         
-        self.student.ticket = False
+        self.student.ticket = False # غیرفعال کردن مکانیسم‌های خاص مدل اسپارس در حین fine-tuning
         
         best_val_acc = 0.0
         best_model_path = os.path.join(self.result_dir, f'finetuned_model_best_{self.dataset_mode}.pth')
@@ -270,6 +278,9 @@ class Test:
             print("Warning: No best model was saved. The model from the last epoch will be used for testing.")
 
     def main(self):
+        """
+        اجرای کامل پایپ‌لاین: بارگذاری داده، ساخت مدل، تست اولیه، fine-tuning و تست نهایی.
+        """
         print(f"Starting pipeline with dataset mode: {self.dataset_mode}")
         self.dataload()
         self.build_model()
@@ -285,18 +296,20 @@ class Test:
 
 if __name__ == '__main__':
     
-    dataset_dir = '/kaggle/input/rvf10k'
+    # تنظیمات برنامه
+    dataset_dir = '/kaggle/input/rvf10k' # مسیر دایرکتوری مجموعه داده
+    # توجه: شما باید مسیر فایل checkpoint را به فایل صحیح خود تغییر دهید
     sparsed_student_ckpt_path = '/kaggle/input/kdfs-4-mordad-140k-new-pearson-final-part1/results/run_resnet50_imagenet_prune1/student_model/ResNet_50_sparse_last.pt'
-    dataset_mode = '140k' #
-    result_dir = './results'
+    dataset_mode = '140k' 
+    result_dir = './results' # دایرکتوری برای ذخیره نتایج
     train_batch_size = 32
     test_batch_size = 64
     num_workers = 4
     pin_memory = True
-    device = 'cuda' 
-    f_epochs = 10
-    f_lr = 0.0001
-    
+    device = 'cuda'  # 'cuda' برای استفاده از GPU، 'cpu' برای استفاده از CPU
+    f_epochs = 10    # تعداد دورهای (epoch) fine-tuning
+    f_lr = 0.0001    # نرخ یادگیری (learning rate) برای fine-tuning
+
     pipeline = Test(dataset_dir=dataset_dir, 
                     sparsed_student_ckpt_path=sparsed_student_ckpt_path, 
                     dataset_mode=dataset_mode, 
