@@ -331,3 +331,24 @@ class Test:
         print(f"{'':>10} {'Predicted Real':>15} {'Predicted Fake':>15}")
         print(f"{'Actual Real':>10} {final_test_metrics['confusion_matrix'][0,0]:>15} {final_test_metrics['confusion_matrix'][0,1]:>15}")
         print(f"{'Actual Fake':>10} {final_test_metrics['confusion_matrix'][1,0]:>15} {final_test_metrics['confusion_matrix'][1,1]:>15}")
+
+    def main(self):
+        print(f"Starting pipeline with dataset mode: {self.dataset_mode}")
+        self.dataload()
+        self.build_model()
+        
+        print("\n--- Testing BEFORE fine-tuning ---")
+        initial_metrics = self.compute_metrics(self.test_loader, "Initial_Test")
+        self.display_samples(initial_metrics['sample_info'], "Initial Test", num_samples=30)
+        
+        print("\n--- Starting fine-tuning ---")
+        self.finetune()
+        
+        print("\n--- Testing AFTER fine-tuning with best model ---")
+        final_metrics = self.compute_metrics(self.test_loader, "Final_Test", print_metrics=False)
+        self.display_samples(final_metrics['sample_info'], "Final Test", num_samples=30)
+        
+        if self.new_test_loader:
+            print("\n--- Testing on NEW dataset ---")
+            new_metrics = self.compute_metrics(self.new_test_loader, "New_Dataset_Test")
+            self.display_samples(new_metrics['sample_info'], "New Dataset Test", num_samples=30)
