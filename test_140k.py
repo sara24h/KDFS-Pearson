@@ -7,6 +7,8 @@ import numpy as np
 from sklearn.metrics import precision_score, recall_score, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+# Assuming these files are in the correct project path
 from data.dataset import Dataset_selector
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 from utils import meter
@@ -24,6 +26,7 @@ class Test:
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
         self.dataset_mode = args.dataset_mode
         self.result_dir = args.result_dir
+        self.new_dataset_dir = getattr(args, 'new_dataset_dir', None)  # New dataset directory
 
         if self.device == 'cuda' and not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available! Please check GPU setup.")
@@ -31,6 +34,7 @@ class Test:
         self.train_loader = None
         self.val_loader = None
         self.test_loader = None
+        self.new_test_loader = None  # Loader for new test dataset
         self.student = None
 
     def dataload(self):
@@ -100,6 +104,22 @@ class Test:
         
         print(f"All loaders for '{self.dataset_mode}' are now configured with 140k normalization.")
 
+        # Load new test dataset if provided
+        if self.new_dataset_dir:
+            print("==> Loading new test dataset...")
+            new_params = {
+                'dataset_mode': 'new_test',
+                'eval_batch_size': self.test_batch_size,
+                'num_workers': self.num_workers,
+                'pin_memory': self.pin_memory,
+                'new_test_csv': os.path.join(self.new_dataset_dir, 'test.csv'),
+                'new_test_root_dir': self.new_dataset_dir
+            }
+            new_dataset_manager = Dataset_selector(**new_params)
+            new_dataset_manager.loader_test.dataset.transform = transform_val_test_140k
+            self.new_test_loader = new_dataset_manager.loader_test
+            print(f"New test dataset loader configured with 140k normalization.")
+
     def build_model(self):
         print("==> Building student model...")
         self.student = ResNet_50_sparse_hardfakevsreal()
@@ -119,7 +139,7 @@ class Test:
         meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
         all_preds = []
         all_targets = []
-        sample_info = []  # To store image paths/indices, true labels, and predicted labels
+        sample_info = []
         
         self.student.eval()
         self.student.ticket = True
@@ -135,10 +155,8 @@ class Test:
                 all_preds.extend(preds.cpu().numpy())
                 all_targets.extend(targets.cpu().numpy())
                 
-                # Collect sample information (assuming dataset provides image paths)
                 batch_size = images.size(0)
                 for i in range(batch_size):
-                    # Try to get image path from dataset; fallback to index if not available
                     try:
                         img_path = loader.dataset.samples[batch_idx * loader.batch_size + i][0]
                     except (AttributeError, IndexError):
@@ -156,42 +174,37 @@ class Test:
         all_preds = np.array(all_preds)
         all_targets = np.array(all_targets)
         
-        # Calculate metrics
         accuracy = meter_top1.avg
         precision = precision_score(all_targets, all_preds, average='binary')
         recall = recall_score(all_targets, all_preds, average='binary')
         
-        # Confusion matrix for specificity
         tn, fp, fn, tp = confusion_matrix(all_targets, all_preds).ravel()
         specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
         
-        # Print metrics
         print(f"[{description}] Final Metrics:")
         print(f"Accuracy: {accuracy:.2f}%")
         print(f"Precision: {precision:.4f}")
         print(f"Recall: {recall:.4f}")
         print(f"Specificity: {specificity:.4f}")
         
-        # Compute and plot confusion matrix
         cm = confusion_matrix(all_targets, all_preds)
         classes = ['Real', 'Fake']
         
-        # Print confusion matrix
         print(f"\n[{description}] Confusion Matrix:")
         print(f"{'':>10} {'Predicted Real':>15} {'Predicted Fake':>15}")
         print(f"{'Actual Real':>10} {cm[0,0]:>15} {cm[0,1]:>15}")
         print(f"{'Actual Fake':>10} {cm[1,0]:>15} {cm[1,1]:>15}")
         
-        # Plot confusion matrix
         plt.figure(figsize=(8, 6))
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
         plt.title(f'Confusion Matrix - {description}')
         plt.ylabel('Actual')
         plt.xlabel('Predicted')
         
-        # Save plot
-        os.makedirs(self.result_dir, exist_ok=True)
-        plot_path = os.path.join(self.result_dir, f'confusion_matrix_{description.lower().replace(" ", "_")}.png')
+        # Sanitize description for file name
+        sanitized_description = description.lower().replace(" ", "_").replace("/", "_")
+        plot_path = os.path.join(self.result_dir, f'confusion_matrix_{sanitized_description}.png')
+        os.makedirs(os.path.dirname(plot_path), exist_ok=True)  # Ensure directory exists
         plt.savefig(plot_path)
         plt.close()
         print(f"Confusion matrix saved to: {plot_path}")
@@ -202,7 +215,7 @@ class Test:
             'recall': recall,
             'specificity': specificity,
             'confusion_matrix': cm,
-            'sample_info': sample_info  # Return sample information for display
+            'sample_info': sample_info
         }
 
     def display_samples(self, sample_info, description="Test", num_samples=30):
@@ -259,7 +272,7 @@ class Test:
                 meter_loss.update(loss.item(), images.size(0))
                 meter_top1_train.update(prec1, images.size(0))
 
-            val_metrics = self.compute_metrics(self.val_loader, description=f"Epoch {epoch+1}/{self.args.f_epochs} [Val]")
+            val_metrics = self.compute_metrics(self.val_loader, description=f"Epoch_{epoch+1}_{self.args.f_epochs}_Val")
             val_acc = val_metrics['accuracy']
             
             print(f"Epoch {epoch+1}: Train Loss: {meter_loss.avg:.4f}, Train Acc: {meter_top1_train.avg:.2f}%")
@@ -283,12 +296,17 @@ class Test:
         self.build_model()
         
         print("\n--- Testing BEFORE fine-tuning ---")
-        initial_metrics = self.compute_metrics(self.test_loader, "Initial Test")
+        initial_metrics = self.compute_metrics(self.test_loader, "Initial_Test")
         self.display_samples(initial_metrics['sample_info'], "Initial Test", num_samples=30)
         
         print("\n--- Starting fine-tuning ---")
         self.finetune()
         
         print("\n--- Testing AFTER fine-tuning with best model ---")
-        final_metrics = self.compute_metrics(self.test_loader, "Final Test")
+        final_metrics = self.compute_metrics(self.test_loader, "Final_Test")
         self.display_samples(final_metrics['sample_info'], "Final Test", num_samples=30)
+        
+        if self.new_test_loader:
+            print("\n--- Testing on NEW dataset ---")
+            new_metrics = self.compute_metrics(self.new_test_loader, "New_Dataset_Test")
+            self.display_samples(new_metrics['sample_info'], "New Dataset Test", num_samples=30)
