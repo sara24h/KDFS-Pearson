@@ -1,4 +1,7 @@
 import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # سرکوب warningهای TF/CUDA
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # force GPU device
+
 import torch
 from tqdm import tqdm
 import torchvision.transforms as transforms
@@ -17,6 +20,7 @@ from ray.tune import Tuner
 from ray.tune.schedulers import ASHAScheduler
 from ray.tune.search.optuna import OptunaSearch
 from ray.train import Checkpoint
+import ray
 
 class Test:
     def __init__(self, args):
@@ -33,8 +37,10 @@ class Test:
         self.result_dir = args.result_dir
         self.new_dataset_dir = getattr(args, 'new_dataset_dir', None)
 
+        # چک CUDA بدون raise
         if self.device == 'cuda' and not torch.cuda.is_available():
-            raise RuntimeError("CUDA is not available! Please check GPU setup.")
+            print("Warning: CUDA not available, falling back to CPU.")
+            self.device = 'cpu'
             
         self.train_loader = None
         self.val_loader = None
@@ -255,6 +261,8 @@ class Test:
     def tune_finetune(self):
         print("==> Starting hyperparameter tuning for fine-tuning...")
         
+        ray.init(num_gpus=1, ignore_reinit_error=True)
+        
         config = {
             "lr": tune.loguniform(1e-5, 1e-2),
             "batch_size": tune.choice([8, 16, 32, 64]),
@@ -272,14 +280,18 @@ class Test:
         
         search_alg = OptunaSearch(metric="val_acc", mode="max")
         
-        # استفاده از with_parameters برای پاس args کوچک
         trainable_with_params = tune.with_parameters(train_function, args=self.args)
         
-        tuner = Tuner(
+        trainable_with_resources = tune.with_resources(
             trainable_with_params,
+            resources={"cpu": 2, "gpu": 1}
+        )
+        
+        tuner = Tuner(
+            trainable_with_resources,
             param_space=config,
             tune_config=tune.TuneConfig(
-                num_samples=50,
+                num_samples=10,
                 scheduler=scheduler,
                 search_alg=search_alg
             ),
@@ -295,11 +307,10 @@ class Test:
         best_config = best_result.config
         print("Best hyperparameters found:", best_config)
         
-        # لود بهترین checkpoint به self.student
         if best_result.checkpoint:
             checkpoint_dict = best_result.checkpoint.to_dict()
             if self.student is None:
-                self.build_model()  # اگر مدل لود نشده، اول بساز
+                self.build_model()
             self.student.load_state_dict(checkpoint_dict["model_state"])
             print("Loaded best model from checkpoint for final testing.")
         
@@ -307,7 +318,7 @@ class Test:
 
     def main(self):
         print(f"Starting pipeline with dataset mode: {self.dataset_mode}")
-        self.dataload()  # با default برای initial test
+        self.dataload()
         self.build_model()
         
         print("\n--- Testing BEFORE fine-tuning ---")
@@ -326,22 +337,17 @@ class Test:
             new_metrics = self.compute_metrics(self.new_test_loader, "New_Dataset_Test")
             self.display_samples(new_metrics['sample_info'], "New Dataset Test", num_samples=30)
 
-# فانکشن standalone خارج از کلاس
 def train_function(config, args):
-    """Standalone trainable function"""
-    if not os.path.exists(args.result_dir):
-        os.makedirs(args.result_dir)
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    if not torch.cuda.is_available():
+        print("Warning: CUDA not available in this worker, using CPU.")
     
-    # recreate Test instance داخل فانکشن
     test_instance = Test(args)
     
-    # لود دیتا با batch_size از config
     test_instance.dataload(batch_size=config["batch_size"])
     
-    # ساخت مدل
     test_instance.build_model()
     
-    # Unfreeze لایه‌ها
     for name, param in test_instance.student.named_parameters():
         param.requires_grad = any(layer in name for layer in config["unfreeze_layers"])
         if param.requires_grad:
@@ -380,7 +386,6 @@ def train_function(config, args):
             meter_loss.update(loss.item(), images.size(0))
             meter_top1_train.update(prec1, images.size(0))
 
-        # Compute validation metrics
         val_metrics = test_instance.compute_metrics(test_instance.val_loader, description=f"Epoch_{epoch+1}_{config['epochs']}_Val", print_metrics=False, save_confusion_matrix=False)
         val_acc = val_metrics['accuracy']
         
@@ -388,7 +393,6 @@ def train_function(config, args):
 
         scheduler.step()
 
-        # گزارش به Ray Tune
         report_dict = {"val_acc": val_acc, "epoch": epoch}
         if val_acc > best_val_acc:
             best_val_acc = val_acc
@@ -402,5 +406,4 @@ def train_function(config, args):
         else:
             train.report(report_dict)
     
-    # ذخیره آخرین مدل
     torch.save(test_instance.student.state_dict(), best_model_path)
