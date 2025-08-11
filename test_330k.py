@@ -1,6 +1,7 @@
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"  # فیکس fragmentation
 
 import torch
 from tqdm import tqdm
@@ -74,10 +75,10 @@ class Test:
         params = {
             'dataset_mode': self.dataset_mode,
             'train_batch_size': batch_size,
-            'eval_batch_size': self.test_batch_size,
+            'eval_batch_size': 32,  # فیکس: کم کردن batch_size eval برای جلوگیری از OOM
             'num_workers': self.num_workers,
             'pin_memory': self.pin_memory,
-            'ddp': False  # فیکس برای جلوگیری از ارور ddp
+            'ddp': False
         }
         
         if self.dataset_mode == 'hardfake':
@@ -120,12 +121,12 @@ class Test:
             print("==> Loading new test dataset...")
             new_params = {
                 'dataset_mode': 'new_test',
-                'eval_batch_size': self.test_batch_size,
+                'eval_batch_size': 32,  # فیکس برای new_loader هم
                 'num_workers': self.num_workers,
                 'pin_memory': self.pin_memory,
                 'new_test_csv': os.path.join(self.new_dataset_dir, 'test.csv'),
                 'new_test_root_dir': self.new_dataset_dir,
-                'ddp': False  # فیکس برای new_loader
+                'ddp': False
             }
             new_dataset_manager = Dataset_selector(**new_params)
             new_dataset_manager.loader_test.dataset.transform = transform_val_test_330k
@@ -340,7 +341,8 @@ def train_function(config, args):
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     if not torch.cuda.is_available():
         print("Warning: CUDA not available in this worker, using CPU.")
-    
+    torch.cuda.empty_cache()  # آزاد کردن حافظه
+        
     test_instance = Test(args)
     
     test_instance.dataload(batch_size=config["batch_size"])
@@ -404,5 +406,7 @@ def train_function(config, args):
             train.report(report_dict, checkpoint=checkpoint)
         else:
             train.report(report_dict)
+        
+        torch.cuda.empty_cache()  # آزاد کردن حافظه بعد هر epoch
     
     torch.save(test_instance.student.state_dict(), best_model_path)
