@@ -1,6 +1,6 @@
 import os
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # سرکوب warningهای TF/CUDA
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # force GPU device
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  
 
 import torch
 from tqdm import tqdm
@@ -13,8 +13,6 @@ import seaborn as sns
 from data.dataset import Dataset_selector
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 from utils import meter
-
-# واردات برای تیونینگ
 from ray import tune, train
 from ray.tune import Tuner
 from ray.tune.schedulers import ASHAScheduler
@@ -37,7 +35,6 @@ class Test:
         self.result_dir = args.result_dir
         self.new_dataset_dir = getattr(args, 'new_dataset_dir', None)
 
-        # چک CUDA بدون raise
         if self.device == 'cuda' and not torch.cuda.is_available():
             print("Warning: CUDA not available, falling back to CPU.")
             self.device = 'cpu'
