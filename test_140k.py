@@ -173,8 +173,8 @@ class Test:
         all_targets = np.array(all_targets)
         
         accuracy = meter_top1.avg
-        precision = precision_score(all_targets, all_preds, average='binary')
-        recall = recall_score(all_targets, all_preds, average='binary')
+        precision = precision_score(all_targets, all_preds, average='macro')
+        recall = recall_score(all_targets, all_preds, average='macro')
         
         precision_per_class = precision_score(all_targets, all_preds, average=None, labels=[0, 1])
         recall_per_class = recall_score(all_targets, all_preds, average=None, labels=[0, 1])
@@ -182,13 +182,14 @@ class Test:
         tn, fp, fn, tp = confusion_matrix(all_targets, all_preds).ravel()
         specificity_real = tn / (tn + fp) if (tn + fp) > 0 else 0.0
         specificity_fake = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        specificity_macro = (specificity_real + specificity_fake) / 2
         
         if print_metrics:
-            print(f"[{description}] Overall Metrics:")
+            print(f"[{description}] Overall Metrics (Macro-Average):")
             print(f"Accuracy: {accuracy:.2f}%")
-            print(f"Precision: {precision:.4f}")
-            print(f"Recall: {recall:.4f}")
-            print(f"Specificity: {specificity_real:.4f}")
+            print(f"Precision (Macro): {precision:.4f}")
+            print(f"Recall (Macro): {recall:.4f}")
+            print(f"Specificity (Macro): {specificity_macro:.4f}")
             
             print(f"\n[{description}] Per-Class Metrics:")
             print(f"Class Real (0):")
@@ -226,7 +227,7 @@ class Test:
             'accuracy': accuracy,
             'precision': precision,
             'recall': recall,
-            'specificity': specificity_real,
+            'specificity': specificity_macro,
             'precision_per_class': precision_per_class,
             'recall_per_class': recall_per_class,
             'specificity_per_class': [specificity_real, specificity_fake],
