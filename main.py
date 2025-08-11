@@ -381,7 +381,6 @@ def parse_args():
         default=0.0001,
         help=" weight decay for fine-tuning",
     )
-    f_weight_decay
 
     return parser.parse_args()
 
