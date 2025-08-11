@@ -375,6 +375,13 @@ def parse_args():
         default=0.001,
         help="Learning rate for fine-tuning",
     )
+    parser.add_argument(
+        "--f_weight_decay",
+        type=float,
+        default=0.0001,
+        help=" weight decay for fine-tuning",
+    )
+    f_weight_decay
 
     return parser.parse_args()
 
