@@ -1,6 +1,6 @@
 import os
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"  
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import torch
 from tqdm import tqdm
@@ -13,6 +13,7 @@ import seaborn as sns
 from data.dataset import Dataset_selector
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 from utils import meter
+
 from ray import tune, train
 from ray.tune import Tuner
 from ray.tune.schedulers import ASHAScheduler
@@ -76,7 +77,7 @@ class Test:
             'eval_batch_size': self.test_batch_size,
             'num_workers': self.num_workers,
             'pin_memory': self.pin_memory,
-            'ddp': True
+            'ddp': False  # فیکس برای جلوگیری از ارور ddp
         }
         
         if self.dataset_mode == 'hardfake':
@@ -123,7 +124,8 @@ class Test:
                 'num_workers': self.num_workers,
                 'pin_memory': self.pin_memory,
                 'new_test_csv': os.path.join(self.new_dataset_dir, 'test.csv'),
-                'new_test_root_dir': self.new_dataset_dir
+                'new_test_root_dir': self.new_dataset_dir,
+                'ddp': False  # فیکس برای new_loader
             }
             new_dataset_manager = Dataset_selector(**new_params)
             new_dataset_manager.loader_test.dataset.transform = transform_val_test_330k
