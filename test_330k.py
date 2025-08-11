@@ -1,8 +1,4 @@
 import os
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"  # فیکس fragmentation
-
 import torch
 from tqdm import tqdm
 import torchvision.transforms as transforms
@@ -14,13 +10,6 @@ import seaborn as sns
 from data.dataset import Dataset_selector
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 from utils import meter
-
-from ray import tune, train
-from ray.tune import Tuner
-from ray.tune.schedulers import ASHAScheduler
-from ray.tune.search.optuna import OptunaSearch
-from ray.train import Checkpoint
-import ray
 
 class Test:
     def __init__(self, args):
@@ -35,19 +24,18 @@ class Test:
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
         self.dataset_mode = args.dataset_mode
         self.result_dir = args.result_dir
-        self.new_dataset_dir = getattr(args, 'new_dataset_dir', None)
+        self.new_dataset_dir = getattr(args, 'new_dataset_dir', None)  # New dataset directory
 
         if self.device == 'cuda' and not torch.cuda.is_available():
-            print("Warning: CUDA not available, falling back to CPU.")
-            self.device = 'cpu'
+            raise RuntimeError("CUDA is not available! Please check GPU setup.")
             
         self.train_loader = None
         self.val_loader = None
         self.test_loader = None
-        self.new_test_loader = None
+        self.new_test_loader = None  # Loader for new test dataset
         self.student = None
 
-    def dataload(self, batch_size=None):
+    def dataload(self):
         print("==> Loading datasets...")
         
         image_size = (256, 256)
@@ -69,13 +57,10 @@ class Test:
             transforms.Normalize(mean=mean_330k, std=std_330k),
         ])
 
-        if batch_size is None:
-            batch_size = self.train_batch_size
-
         params = {
             'dataset_mode': self.dataset_mode,
-            'train_batch_size': batch_size,
-            'eval_batch_size': 32,  # فیکس: کم کردن batch_size eval برای جلوگیری از OOM
+            'train_batch_size': self.train_batch_size,
+            'eval_batch_size': self.test_batch_size,
             'num_workers': self.num_workers,
             'pin_memory': self.pin_memory,
             'ddp': False
@@ -117,16 +102,16 @@ class Test:
         
         print(f"All loaders for '{self.dataset_mode}' are now configured with 330k normalization.")
 
+        # Load new test dataset if provided
         if self.new_dataset_dir:
             print("==> Loading new test dataset...")
             new_params = {
                 'dataset_mode': 'new_test',
-                'eval_batch_size': 32,  # فیکس برای new_loader هم
+                'eval_batch_size': self.test_batch_size,
                 'num_workers': self.num_workers,
                 'pin_memory': self.pin_memory,
                 'new_test_csv': os.path.join(self.new_dataset_dir, 'test.csv'),
-                'new_test_root_dir': self.new_dataset_dir,
-                'ddp': False
+                'new_test_root_dir': self.new_dataset_dir
             }
             new_dataset_manager = Dataset_selector(**new_params)
             new_dataset_manager.loader_test.dataset.transform = transform_val_test_330k
@@ -258,63 +243,91 @@ class Test:
             pred_label = 'Real' if sample['pred_label'] == 0 else 'Fake'
             print(f"{sample['id']:<50} {true_label:<12} {pred_label:<12}")
 
-    def tune_finetune(self):
-        print("==> Starting hyperparameter tuning for fine-tuning...")
+    def finetune(self):
+        print("==> Fine-tuning using FEATURE EXTRACTOR strategy on 'fc' and 'layer4'...")
+        if not os.path.exists(self.result_dir):
+            os.makedirs(self.result_dir)
         
-        ray.init(num_gpus=1, ignore_reinit_error=True)
-        
-        config = {
-            "lr": tune.loguniform(1e-5, 1e-2),
-            "batch_size": tune.choice([8, 16, 32, 64]),
-            "epochs": tune.choice([5, 10, 15, 20]),
-            "weight_decay": tune.loguniform(1e-5, 1e-3),
-            "unfreeze_layers": tune.choice([['fc'], ['fc', 'layer4'], ['fc', 'layer3', 'layer4']])
-        }
-        
-        scheduler = ASHAScheduler(
-            metric="val_acc",
-            mode="max",
-            grace_period=3,
-            reduction_factor=2
+        for name, param in self.student.named_parameters():
+            if 'fc' in name or 'layer4' in name:
+                param.requires_grad = True
+                print(f"Unfreezing for training: {name}")
+            else:
+                param.requires_grad = False
+
+        optimizer = torch.optim.AdamW(
+            filter(lambda p: p.requires_grad, self.student.parameters()),
+            lr=self.args.f_lr,
+            weight_decay=1e-4
         )
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+        criterion = torch.nn.BCEWithLogitsLoss()
         
-        search_alg = OptunaSearch(metric="val_acc", mode="max")
+        self.student.ticket = False
         
-        trainable_with_params = tune.with_parameters(train_function, args=self.args)
+        best_val_acc = 0.0
+        best_model_path = os.path.join(self.result_dir, f'finetuned_model_best_{self.dataset_mode}.pth')
+
+        for epoch in range(self.args.f_epochs):
+            self.student.train()
+            meter_loss = meter.AverageMeter("Loss", ":6.4f")
+            meter_top1_train = meter.AverageMeter("Train Acc@1", ":6.2f")
+            
+            for images, targets in tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.args.f_epochs} [Train]", ncols=100):
+                images, targets = images.to(self.device), targets.to(self.device).float()
+                optimizer.zero_grad()
+                logits, _ = self.student(images)
+                logits = logits.squeeze()
+                loss = criterion(logits, targets)
+                loss.backward()
+                optimizer.step()
+                
+                preds = (torch.sigmoid(logits) > 0.5).float()
+                correct = (preds == targets).sum().item()
+                prec1 = 100.0 * correct / images.size(0)
+                meter_loss.update(loss.item(), images.size(0))
+                meter_top1_train.update(prec1, images.size(0))
+
+            # Compute validation metrics
+            val_metrics = self.compute_metrics(self.val_loader, description=f"Epoch_{epoch+1}_{self.args.f_epochs}_Val", print_metrics=False, save_confusion_matrix=False)
+            val_acc = val_metrics['accuracy']
+            
+            # Print train and validation metrics for the epoch
+            print(f"Epoch {epoch+1}: Train Loss: {meter_loss.avg:.4f}, Train Acc: {meter_top1_train.avg:.2f}%, Val Acc: {val_acc:.2f}%")
+
+            scheduler.step()
+
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                print(f"New best model found with Val Acc: {best_val_acc:.2f}%. Saving to {best_model_path}")
+                torch.save(self.student.state_dict(), best_model_path)
         
-        trainable_with_resources = tune.with_resources(
-            trainable_with_params,
-            resources={"cpu": 2, "gpu": 1}
-        )
+        print(f"\nFine-tuning finished. Loading best model with Val Acc: {best_val_acc:.2f}%")
+        if os.path.exists(best_model_path):
+            self.student.load_state_dict(torch.load(best_model_path))
+        else:
+            print("Warning: No best model was saved. The model from the last epoch will be used for testing.")
         
-        tuner = Tuner(
-            trainable_with_resources,
-            param_space=config,
-            tune_config=tune.TuneConfig(
-                num_samples=10,
-                scheduler=scheduler,
-                search_alg=search_alg
-            ),
-            run_config=train.RunConfig(
-                name=f"fine_tune_{self.dataset_mode}",
-                stop={"val_acc": 99.0}
-            )
-        )
-        
-        results = tuner.fit()
-        
-        best_result = results.get_best_result(metric="val_acc", mode="max")
-        best_config = best_result.config
-        print("Best hyperparameters found:", best_config)
-        
-        if best_result.checkpoint:
-            checkpoint_dict = best_result.checkpoint.to_dict()
-            if self.student is None:
-                self.build_model()
-            self.student.load_state_dict(checkpoint_dict["model_state"])
-            print("Loaded best model from checkpoint for final testing.")
-        
-        return best_config
+        # Compute and print final test metrics after fine-tuning
+        final_test_metrics = self.compute_metrics(self.test_loader, description="Final_Test", print_metrics=True, save_confusion_matrix=True)
+        print(f"\nFinal Test Metrics after Fine-tuning:")
+        print(f"Accuracy: {final_test_metrics['accuracy']:.2f}%")
+        print(f"Precision: {final_test_metrics['precision']:.4f}")
+        print(f"Recall: {final_test_metrics['recall']:.4f}")
+        print(f"Specificity: {final_test_metrics['specificity']:.4f}")
+        print(f"\nPer-Class Metrics:")
+        print(f"Class Real (0):")
+        print(f"  Precision: {final_test_metrics['precision_per_class'][0]:.4f}")
+        print(f"  Recall: {final_test_metrics['recall_per_class'][0]:.4f}")
+        print(f"  Specificity: {final_test_metrics['specificity_per_class'][0]:.4f}")
+        print(f"Class Fake (1):")
+        print(f"  Precision: {final_test_metrics['precision_per_class'][1]:.4f}")
+        print(f"  Recall: {final_test_metrics['recall_per_class'][1]:.4f}")
+        print(f"  Specificity: {final_test_metrics['specificity_per_class'][1]:.4f}")
+        print(f"\nConfusion Matrix:")
+        print(f"{'':>10} {'Predicted Real':>15} {'Predicted Fake':>15}")
+        print(f"{'Actual Real':>10} {final_test_metrics['confusion_matrix'][0,0]:>15} {final_test_metrics['confusion_matrix'][0,1]:>15}")
+        print(f"{'Actual Fake':>10} {final_test_metrics['confusion_matrix'][1,0]:>15} {final_test_metrics['confusion_matrix'][1,1]:>15}")
 
     def main(self):
         print(f"Starting pipeline with dataset mode: {self.dataset_mode}")
@@ -325,8 +338,8 @@ class Test:
         initial_metrics = self.compute_metrics(self.test_loader, "Initial_Test")
         self.display_samples(initial_metrics['sample_info'], "Initial Test", num_samples=30)
         
-        print("\n--- Starting tuned fine-tuning ---")
-        best_config = self.tune_finetune()
+        print("\n--- Starting fine-tuning ---")
+        self.finetune()
         
         print("\n--- Testing AFTER fine-tuning with best model ---")
         final_metrics = self.compute_metrics(self.test_loader, "Final_Test", print_metrics=False)
@@ -336,77 +349,3 @@ class Test:
             print("\n--- Testing on NEW dataset ---")
             new_metrics = self.compute_metrics(self.new_test_loader, "New_Dataset_Test")
             self.display_samples(new_metrics['sample_info'], "New Dataset Test", num_samples=30)
-
-def train_function(config, args):
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-    if not torch.cuda.is_available():
-        print("Warning: CUDA not available in this worker, using CPU.")
-    torch.cuda.empty_cache()  # آزاد کردن حافظه
-        
-    test_instance = Test(args)
-    
-    test_instance.dataload(batch_size=config["batch_size"])
-    
-    test_instance.build_model()
-    
-    for name, param in test_instance.student.named_parameters():
-        param.requires_grad = any(layer in name for layer in config["unfreeze_layers"])
-        if param.requires_grad:
-            print(f"Unfreezing for training: {name}")
-
-    optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, test_instance.student.parameters()),
-        lr=config["lr"],
-        weight_decay=config["weight_decay"]
-    )
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
-    criterion = torch.nn.BCEWithLogitsLoss()
-    
-    test_instance.student.ticket = False
-    
-    best_val_acc = 0.0
-    best_model_path = os.path.join(args.result_dir, f'finetuned_model_best_{args.dataset_mode}.pth')
-
-    for epoch in range(config["epochs"]):
-        test_instance.student.train()
-        meter_loss = meter.AverageMeter("Loss", ":6.4f")
-        meter_top1_train = meter.AverageMeter("Train Acc@1", ":6.2f")
-        
-        for images, targets in tqdm(test_instance.train_loader, desc=f"Epoch {epoch+1}/{config['epochs']} [Train]", ncols=100):
-            images, targets = images.to(test_instance.device), targets.to(test_instance.device).float()
-            optimizer.zero_grad()
-            logits, _ = test_instance.student(images)
-            logits = logits.squeeze()
-            loss = criterion(logits, targets)
-            loss.backward()
-            optimizer.step()
-            
-            preds = (torch.sigmoid(logits) > 0.5).float()
-            correct = (preds == targets).sum().item()
-            prec1 = 100.0 * correct / images.size(0)
-            meter_loss.update(loss.item(), images.size(0))
-            meter_top1_train.update(prec1, images.size(0))
-
-        val_metrics = test_instance.compute_metrics(test_instance.val_loader, description=f"Epoch_{epoch+1}_{config['epochs']}_Val", print_metrics=False, save_confusion_matrix=False)
-        val_acc = val_metrics['accuracy']
-        
-        print(f"Epoch {epoch+1}: Train Loss: {meter_loss.avg:.4f}, Train Acc: {meter_top1_train.avg:.2f}%, Val Acc: {val_acc:.2f}%")
-
-        scheduler.step()
-
-        report_dict = {"val_acc": val_acc, "epoch": epoch}
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            print(f"New best model found with Val Acc: {best_val_acc:.2f}%. Saving checkpoint.")
-            checkpoint = Checkpoint.from_dict({
-                "model_state": test_instance.student.state_dict(),
-                "optimizer_state": optimizer.state_dict(),
-                "val_acc": best_val_acc
-            })
-            train.report(report_dict, checkpoint=checkpoint)
-        else:
-            train.report(report_dict)
-        
-        torch.cuda.empty_cache()  # آزاد کردن حافظه بعد هر epoch
-    
-    torch.save(test_instance.student.state_dict(), best_model_path)
