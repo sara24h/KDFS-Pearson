@@ -31,7 +31,7 @@ class Test:
             raise RuntimeError("CUDA is not available! Please check GPU setup.")
 
     def dataload(self):
-        print("==> Loading datasets..")
+        print("==> Loading test dataset..")
         try:
             # Verify dataset paths
             if self.dataset_mode == 'hardfake':
@@ -39,8 +39,8 @@ class Test:
                 if not os.path.exists(csv_path):
                     raise FileNotFoundError(f"CSV file not found: {csv_path}")
             elif self.dataset_mode == 'rvf10k':
-                train_csv = os.path.join(self.dataset_dir, 'train.csv')
-                valid_csv = os.path.join(self.dataset_dir, 'valid.csv')
+                train_csv = '/kaggle/input/rvf10k/train.csv'
+                valid_csv = '/kaggle/input/rvf10k/valid.csv'
                 if not os.path.exists(train_csv) or not os.path.exists(valid_csv):
                     raise FileNotFoundError(f"CSV files not found: {train_csv}, {valid_csv}")
             elif self.dataset_mode == '140k':
@@ -48,9 +48,12 @@ class Test:
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
             elif self.dataset_mode == '200k':
-                test_csv = os.path.join(self.dataset_dir, 'test_labels.csv')
+                test_csv = os.path.join(self.dataset_dir, 'test.csv')
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
+            elif self.dataset_mode == '190k':
+                if not os.path.exists(self.dataset_dir):
+                    raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
             elif self.dataset_mode == '330k':
                 if not os.path.exists(self.dataset_dir):
                     raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
@@ -70,8 +73,8 @@ class Test:
             elif self.dataset_mode == 'rvf10k':
                 dataset = Dataset_selector(
                     dataset_mode='rvf10k',
-                    rvf10k_train_csv=os.path.join(self.dataset_dir, 'train.csv'),
-                    rvf10k_valid_csv=os.path.join(self.dataset_dir, 'valid.csv'),
+                    rvf10k_train_csv='/kaggle/input/rvf10k/train.csv',
+                    rvf10k_valid_csv='/kaggle/input/rvf10k/valid.csv',
                     rvf10k_root_dir=self.dataset_dir,
                     train_batch_size=self.test_batch_size,
                     eval_batch_size=self.test_batch_size,
@@ -93,12 +96,25 @@ class Test:
                     ddp=False
                 )
             elif self.dataset_mode == '200k':
+                test_csv = os.path.join(self.dataset_dir, 'test_labels.csv')
+                if not os.path.exists(test_csv):
+                    raise FileNotFoundError(f"CSV file not found: {test_csv}")
                 dataset = Dataset_selector(
-                    dataset_mode='200k',
-                    realfake200k_train_csv=os.path.join(self.dataset_dir, 'train_labels.csv'),
-                    realfake200k_val_csv=os.path.join(self.dataset_dir, 'val_labels.csv'),
-                    realfake200k_test_csv=os.path.join(self.dataset_dir, 'test_labels.csv'),
-                    realfake200k_root_dir=os.path.join(self.dataset_dir, 'my_real_vs_ai_dataset/my_real_vs_ai_dataset'),
+                dataset_mode='200k',
+                realfake200k_train_csv=os.path.join(self.dataset_dir, 'train_labels.csv'),
+                realfake200k_val_csv=os.path.join(self.dataset_dir, 'val_labels.csv'),
+                realfake200k_test_csv=os.path.join(self.dataset_dir, 'test_labels.csv'),
+                realfake200k_root_dir=os.path.join(self.dataset_dir, 'my_real_vs_ai_dataset/my_real_vs_ai_dataset'), 
+                train_batch_size=self.test_batch_size,
+                eval_batch_size=self.test_batch_size,
+                num_workers=self.num_workers,
+                pin_memory=self.pin_memory,
+                ddp=False
+            )
+            elif self.dataset_mode == '190k':
+                dataset = Dataset_selector(
+                    dataset_mode='190k',
+                    realfake190k_root_dir=self.dataset_dir,
                     train_batch_size=self.test_batch_size,
                     eval_batch_size=self.test_batch_size,
                     num_workers=self.num_workers,
@@ -115,11 +131,9 @@ class Test:
                     pin_memory=self.pin_memory,
                     ddp=False
                 )
-            
-            # بارگذاری هر دو لودر آموزشی و تست
-            self.train_loader = dataset.loader_train
+
             self.test_loader = dataset.loader_test
-            print(f"{self.dataset_mode} datasets loaded! Train batches: {len(self.train_loader)}, Test batches: {len(self.test_loader)}")
+            print(f"{self.dataset_mode} test dataset loaded! Total batches: {len(self.test_loader)}")
         except Exception as e:
             print(f"Error loading dataset: {str(e)}")
             raise
@@ -191,66 +205,13 @@ class Test:
                 f"Flops_baseline: {Flops_baseline:.2f}M, Flops: {Flops:.2f}M, "
                 f"Flops reduction: {Flops_reduction:.2f}%"
             )
+           
         except Exception as e:
             print(f"Error during testing: {str(e)}")
             raise
 
-    def finetune(self):
-        print("==> Fine-tuning the model..")
-        # فریز کردن همه لایه‌ها به جز layer4 و fc
-        for name, param in self.student.named_parameters():
-            if 'layer4' not in name and 'fc' not in name:
-                param.requires_grad = False
-            else:
-                param.requires_grad = True
-        
-        # تنظیم بهینه‌ساز برای به‌روزرسانی پارامترهای غیرفریز شده
-        optimizer = torch.optim.SGD(
-            filter(lambda p: p.requires_grad, self.student.parameters()),
-            lr=self.args.f_lr,
-            momentum=0.9,
-            weight_decay=5e-4
-        )
-        
-        # تعریف تابع خطا (برای دسته‌بندی دودویی)
-        criterion = torch.nn.BCEWithLogitsLoss()
-        
-        # تنظیم حالت مدل برای آموزش
-        self.student.ticket = False  # غیرفعال کردن ticket برای آموزش
-        
-        # حلقه آموزشی
-        for epoch in range(self.args.f_epochs):
-            self.student.train()
-            meter_loss = meter.AverageMeter("Loss", ":6.4f")
-            meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
-            
-            with tqdm(total=len(self.train_loader), ncols=100, desc=f"Epoch {epoch+1}/{self.args.f_epochs}") as _tqdm:
-                for images, targets in self.train_loader:
-                    images = images.to(self.device, non_blocking=True)
-                    targets = targets.to(self.device, non_blocking=True).float()
-                    
-                    optimizer.zero_grad()
-                    logits_student, _ = self.student(images)
-                    logits_student = logits_student.squeeze()
-                    loss = criterion(logits_student, targets)
-                    loss.backward()
-                    optimizer.step()
-                    
-                    preds = (torch.sigmoid(logits_student) > 0.5).float()
-                    correct = (preds == targets).sum().item()
-                    prec1 = 100.0 * correct / images.size(0)
-                    n = images.size(0)
-                    meter_loss.update(loss.item(), n)
-                    meter_top1.update(prec1, n)
-                    
-                    _tqdm.set_postfix(loss=f"{meter_loss.avg:.4f}", top1=f"{meter_top1.avg:.4f}")
-                    _tqdm.update(1)
-                    time.sleep(0.01)
-            
-            print(f"Epoch {epoch+1}/{self.args.f_epochs}, Loss: {meter_loss.avg:.4f}, Acc@1: {meter_top1.avg:.2f}%")
-
     def main(self):
-        print(f"Starting pipeline with dataset mode: {self.dataset_mode}")
+        print(f"Starting test pipeline with dataset mode: {self.dataset_mode}")
         try:
             print(f"PyTorch version: {torch.__version__}")
             print(f"CUDA available: {torch.cuda.is_available()}")
@@ -260,11 +221,7 @@ class Test:
 
             self.dataload()
             self.build_model()
-            print("تست قبل از فاین‌تیونینگ:")
-            self.test()
-            self.finetune()
-            print("تست بعد از فاین‌تیونینگ:")
             self.test()
         except Exception as e:
-            print(f"Error in pipeline: {str(e)}")
+            print(f"Error in test pipeline: {str(e)}")
             raise
