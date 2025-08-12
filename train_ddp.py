@@ -83,7 +83,8 @@ class TrainDDP:
         else:
             raise ValueError("dataset_mode must be 'hardfake', 'rvf10k', '140k', '200k', '190k', or '330k'")
 
-        # اعتبارسنجی arch
+        self.arch = args.arch.lower().replace('_', '')
+        
         if self.arch.lower() not in ['resnet50', 'mobilenetv2']:
             raise ValueError("arch must be 'resnet50' or 'mobilenetv2'")
 
@@ -288,18 +289,15 @@ class TrainDDP:
         )
 
         self.student.dataset_type = self.args.dataset_type
-        
-        # --- FIX 2: Correctly modify student architecture BEFORE DDP wrapping ---
-        # This code correctly accesses the final layer and replaces it.
+
         if self.arch == 'mobilenetv2':
-            # Direct access, no [-1] index, on the unwrapped model
+
             num_ftrs = self.student.classifier.in_features
             self.student.classifier = nn.Linear(num_ftrs, 1)
-        else: # For ResNet
+        else:
             num_ftrs = self.student.fc.in_features
             self.student.fc = nn.Linear(num_ftrs, 1)
             
-        # Move to GPU and then wrap with DDP
         self.student = self.student.cuda()
         self.student = DDP(self.student, device_ids=[self.local_rank])
 
