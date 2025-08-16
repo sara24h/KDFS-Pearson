@@ -43,7 +43,12 @@ def initialize_model(model_name, device):
     if model_name == 'resnet50':
         model = models.resnet50(weights='IMAGENET1K_V1')
         num_ftrs = model.fc.in_features
-        model.fc = nn.Linear(num_ftrs, 1)
+        # === CHANGE IS HERE ===
+        # Replaced the single linear layer with a sequence containing Dropout
+        model.fc = nn.Sequential(
+            nn.Dropout(p=0.5),
+            nn.Linear(num_ftrs, 1)
+        )
         for param in model.parameters():
             param.requires_grad = False
         for param in model.layer4.parameters():
@@ -255,7 +260,7 @@ if __name__ == "__main__":
         transform_test = transforms.Compose([
             transforms.Resize((img_height, img_width)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.4668, 0.3816, 0.3414], std=[.2410, 0.2161, 0.2081]),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         img_column = 'filename' if dataset_mode in ['190k', '200k', '330k'] else 'path' if dataset_mode in ['140k', '12.9k'] else 'images_id'
 
