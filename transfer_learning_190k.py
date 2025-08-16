@@ -221,6 +221,14 @@ if __name__ == "__main__":
     torch.save(model.state_dict(), os.path.join(teacher_dir, f'teacher_model_{model_name}_final.pth'))
     print(f'Saved final {model_name} model at epoch {epochs}')
 
+
+    print(f"\nLoading best model from {best_model_path} for final testing...")
+    if os.path.exists(best_model_path):
+        model.load_state_dict(torch.load(best_model_path))
+        print("Best model loaded successfully.")
+    else:
+        print("Warning: Best model checkpoint not found. Testing with the final model.")
+  
     if test_loader:
         model.eval()
         test_loss = 0.0
@@ -242,6 +250,7 @@ if __name__ == "__main__":
         test_accuracy = 100 * correct / total
         print(f'Test Loss: {test_loss:.4f}, Test Accuracy: {test_accuracy:.2f}%')
 
+    
     if test_loader:
         transform_test = transforms.Compose([
             transforms.Resize((img_height, img_width)),
