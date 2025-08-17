@@ -84,9 +84,9 @@ class TrainDDP:
             raise ValueError("dataset_mode must be 'hardfake', 'rvf10k', '140k', '200k', '190k', or '330k'")
 
         self.arch = args.arch.lower().replace('_', '')
-        
-        if self.arch.lower() not in ['resnet50', 'mobilenetv2']:
-            raise ValueError("arch must be 'resnet50' or 'mobilenetv2'")
+
+       if self.arch not in ['resnet50', 'mobilenetv2']:
+           raise ValueError(f"Unsupported architecture: '{args.arch}'. It must be 'resnet50' or 'MobileNetV2'.")
 
     def dist_init(self):
         dist.init_process_group("nccl")
