@@ -29,7 +29,7 @@ class TrainDDP:
         self.dataset_mode = args.dataset_mode
         self.num_workers = args.num_workers
         self.pin_memory = args.pin_memory
-        self.arch = args.arch.lower()
+        #self.arch = args.arch.lower()
         self.seed = args.seed
         self.result_dir = args.result_dir
         self.teacher_ckpt_path = args.teacher_ckpt_path
