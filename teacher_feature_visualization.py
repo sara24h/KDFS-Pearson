@@ -94,7 +94,7 @@ model.fc = nn.Linear(num_ftrs, 1)
 
 # لود state_dict از چک‌پوینت
 ckpt = torch.load(checkpoint_path, map_location='cpu')
-state_dict = ckpt['student']
+state_dict = ckpt  # Directly use ckpt as state_dict since it's not nested
 if list(state_dict.keys())[0].startswith('module.'):
     state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
 model.load_state_dict(state_dict, strict=True)
