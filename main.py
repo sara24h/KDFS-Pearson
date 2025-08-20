@@ -381,6 +381,12 @@ def parse_args():
         default=0.0001,
         help=" weight decay for fine-tuning",
     )
+    parser.add_argument(
+        "--new_dataset_dir",
+        type=str,
+        default=None,
+        help="Optional new dataset directory for additional testing",
+    )
 
     return parser.parse_args()
 
@@ -437,6 +443,9 @@ def validate_args(args):
 
     if args.phase == "test" and args.sparsed_student_ckpt_path and not os.path.exists(args.sparsed_student_ckpt_path):
         raise FileNotFoundError(f"Sparsed student checkpoint not found: {args.sparsed_student_ckpt_path}")
+
+    if args.new_dataset_dir and not os.path.exists(args.new_dataset_dir):
+        raise FileNotFoundError(f"New dataset directory not found: {args.new_dataset_dir}")
 
 def main():
     args = parse_args()
