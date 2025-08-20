@@ -45,7 +45,7 @@ def visualize_feature_maps(activation, layer_name, num_channels_to_show=16, save
     plt.show()
 
 # پارامترها
-checkpoint_path = 'kaggle/input/kdfs-21-mordad-10k-new-pearson-final-data/results/run_resnet50_imagenet_prune1/student_model/resnet50_sparse_best.pt'  # مسیر واقعی رو بذارید
+checkpoint_path = '/kaggle/input/kdfs-21-mordad-10k-new-pearson-final-data/results/run_resnet50_imagenet_prune1/student_model/resnet50_sparse_best.pt'  # مسیر واقعی رو بذارید
 rvf10k_train_csv = '/kaggle/input/rvf10k/train.csv'
 rvf10k_valid_csv = '/kaggle/input/rvf10k/valid.csv'
 rvf10k_root_dir = '/kaggle/input/rvf10k'
