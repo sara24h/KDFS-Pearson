@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from data.dataset import Dataset_selector
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
-from utils import meter
+import argparse  
 
 class Test:
     def __init__(self, args):
@@ -17,7 +17,7 @@ class Test:
         self.dataset_dir = args.dataset_dir
         self.num_workers = args.num_workers
         self.pin_memory = args.pin_memory
-        self.arch = args.arch
+        self.arch = args.arch  
         self.device = args.device
         self.train_batch_size = args.train_batch_size
         self.test_batch_size = args.test_batch_size
@@ -25,6 +25,8 @@ class Test:
         self.dataset_mode = args.dataset_mode
         self.result_dir = args.result_dir
         self.new_dataset_dir = getattr(args, 'new_dataset_dir', None)  # New dataset directory
+        self.f_lr = args.f_lr  # Assuming this is defined in args
+        self.f_epochs = args.f_epochs  # Assuming this is defined in args
 
         if self.device == 'cuda' and not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available! Please check GPU setup.")
@@ -119,8 +121,16 @@ class Test:
             print(f"New test dataset loader configured with 140k normalization.")
 
     def build_model(self):
-        print("==> Building student model...")
-        self.student = ResNet_50_sparse_hardfakevsreal()
+        print(f"==> Building student model: {self.arch}...")
+        
+        # Model selection based on args.arch
+        if self.arch == 'resnet50_sparse':
+            self.student = ResNet_50_sparse_hardfakevsreal()
+        # Add more model options here, e.g.:
+        # elif self.arch == 'other_model':
+        #     self.student = OtherModel()
+        else:
+            raise ValueError(f"Unsupported architecture: {self.arch}. Supported: 'resnet50_sparse'")
         
         if not os.path.exists(self.sparsed_student_ckpt_path):
             raise FileNotFoundError(f"Checkpoint file not found: {self.sparsed_student_ckpt_path}")
@@ -173,8 +183,8 @@ class Test:
         all_targets = np.array(all_targets)
         
         accuracy = meter_top1.avg
-        precision = precision_score(all_targets, all_preds, average='macro')
-        recall = recall_score(all_targets, all_preds, average='macro')
+        precision = precision_score(all_targets, all_preds, average='binary')
+        recall = recall_score(all_targets, all_preds, average='binary')
         
         precision_per_class = precision_score(all_targets, all_preds, average=None, labels=[0, 1])
         recall_per_class = recall_score(all_targets, all_preds, average=None, labels=[0, 1])
@@ -182,14 +192,13 @@ class Test:
         tn, fp, fn, tp = confusion_matrix(all_targets, all_preds).ravel()
         specificity_real = tn / (tn + fp) if (tn + fp) > 0 else 0.0
         specificity_fake = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        specificity_macro = (specificity_real + specificity_fake) / 2
         
         if print_metrics:
-            print(f"[{description}] Overall Metrics (Macro-Average):")
+            print(f"[{description}] Overall Metrics:")
             print(f"Accuracy: {accuracy:.2f}%")
-            print(f"Precision (Macro): {precision:.4f}")
-            print(f"Recall (Macro): {recall:.4f}")
-            print(f"Specificity (Macro): {specificity_macro:.4f}")
+            print(f"Precision: {precision:.4f}")
+            print(f"Recall: {recall:.4f}")
+            print(f"Specificity: {specificity_real:.4f}")
             
             print(f"\n[{description}] Per-Class Metrics:")
             print(f"Class Real (0):")
@@ -227,7 +236,7 @@ class Test:
             'accuracy': accuracy,
             'precision': precision,
             'recall': recall,
-            'specificity': specificity_macro,
+            'specificity': specificity_real,
             'precision_per_class': precision_per_class,
             'recall_per_class': recall_per_class,
             'specificity_per_class': [specificity_real, specificity_fake],
@@ -350,3 +359,45 @@ class Test:
             print("\n--- Testing on NEW dataset ---")
             new_metrics = self.compute_metrics(self.new_test_loader, "New_Dataset_Test")
             self.display_samples(new_metrics['sample_info'], "New Dataset Test", num_samples=30)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Fine-tune model for real vs fake image detection')
+    
+    # Dataset selection
+    parser.add_argument('--dataset_mode', type=str, default='140k', 
+                        choices=['hardfake', 'rvf10k', '140k', '200k', '190k', '330k'],
+                        help='Dataset mode to use (e.g., 140k, 200k)')
+    parser.add_argument('--dataset_dir', type=str, required=True, 
+                        help='Path to the dataset directory')
+    
+    # Model selection
+    parser.add_argument('--arch', type=str, default='resnet50_sparse', 
+                        choices=['resnet50_sparse'],  # Add more choices as you import more models
+                        help='Model architecture to use')
+    parser.add_argument('--sparsed_student_ckpt_path', type=str, required=True, 
+                        help='Path to the pre-trained sparse student checkpoint')
+    
+    # Other required arguments (based on the original code)
+    parser.add_argument('--num_workers', type=int, default=4, 
+                        help='Number of data loader workers')
+    parser.add_argument('--pin_memory', action='store_true', 
+                        help='Pin memory for data loaders')
+    parser.add_argument('--device', type=str, default='cuda', 
+                        help='Device to use (cuda or cpu)')
+    parser.add_argument('--train_batch_size', type=int, default=32, 
+                        help='Batch size for training')
+    parser.add_argument('--test_batch_size', type=int, default=32, 
+                        help='Batch size for testing')
+    parser.add_argument('--result_dir', type=str, default='./results', 
+                        help='Directory to save results')
+    parser.add_argument('--new_dataset_dir', type=str, default=None, 
+                        help='Optional new dataset directory for additional testing')
+    parser.add_argument('--f_lr', type=float, default=0.001, 
+                        help='Learning rate for fine-tuning')
+    parser.add_argument('--f_epochs', type=int, default=10, 
+                        help='Number of epochs for fine-tuning')
+    
+    args = parser.parse_args()
+    
+    test = Test(args)
+    test.main()
