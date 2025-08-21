@@ -34,7 +34,7 @@ import time
 def parse_args():
     desc = "Pytorch implementation of KDFS"
     parser = argparse.ArgumentParser(description=desc)
-
+    parser.add_argument('--local_rank', type=int, default=0, help='Local rank for distributed training')
     parser.add_argument(
         "--phase",
         type=str,
