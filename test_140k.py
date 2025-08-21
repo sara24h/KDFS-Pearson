@@ -447,9 +447,10 @@ class Test:
 
 def main_worker(gpu, ngpus_per_node, args):
     args.gpu = gpu
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = "12355"
     print(f"Use GPU: {args.gpu} for processing")
-    dist.init_process_group(backend='nccl', init_method='tcp://127.0.0.1:3456',
-                            world_size=ngpus_per_node, rank=gpu)
+    dist.init_process_group(backend='nccl', world_size=ngpus_per_node, rank=gpu)
     test = Test(args)
     test.main()
 
@@ -493,4 +494,5 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     ngpus_per_node = torch.cuda.device_count()
+    torch.multiprocessing.set_start_method('fork', force=True)
     mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, args))
