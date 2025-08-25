@@ -24,8 +24,7 @@ class Test:
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
         self.dataset_mode = args.dataset_mode
         self.result_dir = args.result_dir
-        self.new_dataset_dir = getattr(args, 'new_dataset_dir', None)
-        self.resume = getattr(args, 'resume', None)
+        self.new_dataset_dir = getattr(args, 'new_dataset_dir', None)  # New dataset directory
 
         if self.device == 'cuda' and not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available! Please check GPU setup.")
@@ -33,7 +32,7 @@ class Test:
         self.train_loader = None
         self.val_loader = None
         self.test_loader = None
-        self.new_test_loader = None
+        self.new_test_loader = None  # Loader for new test dataset
         self.student = None
 
     def dataload(self):
@@ -46,12 +45,10 @@ class Test:
         transform_train_140k = transforms.Compose([
             transforms.Resize(image_size),
             transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomRotation(20),  # Increased rotation
-            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),  # Stronger jitter
-            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.8, 1.2)),  # Added affine
+            transforms.RandomRotation(15),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
             transforms.ToTensor(),
             transforms.Normalize(mean=mean_140k, std=std_140k),
-            transforms.RandomErasing(p=0.3, scale=(0.02, 0.2)),  # Added RandomErasing
         ])
 
         transform_val_test_140k = transforms.Compose([
@@ -64,7 +61,7 @@ class Test:
             'dataset_mode': self.dataset_mode,
             'train_batch_size': self.train_batch_size,
             'eval_batch_size': self.test_batch_size,
-            'num_workers': 4,  # Reduced to avoid Kaggle warning
+            'num_workers': self.num_workers,
             'pin_memory': self.pin_memory,
             'ddp': False
         }
@@ -94,7 +91,7 @@ class Test:
 
         dataset_manager = Dataset_selector(**params)
 
-        print("Overriding transforms to use consistent 330k normalization stats for all datasets.")
+        print("Overriding transforms to use consistent 140k normalization stats for all datasets.")
         dataset_manager.loader_train.dataset.transform = transform_train_140k
         dataset_manager.loader_val.dataset.transform = transform_val_test_140k
         dataset_manager.loader_test.dataset.transform = transform_val_test_140k
@@ -103,14 +100,15 @@ class Test:
         self.val_loader = dataset_manager.loader_val
         self.test_loader = dataset_manager.loader_test
         
-        print(f"All loaders for '{self.dataset_mode}' are now configured with 330k normalization.")
+        print(f"All loaders for '{self.dataset_mode}' are now configured with 140k normalization.")
 
+        # Load new test dataset if provided
         if self.new_dataset_dir:
             print("==> Loading new test dataset...")
             new_params = {
                 'dataset_mode': 'new_test',
                 'eval_batch_size': self.test_batch_size,
-                'num_workers': 4,
+                'num_workers': self.num_workers,
                 'pin_memory': self.pin_memory,
                 'new_test_csv': os.path.join(self.new_dataset_dir, 'test.csv'),
                 'new_test_root_dir': self.new_dataset_dir
@@ -118,7 +116,7 @@ class Test:
             new_dataset_manager = Dataset_selector(**new_params)
             new_dataset_manager.loader_test.dataset.transform = transform_val_test_140k
             self.new_test_loader = new_dataset_manager.loader_test
-            print(f"New test dataset loader configured with 330k normalization.")
+            print(f"New test dataset loader configured with 140k normalization.")
 
     def build_model(self):
         print("==> Building student model...")
@@ -260,47 +258,17 @@ class Test:
         optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, self.student.parameters()),
             lr=self.args.f_lr,
-            weight_decay=self.args.f_weight_decay
+            weight_decay=1e-4
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.args.f_epochs, eta_min=1e-6)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
         criterion = torch.nn.BCEWithLogitsLoss()
         
         self.student.ticket = False
         
         best_val_acc = 0.0
-        start_epoch = 0
-        patience = 5  # Early stopping patience
-        patience_counter = 0
         best_model_path = os.path.join(self.result_dir, f'finetuned_model_best_{self.dataset_mode}.pth')
-        
-        # Resume from checkpoint if provided
-        if self.resume and os.path.exists(self.resume):
-            print(f"Resuming from checkpoint: {self.resume}")
-            try:
-                ckpt = torch.load(self.resume, map_location=self.device)
-                
-                # Load model state
-                if 'state_dict' in ckpt:
-                    self.student.load_state_dict(ckpt['state_dict'], strict=False)
-                else:
-                    self.student.load_state_dict(ckpt, strict=False)
-                
-                # Load optimizer, scheduler, etc. if available
-                if 'optimizer' in ckpt:
-                    optimizer.load_state_dict(ckpt['optimizer'])
-                if 'scheduler' in ckpt:
-                    scheduler.load_state_dict(ckpt['scheduler'])
-                if 'best_val_acc' in ckpt:
-                    best_val_acc = ckpt['best_val_acc']
-                if 'epoch' in ckpt:
-                    start_epoch = ckpt['epoch']
-                
-                print(f"Resumed at epoch {start_epoch} with best Val Acc: {best_val_acc:.2f}%")
-            except Exception as e:
-                print(f"Error loading checkpoint: {e}. Starting from scratch with pre-trained model.")
-                self.student.load_state_dict(torch.load(self.sparsed_student_ckpt_path, map_location="cpu").get("student", {}), strict=False)
 
-        for epoch in range(start_epoch, self.args.f_epochs):
+        for epoch in range(self.args.f_epochs):
             self.student.train()
             meter_loss = meter.AverageMeter("Loss", ":6.4f")
             meter_top1_train = meter.AverageMeter("Train Acc@1", ":6.2f")
@@ -329,28 +297,14 @@ class Test:
 
             scheduler.step()
 
-            # Save checkpoint if validation accuracy improves
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
-                patience_counter = 0
                 print(f"New best model found with Val Acc: {best_val_acc:.2f}%. Saving to {best_model_path}")
-                torch.save({
-                    'epoch': epoch + 1,
-                    'state_dict': self.student.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'scheduler': scheduler.state_dict(),
-                    'best_val_acc': best_val_acc
-                }, best_model_path)
-            else:
-                patience_counter += 1
-                if patience_counter >= patience:
-                    print(f"Early stopping: No improvement in validation accuracy for {patience} epochs")
-                    break
+                torch.save(self.student.state_dict(), best_model_path)
         
         print(f"\nFine-tuning finished. Loading best model with Val Acc: {best_val_acc:.2f}%")
         if os.path.exists(best_model_path):
-            ckpt = torch.load(best_model_path, map_location=self.device)
-            self.student.load_state_dict(ckpt['state_dict'] if 'state_dict' in ckpt else ckpt, strict=False)
+            self.student.load_state_dict(torch.load(best_model_path))
         else:
             print("Warning: No best model was saved. The model from the last epoch will be used for testing.")
         
