@@ -25,6 +25,7 @@ class Test:
         self.dataset_mode = args.dataset_mode
         self.result_dir = args.result_dir
         self.new_dataset_dir = getattr(args, 'new_dataset_dir', None)  # New dataset directory
+        self.resume = getattr(args, 'resume', None)  # Add resume argument
 
         if self.device == 'cuda' and not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available! Please check GPU setup.")
@@ -260,15 +261,39 @@ class Test:
             lr=self.args.f_lr,
             weight_decay=self.args.f_weight_decay
         )
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.args.f_epochs, eta_min=1e-6)
         criterion = torch.nn.BCEWithLogitsLoss()
         
         self.student.ticket = False
         
         best_val_acc = 0.0
+        start_epoch = 0
         best_model_path = os.path.join(self.result_dir, f'finetuned_model_best_{self.dataset_mode}.pth')
+        
+        # Resume from checkpoint if provided
+        if self.resume and os.path.exists(self.resume):
+            print(f"Resuming from checkpoint: {self.resume}")
+            ckpt = torch.load(self.resume, map_location=self.device)
+            
+            # Load model state
+            if 'state_dict' in ckpt:
+                self.student.load_state_dict(ckpt['state_dict'])
+            else:
+                self.student.load_state_dict(ckpt)  # For old checkpoints with only state_dict
+            
+            # Load optimizer, scheduler, etc. if available
+            if 'optimizer' in ckpt:
+                optimizer.load_state_dict(ckpt['optimizer'])
+            if 'scheduler' in ckpt:
+                scheduler.load_state_dict(ckpt['scheduler'])
+            if 'best_val_acc' in ckpt:
+                best_val_acc = ckpt['best_val_acc']
+            if 'epoch' in ckpt:
+                start_epoch = ckpt['epoch']
+            
+            print(f"Resumed at epoch {start_epoch} with best Val Acc: {best_val_acc:.2f}%")
 
-        for epoch in range(self.args.f_epochs):
+        for epoch in range(start_epoch, self.args.f_epochs):
             self.student.train()
             meter_loss = meter.AverageMeter("Loss", ":6.4f")
             meter_top1_train = meter.AverageMeter("Train Acc@1", ":6.2f")
@@ -297,14 +322,22 @@ class Test:
 
             scheduler.step()
 
+            # Save checkpoint if validation accuracy improves
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
                 print(f"New best model found with Val Acc: {best_val_acc:.2f}%. Saving to {best_model_path}")
-                torch.save(self.student.state_dict(), best_model_path)
+                torch.save({
+                    'epoch': epoch + 1,
+                    'state_dict': self.student.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'scheduler': scheduler.state_dict(),
+                    'best_val_acc': best_val_acc
+                }, best_model_path)
         
         print(f"\nFine-tuning finished. Loading best model with Val Acc: {best_val_acc:.2f}%")
         if os.path.exists(best_model_path):
-            self.student.load_state_dict(torch.load(best_model_path))
+            ckpt = torch.load(best_model_path, map_location=self.device)
+            self.student.load_state_dict(ckpt['state_dict'] if 'state_dict' in ckpt else ckpt)
         else:
             print("Warning: No best model was saved. The model from the last epoch will be used for testing.")
         
