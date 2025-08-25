@@ -173,10 +173,10 @@ class Test:
         meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
         all_preds_list = []
         all_targets_list = []
-        sample_info = []  # Note: In DDP mode, this will only contain samples from this rank's portion
+        sample_info = []  
         
         self.student.eval()
-        self.student.ticket = True if not self.ddp else self.student.module.ticket = True
+        self.student.ticket == True if not self.ddp else self.student.module.ticket == True
         with torch.no_grad():
             for batch_idx, (images, targets) in enumerate(tqdm(loader, desc=description, ncols=100, disable=(self.rank != 0))):
                 images = images.to(self.device, non_blocking=True)
