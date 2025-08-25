@@ -323,7 +323,7 @@ class Test:
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
         criterion = torch.nn.BCEWithLogitsLoss()
         
-        self.student.ticket = False if not self.ddp else self.student.module.ticket = False
+        self.student.ticket == False if not self.ddp else self.student.module.ticket == False
         
         best_val_acc = 0.0
         best_model_path = os.path.join(self.result_dir, f'finetuned_model_best_{self.dataset_mode}.pth')
