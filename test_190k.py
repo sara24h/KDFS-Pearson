@@ -258,7 +258,7 @@ class Test:
         optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, self.student.parameters()),
             lr=self.args.f_lr,
-            weight_decay=1e-4
+            weight_decay=1e-2
         )
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
         criterion = torch.nn.BCEWithLogitsLoss()
