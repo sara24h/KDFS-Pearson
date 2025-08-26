@@ -130,6 +130,13 @@ class Test:
         state_dict = ckpt_student.get("student", ckpt_student)
         
         self.student.load_state_dict(state_dict, strict=False)
+        
+        # Add dropout before the fc layer
+        self.student.fc = torch.nn.Sequential(
+            torch.nn.Dropout(p=0.5),
+            self.student.fc
+        )
+        
         self.student.to(self.device)
         print(f"Model loaded on {self.device}")
 
