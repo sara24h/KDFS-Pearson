@@ -1,8 +1,6 @@
+test_140k.py(17.12 kB)
 import os
 import torch
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
@@ -17,21 +15,11 @@ from utils import meter
 class Test:
     def __init__(self, args):
         self.args = args
-        self.local_rank = int(os.environ.get('LOCAL_RANK', -1))
-        self.world_size = int(os.environ.get('WORLD_SIZE', 1))
-        self.ddp = self.local_rank != -1
-        if self.ddp:
-            dist.init_process_group(backend='nccl')
-            self.device = torch.device('cuda', self.local_rank)
-            torch.cuda.set_device(self.local_rank)
-            self.rank = dist.get_rank()
-        else:
-            self.rank = 0
-            self.device = args.device
         self.dataset_dir = args.dataset_dir
         self.num_workers = args.num_workers
         self.pin_memory = args.pin_memory
         self.arch = args.arch
+        self.device = args.device
         self.train_batch_size = args.train_batch_size
         self.test_batch_size = args.test_batch_size
         self.sparsed_student_ckpt_path = args.sparsed_student_ckpt_path
@@ -39,7 +27,7 @@ class Test:
         self.result_dir = args.result_dir
         self.new_dataset_dir = getattr(args, 'new_dataset_dir', None)  # New dataset directory
 
-        if 'cuda' in str(self.device) and not torch.cuda.is_available():
+        if self.device == 'cuda' and not torch.cuda.is_available():
             raise RuntimeError("CUDA is not available! Please check GPU setup.")
             
         self.train_loader = None
@@ -49,8 +37,7 @@ class Test:
         self.student = None
 
     def dataload(self):
-        if self.rank == 0:
-            print("==> Loading datasets...")
+        print("==> Loading datasets...")
         
         image_size = (256, 256)
         mean_140k = [0.5207, 0.4258, 0.3806]
@@ -77,7 +64,7 @@ class Test:
             'eval_batch_size': self.test_batch_size,
             'num_workers': self.num_workers,
             'pin_memory': self.pin_memory,
-            'ddp': self.ddp
+            'ddp': False
         }
         
         if self.dataset_mode == 'hardfake':
@@ -105,8 +92,7 @@ class Test:
 
         dataset_manager = Dataset_selector(**params)
 
-        if self.rank == 0:
-            print("Overriding transforms to use consistent 140k normalization stats for all datasets.")
+        print("Overriding transforms to use consistent 330k normalization stats for all datasets.")
         dataset_manager.loader_train.dataset.transform = transform_train_140k
         dataset_manager.loader_val.dataset.transform = transform_val_test_140k
         dataset_manager.loader_test.dataset.transform = transform_val_test_140k
@@ -115,70 +101,49 @@ class Test:
         self.val_loader = dataset_manager.loader_val
         self.test_loader = dataset_manager.loader_test
         
-        if self.rank == 0:
-            print(f"All loaders for '{self.dataset_mode}' are now configured with 140k normalization.")
+        print(f"All loaders for '{self.dataset_mode}' are now configured with 140k normalization.")
 
         # Load new test dataset if provided
         if self.new_dataset_dir:
-            if self.rank == 0:
-                print("==> Loading new test dataset...")
+            print("==> Loading new test dataset...")
             new_params = {
                 'dataset_mode': 'new_test',
                 'eval_batch_size': self.test_batch_size,
                 'num_workers': self.num_workers,
                 'pin_memory': self.pin_memory,
                 'new_test_csv': os.path.join(self.new_dataset_dir, 'test.csv'),
-                'new_test_root_dir': self.new_dataset_dir,
-                'ddp': self.ddp
+                'new_test_root_dir': self.new_dataset_dir
             }
             new_dataset_manager = Dataset_selector(**new_params)
             new_dataset_manager.loader_test.dataset.transform = transform_val_test_140k
             self.new_test_loader = new_dataset_manager.loader_test
-            if self.rank == 0:
-                print(f"New test dataset loader configured with 140k normalization.")
+            print(f"New test dataset loader configured with 330k normalization.")
 
     def build_model(self):
-        if self.rank == 0:
-            print("==> Building student model...")
+        print("==> Building student model...")
         self.student = ResNet_50_sparse_hardfakevsreal()
         
         if not os.path.exists(self.sparsed_student_ckpt_path):
             raise FileNotFoundError(f"Checkpoint file not found: {self.sparsed_student_ckpt_path}")
             
-        if self.rank == 0:
-            print(f"Loading pre-trained weights from: {self.sparsed_student_ckpt_path}")
+        print(f"Loading pre-trained weights from: {self.sparsed_student_ckpt_path}")
         ckpt_student = torch.load(self.sparsed_student_ckpt_path, map_location="cpu")
         state_dict = ckpt_student.get("student", ckpt_student)
         
         self.student.load_state_dict(state_dict, strict=False)
         self.student.to(self.device)
-        if self.ddp:
-            self.student = DDP(self.student, device_ids=[self.local_rank])
-        if self.rank == 0:
-            print(f"Model loaded on {self.device}")
-
-    def reduce_meters(self, *meters):
-        if not self.ddp:
-            return
-        for m in meters:
-            t_sum = torch.tensor(m.sum, dtype=torch.float64, device=self.device)
-            dist.all_reduce(t_sum)
-            t_count = torch.tensor(m.count, dtype=torch.float64, device=self.device)
-            dist.all_reduce(t_count)
-            m.sum = t_sum.item()
-            m.count = t_count.item()
-            m.avg = m.sum / m.count if m.count > 0 else 0
+        print(f"Model loaded on {self.device}")
 
     def compute_metrics(self, loader, description="Test", print_metrics=True, save_confusion_matrix=True):
         meter_top1 = meter.AverageMeter("Acc@1", ":6.2f")
-        all_preds_list = []
-        all_targets_list = []
-        sample_info = []  
+        all_preds = []
+        all_targets = []
+        sample_info = []
         
         self.student.eval()
-        self.student.ticket == True if not self.ddp else self.student.module.ticket == True
+        self.student.ticket = True
         with torch.no_grad():
-            for batch_idx, (images, targets) in enumerate(tqdm(loader, desc=description, ncols=100, disable=(self.rank != 0))):
+            for batch_idx, (images, targets) in enumerate(tqdm(loader, desc=description, ncols=100)):
                 images = images.to(self.device, non_blocking=True)
                 targets = targets.to(self.device, non_blocking=True).float()
                 
@@ -186,8 +151,8 @@ class Test:
                 logits = logits.squeeze()
                 preds = (torch.sigmoid(logits) > 0.5).float()
                 
-                all_preds_list.extend(preds.cpu().tolist())
-                all_targets_list.extend(targets.cpu().tolist())
+                all_preds.extend(preds.cpu().numpy())
+                all_targets.extend(targets.cpu().numpy())
                 
                 batch_size = images.size(0)
                 for i in range(batch_size):
@@ -205,93 +170,73 @@ class Test:
                 prec1 = 100.0 * correct / images.size(0)
                 meter_top1.update(prec1, images.size(0))
         
-        self.reduce_meters(meter_top1)
+        all_preds = np.array(all_preds)
+        all_targets = np.array(all_targets)
+        
         accuracy = meter_top1.avg
+        precision = precision_score(all_targets, all_preds, average='binary')
+        recall = recall_score(all_targets, all_preds, average='binary')
         
-        # Gather predictions and targets across all ranks
-        all_preds = torch.tensor(all_preds_list, device=self.device)
-        all_targets = torch.tensor(all_targets_list, device=self.device)
+        precision_per_class = precision_score(all_targets, all_preds, average=None, labels=[0, 1])
+        recall_per_class = recall_score(all_targets, all_preds, average=None, labels=[0, 1])
         
-        if self.ddp:
-            gathered_preds = [torch.zeros_like(all_preds) for _ in range(self.world_size)]
-            dist.all_gather(gathered_preds, all_preds)
-            all_preds = torch.cat(gathered_preds).cpu().numpy()
-            
-            gathered_targets = [torch.zeros_like(all_targets) for _ in range(self.world_size)]
-            dist.all_gather(gathered_targets, all_targets)
-            all_targets = torch.cat(gathered_targets).cpu().numpy()
-        else:
-            all_preds = all_preds.cpu().numpy()
-            all_targets = all_targets.cpu().numpy()
+        tn, fp, fn, tp = confusion_matrix(all_targets, all_preds).ravel()
+        specificity_real = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        specificity_fake = tp / (tp + fn) if (tp + fn) > 0 else 0.0
         
-        if self.rank == 0:
-            precision = precision_score(all_targets, all_preds, average='binary')
-            recall = recall_score(all_targets, all_preds, average='binary')
+        if print_metrics:
+            print(f"[{description}] Overall Metrics:")
+            print(f"Accuracy: {accuracy:.2f}%")
+            print(f"Precision: {precision:.4f}")
+            print(f"Recall: {recall:.4f}")
+            print(f"Specificity: {specificity_real:.4f}")
             
-            precision_per_class = precision_score(all_targets, all_preds, average=None, labels=[0, 1])
-            recall_per_class = recall_score(all_targets, all_preds, average=None, labels=[0, 1])
+            print(f"\n[{description}] Per-Class Metrics:")
+            print(f"Class Real (0):")
+            print(f"  Precision: {precision_per_class[0]:.4f}")
+            print(f"  Recall: {recall_per_class[0]:.4f}")
+            print(f"  Specificity: {specificity_real:.4f}")
+            print(f"Class Fake (1):")
+            print(f"  Precision: {precision_per_class[1]:.4f}")
+            print(f"  Recall: {recall_per_class[1]:.4f}")
+            print(f"  Specificity: {specificity_fake:.4f}")
+        
+        cm = confusion_matrix(all_targets, all_preds)
+        classes = ['Real', 'Fake']
+        
+        if save_confusion_matrix:
+            print(f"\n[{description}] Confusion Matrix:")
+            print(f"{'':>10} {'Predicted Real':>15} {'Predicted Fake':>15}")
+            print(f"{'Actual Real':>10} {cm[0,0]:>15} {cm[0,1]:>15}")
+            print(f"{'Actual Fake':>10} {cm[1,0]:>15} {cm[1,1]:>15}")
             
-            cm = confusion_matrix(all_targets, all_preds)
-            tn, fp, fn, tp = cm.ravel()
-            specificity_real = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-            specificity_fake = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+            plt.figure(figsize=(8, 6))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
+            plt.title(f'Confusion Matrix - {description}')
+            plt.ylabel('Actual')
+            plt.xlabel('Predicted')
             
-            if print_metrics:
-                print(f"[{description}] Overall Metrics:")
-                print(f"Accuracy: {accuracy:.2f}%")
-                print(f"Precision: {precision:.4f}")
-                print(f"Recall: {recall:.4f}")
-                print(f"Specificity: {specificity_real:.4f}")
-                
-                print(f"\n[{description}] Per-Class Metrics:")
-                print(f"Class Real (0):")
-                print(f"  Precision: {precision_per_class[0]:.4f}")
-                print(f"  Recall: {recall_per_class[0]:.4f}")
-                print(f"  Specificity: {specificity_real:.4f}")
-                print(f"Class Fake (1):")
-                print(f"  Precision: {precision_per_class[1]:.4f}")
-                print(f"  Recall: {recall_per_class[1]:.4f}")
-                print(f"  Specificity: {specificity_fake:.4f}")
-            
-            classes = ['Real', 'Fake']
-            
-            if save_confusion_matrix:
-                print(f"\n[{description}] Confusion Matrix:")
-                print(f"{'':>10} {'Predicted Real':>15} {'Predicted Fake':>15}")
-                print(f"{'Actual Real':>10} {cm[0,0]:>15} {cm[0,1]:>15}")
-                print(f"{'Actual Fake':>10} {cm[1,0]:>15} {cm[1,1]:>15}")
-                
-                plt.figure(figsize=(8, 6))
-                sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=classes, yticklabels=classes)
-                plt.title(f'Confusion Matrix - {description}')
-                plt.ylabel('Actual')
-                plt.xlabel('Predicted')
-                
-                sanitized_description = description.lower().replace(" ", "_").replace("/", "_")
-                plot_path = os.path.join(self.result_dir, f'confusion_matrix_{sanitized_description}.png')
-                os.makedirs(os.path.dirname(plot_path), exist_ok=True)
-                plt.savefig(plot_path)
-                plt.close()
-                print(f"Confusion matrix saved to: {plot_path}")
-            
-            return {
-                'accuracy': accuracy,
-                'precision': precision,
-                'recall': recall,
-                'specificity': specificity_real,
-                'precision_per_class': precision_per_class,
-                'recall_per_class': recall_per_class,
-                'specificity_per_class': [specificity_real, specificity_fake],
-                'confusion_matrix': cm,
-                'sample_info': sample_info  # Partial in DDP
-            }
-        else:
-            return {'accuracy': accuracy, 'sample_info': sample_info}  # Other ranks only need accuracy for validation
+            sanitized_description = description.lower().replace(" ", "_").replace("/", "_")
+            plot_path = os.path.join(self.result_dir, f'confusion_matrix_{sanitized_description}.png')
+            os.makedirs(os.path.dirname(plot_path), exist_ok=True)
+            plt.savefig(plot_path)
+            plt.close()
+            print(f"Confusion matrix saved to: {plot_path}")
+        
+        return {
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'specificity': specificity_real,
+            'precision_per_class': precision_per_class,
+            'recall_per_class': recall_per_class,
+            'specificity_per_class': [specificity_real, specificity_fake],
+            'confusion_matrix': cm,
+            'sample_info': sample_info
+        }
 
     def display_samples(self, sample_info, description="Test", num_samples=30):
-        if self.rank != 0:
-            return
-        print(f"\n[{description}] Displaying first {num_samples} test samples (note: in DDP, this is from rank 0's portion):")
+        print(f"\n[{description}] Displaying first {num_samples} test samples:")
         print(f"{'Sample ID':<50} {'True Label':<12} {'Predicted Label':<12}")
         print("-" * 80)
         for i, sample in enumerate(sample_info[:num_samples]):
@@ -300,42 +245,36 @@ class Test:
             print(f"{sample['id']:<50} {true_label:<12} {pred_label:<12}")
 
     def finetune(self):
-        if self.rank == 0:
-            print("==> Fine-tuning using FEATURE EXTRACTOR strategy on 'fc' and 'layer4'...")
-        if self.rank == 0 and not os.path.exists(self.result_dir):
+        print("==> Fine-tuning using FEATURE EXTRACTOR strategy on 'fc' and 'layer4'...")
+        if not os.path.exists(self.result_dir):
             os.makedirs(self.result_dir)
-        if self.ddp:
-            dist.barrier()
         
         for name, param in self.student.named_parameters():
             if 'fc' in name or 'layer4' in name:
                 param.requires_grad = True
-                if self.rank == 0:
-                    print(f"Unfreezing for training: {name}")
+                print(f"Unfreezing for training: {name}")
             else:
                 param.requires_grad = False
 
         optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, self.student.parameters()),
             lr=self.args.f_lr,
-            weight_decay=1e-4
+            weight_decay=self.args.f_weight_decay
         )
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
         criterion = torch.nn.BCEWithLogitsLoss()
         
-        self.student.ticket == False if not self.ddp else self.student.module.ticket == False
+        self.student.ticket = False
         
         best_val_acc = 0.0
         best_model_path = os.path.join(self.result_dir, f'finetuned_model_best_{self.dataset_mode}.pth')
 
         for epoch in range(self.args.f_epochs):
-            if self.ddp and hasattr(self.train_loader.sampler, 'set_epoch'):
-                self.train_loader.sampler.set_epoch(epoch)
             self.student.train()
             meter_loss = meter.AverageMeter("Loss", ":6.4f")
             meter_top1_train = meter.AverageMeter("Train Acc@1", ":6.2f")
             
-            for images, targets in tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.args.f_epochs} [Train]", ncols=100, disable=(self.rank != 0)):
+            for images, targets in tqdm(self.train_loader, desc=f"Epoch {epoch+1}/{self.args.f_epochs} [Train]", ncols=100):
                 images, targets = images.to(self.device), targets.to(self.device).float()
                 optimizer.zero_grad()
                 logits, _ = self.student(images)
@@ -350,83 +289,64 @@ class Test:
                 meter_loss.update(loss.item(), images.size(0))
                 meter_top1_train.update(prec1, images.size(0))
 
-            self.reduce_meters(meter_loss, meter_top1_train)
-
             # Compute validation metrics
             val_metrics = self.compute_metrics(self.val_loader, description=f"Epoch_{epoch+1}_{self.args.f_epochs}_Val", print_metrics=False, save_confusion_matrix=False)
             val_acc = val_metrics['accuracy']
             
             # Print train and validation metrics for the epoch
-            if self.rank == 0:
-                print(f"Epoch {epoch+1}: Train Loss: {meter_loss.avg:.4f}, Train Acc: {meter_top1_train.avg:.2f}%, Val Acc: {val_acc:.2f}%")
+            print(f"Epoch {epoch+1}: Train Loss: {meter_loss.avg:.4f}, Train Acc: {meter_top1_train.avg:.2f}%, Val Acc: {val_acc:.2f}%")
 
             scheduler.step()
 
             if val_acc > best_val_acc:
                 best_val_acc = val_acc
-                if self.rank == 0:
-                    print(f"New best model found with Val Acc: {best_val_acc:.2f}%. Saving to {best_model_path}")
-                    state = self.student.module.state_dict() if self.ddp else self.student.state_dict()
-                    torch.save(state, best_model_path)
-                if self.ddp:
-                    dist.barrier()
+                print(f"New best model found with Val Acc: {best_val_acc:.2f}%. Saving to {best_model_path}")
+                torch.save(self.student.state_dict(), best_model_path)
         
-        if self.rank == 0:
-            print(f"\nFine-tuning finished. Loading best model with Val Acc: {best_val_acc:.2f}%")
+        print(f"\nFine-tuning finished. Loading best model with Val Acc: {best_val_acc:.2f}%")
         if os.path.exists(best_model_path):
-            state = torch.load(best_model_path, map_location=self.device)
-            if self.ddp:
-                self.student.module.load_state_dict(state)
-            else:
-                self.student.load_state_dict(state)
+            self.student.load_state_dict(torch.load(best_model_path))
         else:
-            if self.rank == 0:
-                print("Warning: No best model was saved. The model from the last epoch will be used for testing.")
+            print("Warning: No best model was saved. The model from the last epoch will be used for testing.")
         
         # Compute and print final test metrics after fine-tuning
         final_test_metrics = self.compute_metrics(self.test_loader, description="Final_Test", print_metrics=True, save_confusion_matrix=True)
-        if self.rank == 0:
-            print(f"\nFinal Test Metrics after Fine-tuning:")
-            print(f"Accuracy: {final_test_metrics['accuracy']:.2f}%")
-            print(f"Precision: {final_test_metrics['precision']:.4f}")
-            print(f"Recall: {final_test_metrics['recall']:.4f}")
-            print(f"Specificity: {final_test_metrics['specificity']:.4f}")
-            print(f"\nPer-Class Metrics:")
-            print(f"Class Real (0):")
-            print(f"  Precision: {final_test_metrics['precision_per_class'][0]:.4f}")
-            print(f"  Recall: {final_test_metrics['recall_per_class'][0]:.4f}")
-            print(f"  Specificity: {final_test_metrics['specificity_per_class'][0]:.4f}")
-            print(f"Class Fake (1):")
-            print(f"  Precision: {final_test_metrics['precision_per_class'][1]:.4f}")
-            print(f"  Recall: {final_test_metrics['recall_per_class'][1]:.4f}")
-            print(f"  Specificity: {final_test_metrics['specificity_per_class'][1]:.4f}")
-            print(f"\nConfusion Matrix:")
-            print(f"{'':>10} {'Predicted Real':>15} {'Predicted Fake':>15}")
-            print(f"{'Actual Real':>10} {final_test_metrics['confusion_matrix'][0,0]:>15} {final_test_metrics['confusion_matrix'][0,1]:>15}")
-            print(f"{'Actual Fake':>10} {final_test_metrics['confusion_matrix'][1,0]:>15} {final_test_metrics['confusion_matrix'][1,1]:>15}")
+        print(f"\nFinal Test Metrics after Fine-tuning:")
+        print(f"Accuracy: {final_test_metrics['accuracy']:.2f}%")
+        print(f"Precision: {final_test_metrics['precision']:.4f}")
+        print(f"Recall: {final_test_metrics['recall']:.4f}")
+        print(f"Specificity: {final_test_metrics['specificity']:.4f}")
+        print(f"\nPer-Class Metrics:")
+        print(f"Class Real (0):")
+        print(f"  Precision: {final_test_metrics['precision_per_class'][0]:.4f}")
+        print(f"  Recall: {final_test_metrics['recall_per_class'][0]:.4f}")
+        print(f"  Specificity: {final_test_metrics['specificity_per_class'][0]:.4f}")
+        print(f"Class Fake (1):")
+        print(f"  Precision: {final_test_metrics['precision_per_class'][1]:.4f}")
+        print(f"  Recall: {final_test_metrics['recall_per_class'][1]:.4f}")
+        print(f"  Specificity: {final_test_metrics['specificity_per_class'][1]:.4f}")
+        print(f"\nConfusion Matrix:")
+        print(f"{'':>10} {'Predicted Real':>15} {'Predicted Fake':>15}")
+        print(f"{'Actual Real':>10} {final_test_metrics['confusion_matrix'][0,0]:>15} {final_test_metrics['confusion_matrix'][0,1]:>15}")
+        print(f"{'Actual Fake':>10} {final_test_metrics['confusion_matrix'][1,0]:>15} {final_test_metrics['confusion_matrix'][1,1]:>15}")
 
     def main(self):
-        if self.rank == 0:
-            print(f"Starting pipeline with dataset mode: {self.dataset_mode}")
+        print(f"Starting pipeline with dataset mode: {self.dataset_mode}")
         self.dataload()
         self.build_model()
         
-        if self.rank == 0:
-            print("\n--- Testing BEFORE fine-tuning ---")
+        print("\n--- Testing BEFORE fine-tuning ---")
         initial_metrics = self.compute_metrics(self.test_loader, "Initial_Test")
         self.display_samples(initial_metrics['sample_info'], "Initial Test", num_samples=30)
         
-        if self.rank == 0:
-            print("\n--- Starting fine-tuning ---")
+        print("\n--- Starting fine-tuning ---")
         self.finetune()
         
-        if self.rank == 0:
-            print("\n--- Testing AFTER fine-tuning with best model ---")
+        print("\n--- Testing AFTER fine-tuning with best model ---")
         final_metrics = self.compute_metrics(self.test_loader, "Final_Test", print_metrics=False)
         self.display_samples(final_metrics['sample_info'], "Final Test", num_samples=30)
         
         if self.new_test_loader:
-            if self.rank == 0:
-                print("\n--- Testing on NEW dataset ---")
+            print("\n--- Testing on NEW dataset ---")
             new_metrics = self.compute_metrics(self.new_test_loader, "New_Dataset_Test")
             self.display_samples(new_metrics['sample_info'], "New Dataset Test", num_samples=30)
