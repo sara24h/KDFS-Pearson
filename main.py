@@ -55,7 +55,12 @@ def parse_args():
         default="/kaggle/input/hardfakevsrealfaces",
         help="The dataset path (used for hardfake, rvf10k, 140k, 200k)",
     )
-    
+    parser.add_argument(
+        "--hardfake_csv_file",
+        type=str,
+        default="/kaggle/input/hardfakevsrealfaces/data.csv",
+        help="The path to the hardfake CSV file (for hardfake mode)",
+    )
     parser.add_argument(
         "--rvf10k_train_csv",
         type=str,
@@ -386,8 +391,13 @@ def parse_args():
     return parser.parse_args()
 
 def validate_args(args):
-
-    if args.dataset_mode == "rvf10k":
+    """Check if required files and directories exist"""
+    if args.dataset_mode == "hardfake":
+        if not os.path.exists(args.hardfake_csv_file):
+            raise FileNotFoundError(f"Hardfake CSV file not found: {args.hardfake_csv_file}")
+        if not os.path.exists(args.dataset_dir):
+            raise FileNotFoundError(f"Dataset directory not found: {args.dataset_dir}")
+    elif args.dataset_mode == "rvf10k":
         if not os.path.exists(args.rvf10k_train_csv):
             raise FileNotFoundError(f"RVF10k train CSV file not found: {args.rvf10k_train_csv}")
         if not os.path.exists(args.rvf10k_valid_csv):
@@ -422,7 +432,7 @@ def validate_args(args):
     if args.phase in ["train", "finetune"]:
         if not os.path.exists(args.teacher_ckpt_path):
             raise FileNotFoundError(f"Teacher checkpoint not found: {args.teacher_ckpt_path}")
-
+        # بررسی سازگاری teacher_ckpt_path با معماری انتخاب‌شده
         if args.arch == "MobileNetV2" and "resnet" in args.teacher_ckpt_path.lower():
             raise ValueError(f"Teacher checkpoint path ({args.teacher_ckpt_path}) is not compatible with MobileNetV2 architecture")
         elif args.arch == "ResNet_50" and "mobilenet" in args.teacher_ckpt_path.lower():
@@ -478,7 +488,16 @@ def main():
         elif args.phase == "test":
             test = Test(args=args)
             test.main()
-   
+    else:
+        if args.phase == "train":
+            train = Train(args=args)
+            train.main()
+        elif args.phase == "finetune":
+            finetune = Finetune(args=args)
+            finetune.main()
+        elif args.phase == "test":
+            test = Test(args=args)
+            test.main()
 
 if __name__ == "__main__":
     main()
