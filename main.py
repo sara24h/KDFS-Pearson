@@ -23,7 +23,7 @@ from model.teacher.Mobilenetv2 import MobileNetV2_deepfake
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, ResNet_50_sparse_rvf10k
 from model.student.MobileNetV2_sparse import MobileNetV2_sparse_deepfake
 from utils import utils, loss, meter, scheduler
-from train import Train
+#from train import Train
 from test import Test
 from finetune import Finetune
 from train_ddp import TrainDDP
@@ -478,16 +478,7 @@ def main():
         elif args.phase == "test":
             test = Test(args=args)
             test.main()
-    else:
-        if args.phase == "train":
-            train = Train(args=args)
-            train.main()
-        elif args.phase == "finetune":
-            finetune = Finetune(args=args)
-            finetune.main()
-        elif args.phase == "test":
-            test = Test(args=args)
-            test.main()
+   
 
 if __name__ == "__main__":
     main()
