@@ -132,7 +132,7 @@ fi
 # Print arguments for debugging
 echo "Running torchrun with arguments:"
 if [ "$PHASE" = "train" ]; then
-    echo "torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS/main.py \
+    echo "torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS-Pearson/main.py \
         --phase train \
         --arch $arch \
         --device cuda \
@@ -164,7 +164,7 @@ if [ "$PHASE" = "train" ]; then
 fi
 
 if [ "$PHASE" = "train" ]; then
-    torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS/main.py \
+    torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS-Pearson/main.py \
         --phase train \
         --arch "$arch" \
         --device cuda \
@@ -200,7 +200,7 @@ elif [ "$PHASE" = "finetune" ]; then
         exit 1
     fi
 
-    echo "torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS/main.py \
+    echo "torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS-Pearson/main.py \
         --phase finetune \
         --arch $arch \
         --device cuda \
@@ -224,7 +224,7 @@ elif [ "$PHASE" = "finetune" ]; then
         --dataset_dir $dataset_dir \
         $( [ -n "$resume" ] && echo "--resume $resume" ) \
         $ddp_flag"
-    torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS/main.py \
+    torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS-Pearson/main.py \
         --phase finetune \
         --arch "$arch" \
         --device cuda \
