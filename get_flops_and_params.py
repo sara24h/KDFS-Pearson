@@ -2,6 +2,8 @@ import torch
 import argparse
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
+from model.student.MobileNetV2_sparse import MobileNetV2_sparse_deepfake
+from model.pruned_model.MobileNetV2_pruned import MobileNetV2_pruned
 from thop import profile
 
 # Base FLOPs and parameters for each dataset
@@ -14,6 +16,15 @@ Flops_baselines = {
         "200k": 5390.0,
         "330k": 5390.0,
         "125k": 2100.0,
+    },
+    "MobileNetV2": {
+        "hardfakevsrealfaces": 7700.0,
+        "rvf10k": 416.68,
+        "140k": 416.68,
+        "200k": 416.68,
+        "330k": 416.68,
+        "190k": 416.68,
+        
     }
 }
 Params_baselines = {
@@ -25,6 +36,15 @@ Params_baselines = {
         "200k": 23.51,
         "330k": 23.51,
         "125k": 23.51,
+    },
+    "MobileNetV2": {
+        "hardfakevsrealfaces": 7700.0,
+        "rvf10k": 416.68,
+        "140k": 2.23,
+        "200k": 416.68,
+        "330k": 416.68,
+        "190k": 416.68,
+        
     }
 }
 image_sizes = {
@@ -79,9 +99,7 @@ def get_flops_and_params(args):
     ]
 
     # Load pruned model with masks (always use ResNet_50_pruned_hardfakevsreal)
-    pruned_model = ResNet_50_pruned_hardfakevsreal(masks=masks)
-
-    torch.save(pruned_model, "/kaggle/working/pruned_model.pt")
+    pruned_model =ResNet_50_pruned_hardfakevsreal(masks=masks)
     
     # Set input size based on dataset
     input = torch.rand([1, 3, image_sizes[dataset_type], image_sizes[dataset_type]])
