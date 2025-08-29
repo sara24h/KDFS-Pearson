@@ -110,19 +110,9 @@ class Train:
         if self.dataset_mode not in ['hardfake', 'rvf10k', '140k']:
             raise ValueError("dataset_mode must be 'hardfake', 'rvf10k', or '140k'")
 
-        if self.dataset_mode == 'hardfake':
-            hardfake_csv_file = os.path.join(self.dataset_dir, 'data.csv')
-            hardfake_root_dir = self.dataset_dir
-            rvf10k_train_csv = None
-            rvf10k_valid_csv = None
-            rvf10k_root_dir = None
-            realfake140k_train_csv = None
-            realfake140k_valid_csv = None
-            realfake140k_test_csv = None
-            realfake140k_root_dir = None
+
         elif self.dataset_mode == 'rvf10k':
-            hardfake_csv_file = None
-            hardfake_root_dir = None
+
             rvf10k_train_csv = os.path.join(self.dataset_dir, 'train.csv')
             rvf10k_valid_csv = os.path.join(self.dataset_dir, 'valid.csv')
             rvf10k_root_dir = self.dataset_dir
@@ -131,8 +121,6 @@ class Train:
             realfake140k_test_csv = None
             realfake140k_root_dir = None
         else:  # dataset_mode == '140k'
-            hardfake_csv_file = None
-            hardfake_root_dir = None
             rvf10k_train_csv = None
             rvf10k_valid_csv = None
             rvf10k_root_dir = None
@@ -141,9 +129,7 @@ class Train:
             realfake140k_test_csv = os.path.join(self.dataset_dir, 'test.csv')
             realfake140k_root_dir = self.dataset_dir
 
-        
-        if self.dataset_mode == 'hardfake' and not os.path.exists(hardfake_csv_file):
-            raise FileNotFoundError(f"CSV file not found: {hardfake_csv_file}")
+
         if self.dataset_mode == 'rvf10k':
             if not os.path.exists(rvf10k_train_csv):
                 raise FileNotFoundError(f"Train CSV file not found: {rvf10k_train_csv}")
@@ -159,8 +145,6 @@ class Train:
 
         dataset_instance = Dataset_selector(
             dataset_mode=self.dataset_mode,
-            hardfake_csv_file=hardfake_csv_file,
-            hardfake_root_dir=hardfake_root_dir,
             rvf10k_train_csv=rvf10k_train_csv,
             rvf10k_valid_csv=rvf10k_valid_csv,
             rvf10k_root_dir=rvf10k_root_dir,
