@@ -1,6 +1,6 @@
 arch=MobileNetV2
-dataset_dir=/kaggle/input/hardfakevsrealfaces
-dataset_mode=hardfake
+dataset_dir=/kaggle/input/140k-real-and-fake-faces
+dataset_mode=140k
 ckpt_path=/kaggle/input/kdfs-3-khordad-fixed-temp/results/run_resnet50_imagenet_prune1/student_model/finetune_ResNet_50_sparse_best.pt
 device=0
 
