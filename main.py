@@ -55,12 +55,7 @@ def parse_args():
         default="/kaggle/input/hardfakevsrealfaces",
         help="The dataset path (used for hardfake, rvf10k, 140k, 200k)",
     )
-    parser.add_argument(
-        "--hardfake_csv_file",
-        type=str,
-        default="/kaggle/input/hardfakevsrealfaces/data.csv",
-        help="The path to the hardfake CSV file (for hardfake mode)",
-    )
+    
     parser.add_argument(
         "--rvf10k_train_csv",
         type=str,
