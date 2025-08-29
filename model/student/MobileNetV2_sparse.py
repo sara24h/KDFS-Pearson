@@ -171,13 +171,14 @@ class MobileNetV2_sparse(MaskedNet):
         super().__init__(gumbel_start_temperature, gumbel_end_temperature, num_epochs)
         
         teacher_feature_dims = {
-            "stage1": 16,
+            "stage1": 24, # مطابق با کانال خروجی معلم بعد از استیج مربوطه
             "stage2": 32,
             "stage3": 96,
             "stage4": 320
         }
         
         self.cfgs = [
+            # t, c, n, s
             [1, 16, 1, 1], [6, 24, 2, 2], [6, 32, 3, 2], [6, 64, 4, 2],
             [6, 96, 3, 1], [6, 160, 3, 2], [6, 320, 1, 1],
         ]
@@ -186,23 +187,30 @@ class MobileNetV2_sparse(MaskedNet):
         layers = [conv_3x3_bn(3, input_channel, 2)]
         
         block = InvertedResidual_sparse
+        # شمارنده برای پیدا کردن ایندکس صحیح لایه‌ها
+        layer_index_counter = 1
+        
         for num, (t, c, n, s) in enumerate(self.cfgs):
             output_channel = _make_divisible(c * width_mult, 8)
             for i in range(n):
+                stride = s if i == 0 else 1
                 layers.append(
-                    block(input_channel, output_channel, s if i == 0 else 1, t)
+                    block(input_channel, output_channel, stride, t)
                 )
                 input_channel = output_channel
+                
+                # تعریف لایه‌های تبدیل بعد از هر استیج کلیدی
+                if layer_index_counter == 3: # end of c=24 stage
+                    self.convert1 = nn.Conv2d(output_channel, teacher_feature_dims["stage1"], kernel_size=1)
+                elif layer_index_counter == 6: # end of c=32 stage
+                    self.convert2 = nn.Conv2d(output_channel, teacher_feature_dims["stage2"], kernel_size=1)
+                elif layer_index_counter == 13: # end of c=96 stage
+                    self.convert3 = nn.Conv2d(output_channel, teacher_feature_dims["stage3"], kernel_size=1)
+                elif layer_index_counter == 17: # end of c=320 stage
+                    self.convert4 = nn.Conv2d(output_channel, teacher_feature_dims["stage4"], kernel_size=1)
 
-            if num == 0:
-                self.convert1 = nn.Conv2d(output_channel, teacher_feature_dims["stage1"], kernel_size=1)
-            if num == 2:
-                self.convert2 = nn.Conv2d(output_channel, teacher_feature_dims["stage2"], kernel_size=1)
-            if num == 4:
-                self.convert3 = nn.Conv2d(output_channel, teacher_feature_dims["stage3"], kernel_size=1)
-            if num == 6:
-                self.convert4 = nn.Conv2d(output_channel, teacher_feature_dims["stage4"], kernel_size=1)
-            
+                layer_index_counter += 1
+                
         self.features = nn.ModuleList(layers)
         
         output_channel_final = _make_divisible(1280 * width_mult, 8) if width_mult > 1.0 else 1280
@@ -215,40 +223,37 @@ class MobileNetV2_sparse(MaskedNet):
     def forward(self, x):
         feature_list = []
         out = x
-        
-        # لایه اول یک کانولوشن معمولی است
-        out = self.features[0](out) 
-        
-        # استخراج ویژگی‌ها در نقاط کلیدی
-        # ایندکس‌ها بر اساس معماری استاندارد MobileNetV2 هستند
-        if len(self.features) > 1:
-            out = self.features[1](out, self.ticket)
-            feature_list.append(self.convert1(out))
-            
-        for i in range(2, 7):
-            if len(self.features) > i:
-                out = self.features[i](out, self.ticket)
-        if len(self.features) > 6:
-             feature_list.append(self.convert2(out))
-             
-        for i in range(7, 14):
-            if len(self.features) > i:
-                out = self.features[i](out, self.ticket)
-        if len(self.features) > 13:
-             feature_list.append(self.convert3(out))
-             
-        for i in range(14, 18):
-            if len(self.features) > i:
-                out = self.features[i](out, self.ticket)
-        if len(self.features) > 17:
-             feature_list.append(self.convert4(out))
 
-        # لایه‌های نهایی
-        out = self.conv(out)
+        teacher_extraction_indices = {3, 6, 13, 17}
+        convert_layer_map = {
+            3: self.convert1,
+            6: self.convert2,
+            13: self.convert3,
+            17: self.convert4,
+        }
+
+        for i, layer in enumerate(self.features):
+
+            if i == 0:
+                out = layer(out)
+
+            else:
+                out = layer(out, self.ticket)
+
+            if i in teacher_extraction_indices:
+                convert_layer = convert_layer_map[i]
+                feature_list.append(convert_layer(out))
+
+        for layer in self.conv:
+            if isinstance(layer, SoftMaskedConv2d):
+                out = layer(out, self.ticket)
+            else:
+                out = layer(out)
+
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
         out = self.classifier(out)
-        
+
         return out, feature_list
 
     def _initialize_weights(self):
