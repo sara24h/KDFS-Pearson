@@ -16,7 +16,7 @@ from thop import profile
 from model.teacher.ResNet import ResNet_50_hardfakevsreal
 import matplotlib.pyplot as plt
 
-os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"Q
+os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 Flops_baselines = {
     "ResNet_50": {
