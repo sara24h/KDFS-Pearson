@@ -59,7 +59,7 @@ class Dataset_selector(Dataset):
         image_size = (256, 256) if dataset_mode in ['rvf10k', '140k', '190k', '200k', '330k'] else (300, 300)
 
      
-        elif dataset_mode == 'rvf10k':
+        if dataset_mode == 'rvf10k':
             mean = (0.5212, 0.4260, 0.3811)
             std = (0.2486, 0.2238, 0.2211)
         elif dataset_mode == '140k':
