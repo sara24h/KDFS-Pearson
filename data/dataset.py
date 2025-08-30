@@ -31,8 +31,7 @@ class Dataset_selector(Dataset):
     def __init__(
         self,
         dataset_mode,  # 'hardfake', 'rvf10k', '140k', '190k', '200k', '330k'
-        hardfake_csv_file=None,
-        hardfake_root_dir=None,
+    
         rvf10k_train_csv=None,
         rvf10k_valid_csv=None,
         rvf10k_root_dir=None,
@@ -60,11 +59,8 @@ class Dataset_selector(Dataset):
         # Define image size based on dataset_mode
         image_size = (256, 256) if dataset_mode in ['rvf10k', '140k', '190k', '200k', '330k'] else (300, 300)
 
-        # Define mean and std based on dataset_mode
-        if dataset_mode == 'hardfake':
-            mean = (0.5124, 0.4165, 0.3684)
-            std = (0.2363, 0.2087, 0.2029)
-        elif dataset_mode == 'rvf10k':
+   
+        if dataset_mode == 'rvf10k':
             mean = (0.5212, 0.4260, 0.3811)
             std = (0.2486, 0.2238, 0.2211)
         elif dataset_mode == '140k':
@@ -101,12 +97,7 @@ class Dataset_selector(Dataset):
         # Set img_column based on dataset_mode
         img_column = 'path' if dataset_mode in ['140k'] else 'images_id'
 
-        # Load data based on dataset_mode
-        if dataset_mode == 'hardfake':
-            if not hardfake_csv_file or not hardfake_root_dir:
-                raise ValueError("hardfake_csv_file and hardfake_root_dir must be provided")
-            full_data = pd.read_csv(hardfake_csv_file)
-
+   
             def create_image_path(row):
                 folder = 'fake' if row['label'] == 'fake' else 'real'
                 img_name = row['images_id']
@@ -327,15 +318,7 @@ class Dataset_selector(Dataset):
                 print(f"Error loading sample {name} batch: {e}")
 
 if __name__ == "__main__":
-    # Example for hardfakevsrealfaces
-    dataset_hardfake = Dataset_selector(
-        dataset_mode='hardfake',
-        hardfake_csv_file='/kaggle/input/hardfakevsrealfaces/data.csv',
-        hardfake_root_dir='/kaggle/input/hardfakevsrealfaces',
-        train_batch_size=64,
-        eval_batch_size=64,
-        ddp=True,
-    )
+  
 
     # Example for rvf10k
     dataset_rvf10k = Dataset_selector(
