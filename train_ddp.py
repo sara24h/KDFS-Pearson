@@ -56,11 +56,8 @@ class TrainDDP:
         self.local_rank = -1
         self.rank = -1
 
-        if self.dataset_mode == "hardfake":
-            self.args.dataset_type = "hardfakevsrealfaces"
-            self.num_classes = 1
-            self.image_size = 300
-        elif self.dataset_mode == "rvf10k":
+
+        if self.dataset_mode == "rvf10k":
             self.args.dataset_type = "rvf10k"
             self.num_classes = 1
             self.image_size = 256
@@ -129,8 +126,6 @@ class TrainDDP:
         if self.dataset_mode not in ['hardfake', 'rvf10k', '140k', '200k', '190k', '330k']:
             raise ValueError("dataset_mode must be 'hardfake', 'rvf10k', '140k', '200k', '190k', or '330k'")
 
-        hardfake_csv_file = None
-        hardfake_root_dir = None
         rvf10k_train_csv = None
         rvf10k_valid_csv = None
         rvf10k_root_dir = None
@@ -145,12 +140,8 @@ class TrainDDP:
         realfake190k_root_dir = None
         realfake330k_root_dir = None
 
-        if self.dataset_mode == 'hardfake':
-            hardfake_csv_file = os.path.join(self.dataset_dir, 'data.csv')
-            hardfake_root_dir = self.dataset_dir
-            if self.rank == 0 and not os.path.exists(hardfake_csv_file):
-                raise FileNotFoundError(f"CSV file not found: {hardfake_csv_file}")
-        elif self.dataset_mode == 'rvf10k':
+
+        if self.dataset_mode == 'rvf10k':
             rvf10k_train_csv = os.path.join(self.dataset_dir, 'train.csv')
             rvf10k_valid_csv = os.path.join(self.dataset_dir, 'valid.csv')
             rvf10k_root_dir = self.dataset_dir
@@ -197,8 +188,7 @@ class TrainDDP:
 
         dataset_instance = Dataset_selector(
             dataset_mode=self.dataset_mode,
-            hardfake_csv_file=hardfake_csv_file,
-            hardfake_root_dir=hardfake_root_dir,
+
             rvf10k_train_csv=rvf10k_train_csv,
             rvf10k_valid_csv=rvf10k_valid_csv,
             rvf10k_root_dir=rvf10k_root_dir,
