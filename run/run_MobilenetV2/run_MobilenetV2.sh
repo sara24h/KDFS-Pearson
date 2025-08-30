@@ -21,6 +21,7 @@ gumbel_end_temperature=${GUMBEL_END_TEMPERATURE:-0.1}
 coef_kdloss=${COEF_KDLOSS:-0.5}
 coef_rcloss=${COEF_RCLOSS:-1.0}
 coef_maskloss=${COEF_MASKLOSS:-1.0}
+
 finetune_num_epochs=${FINETUNE_NUM_EPOCHS:-15}
 finetune_lr=${FINETUNE_LR:-4e-06}
 finetune_warmup_steps=${FINETUNE_WARMUP_STEPS:-5}
@@ -30,8 +31,8 @@ finetune_lr_decay_eta_min=${FINETUNE_LR_DECAY_ETA_MIN:-4e-08}
 finetune_weight_decay=${FINETUNE_WEIGHT_DECAY:-2e-05}
 finetune_train_batch_size=${FINETUNE_TRAIN_BATCH_SIZE:-16}
 finetune_eval_batch_size=${FINETUNE_EVAL_BATCH_SIZE:-16}
-dataset_mode=${DATASET_MODE:-140k}
-dataset_dir=${DATASET_DIR:-/kaggle/input/140k-real-and-fake-faces}
+dataset_mode=${DATASET_MODE:-hardfake}
+dataset_dir=${DATASET_DIR:-/kaggle/input/hardfakevsrealfaces}
 master_port=${MASTER_PORT:-6681}
 num_epochs=${NUM_EPOCHS:-6}
 resume=${RESUME:-}
@@ -89,6 +90,7 @@ while [[ $# -gt 0 ]]; do
         --coef_kdloss) coef_kdloss="$2"; shift 2 ;;
         --coef_rcloss) coef_rcloss="$2"; shift 2 ;;
         --coef_maskloss) coef_maskloss="$2"; shift 2 ;;
+       
         --finetune_num_epochs) finetune_num_epochs="$2"; shift 2 ;;
         --finetune_lr) finetune_lr="$2"; shift 2 ;;
         --finetune_warmup_steps) finetune_warmup_steps="$2"; shift 2 ;;
@@ -130,7 +132,7 @@ fi
 # Print arguments for debugging
 echo "Running torchrun with arguments:"
 if [ "$PHASE" = "train" ]; then
-    echo "torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS-Pearson/main.py \
+    echo "torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS/main.py \
         --phase train \
         --arch $arch \
         --device cuda \
@@ -162,7 +164,7 @@ if [ "$PHASE" = "train" ]; then
 fi
 
 if [ "$PHASE" = "train" ]; then
-    torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS-Pearson/main.py \
+    torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS/main.py \
         --phase train \
         --arch "$arch" \
         --device cuda \
@@ -186,7 +188,7 @@ if [ "$PHASE" = "train" ]; then
         --coef_kdloss "$coef_kdloss" \
         --coef_rcloss "$coef_rcloss" \
         --coef_maskloss "$coef_maskloss" \
-    
+        
         --dataset_mode "$dataset_mode" \
         --dataset_dir "$dataset_dir" \
         $( [ -n "$resume" ] && echo "--resume $resume" ) \
@@ -198,7 +200,7 @@ elif [ "$PHASE" = "finetune" ]; then
         exit 1
     fi
 
-    echo "torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS-Pearson/main.py \
+    echo "torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS/main.py \
         --phase finetune \
         --arch $arch \
         --device cuda \
@@ -222,7 +224,7 @@ elif [ "$PHASE" = "finetune" ]; then
         --dataset_dir $dataset_dir \
         $( [ -n "$resume" ] && echo "--resume $resume" ) \
         $ddp_flag"
-    torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS-Pearson/main.py \
+    torchrun --nproc_per_node=$nproc_per_node --master_port=$master_port /kaggle/working/KDFS/main.py \
         --phase finetune \
         --arch "$arch" \
         --device cuda \
