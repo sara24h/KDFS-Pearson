@@ -31,7 +31,6 @@ class Dataset_selector(Dataset):
     def __init__(
         self,
         dataset_mode,  # 'hardfake', 'rvf10k', '140k', '190k', '200k', '330k'
-    
         rvf10k_train_csv=None,
         rvf10k_valid_csv=None,
         rvf10k_root_dir=None,
@@ -59,8 +58,8 @@ class Dataset_selector(Dataset):
         # Define image size based on dataset_mode
         image_size = (256, 256) if dataset_mode in ['rvf10k', '140k', '190k', '200k', '330k'] else (300, 300)
 
-   
-        if dataset_mode == 'rvf10k':
+     
+        elif dataset_mode == 'rvf10k':
             mean = (0.5212, 0.4260, 0.3811)
             std = (0.2486, 0.2238, 0.2211)
         elif dataset_mode == '140k':
@@ -97,29 +96,9 @@ class Dataset_selector(Dataset):
         # Set img_column based on dataset_mode
         img_column = 'path' if dataset_mode in ['140k'] else 'images_id'
 
-   
-            def create_image_path(row):
-                folder = 'fake' if row['label'] == 'fake' else 'real'
-                img_name = row['images_id']
-                img_name = os.path.basename(img_name)
-                if not img_name.endswith('.jpg'):
-                    img_name += '.jpg'
-                return os.path.join(folder, img_name)
-
-            full_data['images_id'] = full_data.apply(create_image_path, axis=1)
-            root_dir = hardfake_root_dir
-
-            train_data, temp_data = train_test_split(
-                full_data, test_size=0.3, stratify=full_data['label'], random_state=3407
-            )
-            val_data, test_data = train_test_split(
-                temp_data, test_size=0.5, stratify=temp_data['label'], random_state=3407
-            )
-            train_data = train_data.reset_index(drop=True)
-            val_data = val_data.reset_index(drop=True)
-            test_data = test_data.reset_index(drop=True)
-
-        elif dataset_mode == 'rvf10k':
+        # Load data based on dataset_mode
+        
+        if dataset_mode == 'rvf10k':
             if not rvf10k_train_csv or not rvf10k_valid_csv or not rvf10k_root_dir:
                 raise ValueError("rvf10k_train_csv, rvf10k_valid_csv, and rvf10k_root_dir must be provided")
             train_data = pd.read_csv(rvf10k_train_csv)
