@@ -479,16 +479,7 @@ def main():
         elif args.phase == "test":
             test = Test(args=args)
             test.main()
-    else:
-        if args.phase == "train":
-            train = Train(args=args)
-            train.main()
-        elif args.phase == "finetune":
-            finetune = Finetune(args=args)
-            finetune.main()
-        elif args.phase == "test":
-            test = Test(args=args)
-            test.main()
+   
 
 
 if __name__ == "__main__":
