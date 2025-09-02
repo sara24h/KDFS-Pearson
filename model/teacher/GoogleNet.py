@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-# کلاس کمکی که ساختار لایه‌ها را با فایل checkpoint هماهنگ می‌کند
 class BasicConv2d(nn.Module):
     def __init__(self, in_channels, out_channels, **kwargs):
         super(BasicConv2d, self).__init__()
@@ -13,11 +12,6 @@ class BasicConv2d(nn.Module):
         x = self.conv(x)
         x = self.bn(x)
         return self.relu(x)
-
-# فقط این کلاس را در فایل model/teacher/GoogleNet.py جایگزین کنید
-
-# In file: model/teacher/GoogleNet.py
-# Replace ONLY this class definition
 
 class Inception(nn.Module):
     def __init__(self, in_planes, n1x1, n3x3red, n3x3, n5x5red, n5x5, pool_planes):
@@ -31,14 +25,14 @@ class Inception(nn.Module):
             BasicConv2d(n3x3red, n3x3, kernel_size=3, padding=1)
         )
 
-        # 1x1 conv -> 5x5 conv branch (simulated with two 3x3 layers)
-        # --- THIS IS THE CORRECTED SECTION ---
+        # 1x1 conv -> 5x5 conv branch (simulated with three 3x3 layers)
+        # --- این بخش اصلاح شده است تا با فایل وزن‌ها مطابقت داشته باشد ---
         self.branch3 = nn.Sequential(
             BasicConv2d(in_planes, n5x5red, kernel_size=1),
             BasicConv2d(n5x5red, n5x5, kernel_size=3, padding=1),
-            BasicConv2d(n5x5, n5x5, kernel_size=3, padding=1) # <-- THIS is the missing layer
+            BasicConv2d(n5x5, n5x5, kernel_size=3, padding=1) # <-- این لایه در کد قبلی وجود نداشت
         )
-        # ------------------------------------
+        # ----------------------------------------------------------------
 
         # 3x3 pool -> 1x1 conv branch
         self.branch4 = nn.Sequential(
@@ -108,11 +102,13 @@ class GoogLeNet(nn.Module):
         out = self.inception5b(out)
         
         out = self.avgpool(out)
+        feature_map = out
         out = out.view(out.size(0), -1)
         out = self.dropout(out)
         out = self.fc(out)
-        # برای هماهنگی با کدهای دیگر، یک لیست خالی هم برمی‌گردانیم
-        return out, feature_list
+
+        return out,feature_list
+
 
 def GoogLeNet_deepfake():
     return GoogLeNet(block=Inception, num_classes=1)
