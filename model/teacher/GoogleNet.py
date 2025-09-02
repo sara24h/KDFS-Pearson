@@ -177,7 +177,7 @@ class GoogLeNet(nn.Module):
             filters[8][3],
         )
 
-        self.avgpool = nn.AvgPool2d(8, stride=1)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.linear = nn.Linear(sum(filters[-1]), num_classes)
 
     def forward(self, x):
