@@ -1,3 +1,4 @@
+
 import torch
 import torch.nn as nn
 
@@ -17,16 +18,16 @@ class Inception(nn.Module):
     def __init__(self, in_planes, n1x1, n3x3red, n3x3, n5x5red, n5x5, pool_planes):
         super(Inception, self).__init__()
         self.branch1 = BasicConv2d(in_planes, n1x1, kernel_size=1)
+        
         self.branch2 = nn.Sequential(
             BasicConv2d(in_planes, n3x3red, kernel_size=1),
             BasicConv2d(n3x3red, n3x3, kernel_size=3, padding=1)
         )
         
-        # <<< این تنها نسخه صحیح است >>>
+        # <<< این نسخه صحیح بر اساس آخرین خطا است >>>
         self.branch3 = nn.Sequential(
             BasicConv2d(in_planes, n5x5red, kernel_size=1),
-            BasicConv2d(n5x5red, n5x5, kernel_size=3, padding=1),
-            BasicConv2d(n5x5, n5x5, kernel_size=3, padding=1) # <-- این لایه سوم ضروری است
+            BasicConv2d(n5x5red, n5x5, kernel_size=3, padding=1) # <-- فقط دو لایه
         )
 
         self.branch4 = nn.Sequential(
