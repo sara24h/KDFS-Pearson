@@ -123,21 +123,40 @@ class MobileNetV2(nn.Module):
 
         input_channel = _make_divisible(input_channel * width_mult, round_nearest)
         self.last_channel = _make_divisible(last_channel * max(1.0, width_mult), round_nearest)
-        features: List[nn.Module] = [
+        
+        # --- START: CODE CORRECTION 1 ---
+        # لایه‌ها را در یک ModuleList می‌سازیم تا بتوانیم در forward به آن‌ها دسترسی داشته باشیم
+        features_list: List[nn.Module] = [
             ConvBNActivation(3, input_channel, stride=2, norm_layer=norm_layer, activation_layer=nn.ReLU6)
         ]
+        
+        # ایندکس لایه‌هایی که می‌خواهیم از آنها ویژگی استخراج کنیم را به صورت پویا پیدا می‌کنیم
+        self.feature_extraction_indices = []
+        current_layer_index = 0
+        
+        # نقاط استخراج ویژگی معمولاً انتهای هر "مرحله" هستند (جایی که stride=2 است)
+        # و همچنین انتهای آخرین مرحله قبل از کانولوشن نهایی
+        stage_end_channels = [24, 32, 96, 320] # کانال‌های خروجی مراحل کلیدی
+
         for t, c, n, s in inverted_residual_setting:
             output_channel = _make_divisible(c * width_mult, round_nearest)
             for i in range(n):
                 stride = s if i == 0 else 1
-                features.append(block(input_channel, output_channel, stride, expand_ratio=t, norm_layer=norm_layer))
+                features_list.append(block(input_channel, output_channel, stride, expand_ratio=t, norm_layer=norm_layer))
                 input_channel = output_channel
-        features.append(
+                current_layer_index += 1
+            
+            # اگر کانال خروجی این مرحله، یکی از کانال‌های مورد نظر ما بود، ایندکس را ذخیره کن
+            if output_channel in stage_end_channels:
+                 self.feature_extraction_indices.append(current_layer_index)
+
+        features_list.append(
             ConvBNActivation(
                 input_channel, self.last_channel, kernel_size=1, norm_layer=norm_layer, activation_layer=nn.ReLU6
             )
         )
-        self.features = nn.Sequential(*features)
+        self.features = nn.ModuleList(features_list)
+        # --- END: CODE CORRECTION 1 ---
 
         self.classifier = nn.Sequential(
             nn.Dropout(0.2),
@@ -156,27 +175,26 @@ class MobileNetV2(nn.Module):
                 nn.init.normal_(m.weight, 0, 0.01)
                 nn.init.zeros_(m.bias)
 
-    def _forward_impl(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor):
+        # --- START: CODE CORRECTION 2 ---
         feature_list = []
-
+        
+        # به جای استفاده از یک Sequential بزرگ، روی ModuleList حلقه می‌زنیم
         for i, block in enumerate(self.features):
             x = block(x)
-
-            if i in [3, 6, 13, 17]: 
-                 feature_list.append(x)
-
+            
+            # با استفاده از ایندکس‌های پویایی که در init پیدا کردیم، ویژگی‌ها را استخراج می‌کنیم
+            if i in self.feature_extraction_indices:
+                feature_list.append(x)
+        
+        # بخش طبقه‌بندی نهایی
         x = nn.functional.adaptive_avg_pool2d(x, (1, 1))
         x = torch.flatten(x, 1)
         x = self.classifier(x)
 
-        while len(feature_list) < 4:
-            feature_list.append(feature_list[-1])
-
-        return x, feature_list[:4] # Return 4 features
-
-    def forward(self, x: torch.Tensor):
-        return self._forward_impl(x)
+        # حلقه معیوب while حذف شد چون دیگر نیازی به آن نیست
+        return x, feature_list
+        # --- END: CODE CORRECTION 2 ---
 
 def MobileNetV2_deepfake(**kwargs):
- 
     return MobileNetV2(**kwargs)
