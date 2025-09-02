@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 import math
@@ -6,7 +5,6 @@ from .layer import SoftMaskedConv2d
 import copy
 
 __all__ = ["mobilenetv2"]
-
 
 class MaskedNet(nn.Module):
     def __init__(
@@ -51,13 +49,28 @@ class MaskedNet(nn.Module):
             m.update_gumbel_temperature(self.gumbel_temperature)
 
     def get_flops(self):
-        Flops_total = torch.tensor(0)
+        device = next(self.parameters()).device
+        Flops_total = torch.tensor(0.0, device=device)
+        image_sizes = {
+            "hardfakevsrealfaces": 256,
+            "rvf10k": 256,
+            "140k": 256,
+            "190k": 256,
+            "200k": 256,
+            "330k": 256,
+            "125k": 256,
+        }
+        dataset_type = getattr(self, "dataset_type", "hardfakevsrealfaces")
+        input_size = image_sizes.get(dataset_type, 256)  # پیش‌فرض 256
+
+        # محاسبه اندازه خروجی لایه اولیه (conv 3x3 با stride=2)
+        conv_h = (input_size - 3 + 2 * 1) // 2 + 1  # برای 256x256: (256-3+2)/2+1 = 128
+        conv_w = conv_h
+        # FLOPs برای لایه conv اولیه (3x3, in=3, out=32)
         Flops_total = (
-            Flops_total + 112 * 112 * 3 * 3 * 3 * 32 + 112 * 112 * 32
+            Flops_total + conv_h * conv_w * 3 * 3 * 3 * 32 + conv_h * conv_w * 32
         )
-        Flops_total = (
-            Flops_total + 112 * 112 * 3 * 3 * 32 + 112 * 112 * 32
-        )
+        # FLOPs برای لایه‌های ماسک‌شده
         for i, m in enumerate(self.mask_modules):
             Flops_dw_conv = 0
             Flops_dw_bn = 0
@@ -76,7 +89,7 @@ class MaskedNet(nn.Module):
                     * m.feature_map_w
                     * m.kernel_size
                     * m.kernel_size
-                    * self.mask_modules[i - 1].mask.sum()
+                    * self.mask_modules[i - 1].mask.to(device).sum()
                     * m.mask.sum()
                 )
             Flops_bn = m.feature_map_h * m.feature_map_w * m.mask.sum()
@@ -94,7 +107,6 @@ class MaskedNet(nn.Module):
             )
         return Flops_total
 
-
 def _make_divisible(v, divisor, min_value=None):
     if min_value is None:
         min_value = divisor
@@ -103,7 +115,6 @@ def _make_divisible(v, divisor, min_value=None):
         new_v += divisor
     return new_v
 
-
 def conv_3x3_bn(inp, oup, stride):
     return nn.Sequential(
         nn.Conv2d(inp, oup, 3, stride, 1, bias=False),
@@ -111,14 +122,12 @@ def conv_3x3_bn(inp, oup, stride):
         nn.ReLU6(inplace=True),
     )
 
-
 def conv_1x1_bn_sparse(inp, oup):
     return nn.Sequential(
         SoftMaskedConv2d(inp, oup, 1, 1, 0, bias=False),
         nn.BatchNorm2d(oup),
         nn.ReLU6(inplace=True),
     )
-
 
 class InvertedResidual_sparse(nn.Module):
     def __init__(self, inp, oup, stride, expand_ratio):
@@ -158,7 +167,6 @@ class InvertedResidual_sparse(nn.Module):
         else:
             return out
 
-
 class MobileNetV2_sparse(MaskedNet):
     def __init__(
         self,
@@ -167,11 +175,12 @@ class MobileNetV2_sparse(MaskedNet):
         gumbel_start_temperature=2,
         gumbel_end_temperature=0.1,
         num_epochs=350,
+        dataset_type="hardfakevsrealfaces",
     ):
         super().__init__(gumbel_start_temperature, gumbel_end_temperature, num_epochs)
-        
+        self.dataset_type = dataset_type
         teacher_feature_dims = {
-            "stage1": 24, # مطابق با کانال خروجی معلم بعد از استیج مربوطه
+            "stage1": 24,
             "stage2": 32,
             "stage3": 96,
             "stage4": 320
@@ -187,7 +196,6 @@ class MobileNetV2_sparse(MaskedNet):
         layers = [conv_3x3_bn(3, input_channel, 2)]
         
         block = InvertedResidual_sparse
-        # شمارنده برای پیدا کردن ایندکس صحیح لایه‌ها
         layer_index_counter = 1
         
         for num, (t, c, n, s) in enumerate(self.cfgs):
@@ -199,14 +207,13 @@ class MobileNetV2_sparse(MaskedNet):
                 )
                 input_channel = output_channel
                 
-                # تعریف لایه‌های تبدیل بعد از هر استیج کلیدی
-                if layer_index_counter == 3: # end of c=24 stage
+                if layer_index_counter == 3:
                     self.convert1 = nn.Conv2d(output_channel, teacher_feature_dims["stage1"], kernel_size=1)
-                elif layer_index_counter == 6: # end of c=32 stage
+                elif layer_index_counter == 6:
                     self.convert2 = nn.Conv2d(output_channel, teacher_feature_dims["stage2"], kernel_size=1)
-                elif layer_index_counter == 13: # end of c=96 stage
+                elif layer_index_counter == 13:
                     self.convert3 = nn.Conv2d(output_channel, teacher_feature_dims["stage3"], kernel_size=1)
-                elif layer_index_counter == 17: # end of c=320 stage
+                elif layer_index_counter == 17:
                     self.convert4 = nn.Conv2d(output_channel, teacher_feature_dims["stage4"], kernel_size=1)
 
                 layer_index_counter += 1
@@ -233,13 +240,10 @@ class MobileNetV2_sparse(MaskedNet):
         }
 
         for i, layer in enumerate(self.features):
-
             if i == 0:
                 out = layer(out)
-
             else:
                 out = layer(out, self.ticket)
-
             if i in teacher_extraction_indices:
                 convert_layer = convert_layer_map[i]
                 feature_list.append(convert_layer(out))
@@ -279,4 +283,5 @@ def MobileNetV2_sparse_deepfake(
         gumbel_start_temperature=gumbel_start_temperature,
         gumbel_end_temperature=gumbel_end_temperature,
         num_epochs=num_epochs,
+        dataset_type="hardfakevsrealfaces",
     )
