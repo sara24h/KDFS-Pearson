@@ -317,7 +317,7 @@ class GoogLeNet_sparse(MaskedNet):
             kernel_size=1,
         )
 
-        self.avgpool = nn.AvgPool2d(8, stride=1)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.linear = nn.Linear(sum(filters[-1]), num_classes)
 
         self.mask_modules = [m for m in self.modules() if type(m) == SoftMaskedConv2d]
