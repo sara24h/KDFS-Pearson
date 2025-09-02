@@ -83,7 +83,7 @@ class TrainDDP:
 
         self.arch = args.arch.lower().replace('_', '')
 
-        if self.arch not in ['resnet50', 'mobilenetv2','googlenet]:
+        if self.arch not in ['resnet50', 'mobilenetv2','googlenet']:
             raise ValueError(f"Unsupported architecture: '{args.arch}'. It must be 'resnet50' or 'MobileNetV2'.")
 
     def dist_init(self):
