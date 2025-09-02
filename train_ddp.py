@@ -229,7 +229,7 @@ class TrainDDP:
 
         elif self.arch == 'googlenet':
             # Use the standard MobileNetV2 architecture for the teacher
-            teacher_model = GoogleNet_deepfake()
+            teacher_model = GoogLeNet_deepfake()
         else:
             raise ValueError(f"Unsupported architecture: {self.arch}")
 
