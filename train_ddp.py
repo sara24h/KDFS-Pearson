@@ -274,7 +274,7 @@ class TrainDDP:
         elif self.arch == 'mobilenetv2':
             StudentModelClass = MobileNetV2_sparse_deepfake
         elif self.arch == 'googlenet':
-            StudentModelClass =GoogleNet_sparse_deepfake
+            StudentModelClass =GoogLeNet_sparse_deepfake
         else:
             raise ValueError(f"Unsupported architecture for student: {self.arch}")
 
