@@ -1,5 +1,4 @@
 import torch
-import argparse
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
 from model.student.MobileNetV2_sparse import MobileNetV2_sparse_deepfake
@@ -18,13 +17,13 @@ Flops_baselines = {
         "125k": 2100.0,
     },
     "MobileNetV2": {
-        "hardfakevsrealfaces": 7700.0,
+        "hardfakevsrealfaces": 570.0,  # Approximate value for 300x300 input
         "rvf10k": 416.68,
         "140k": 416.68,
         "200k": 416.68,
         "330k": 416.68,
         "190k": 416.68,
-        
+        "125k": 153.0,  # Approximate for 160x160 input
     }
 }
 Params_baselines = {
@@ -38,13 +37,13 @@ Params_baselines = {
         "125k": 23.51,
     },
     "MobileNetV2": {
-        "hardfakevsrealfaces": 7700.0,
-        "rvf10k": 416.68,
+        "hardfakevsrealfaces": 2.23,
+        "rvf10k": 2.23,
         "140k": 2.23,
-        "200k": 416.68,
-        "330k": 416.68,
-        "190k": 416.68,
-        
+        "200k": 2.23,
+        "330k": 2.23,
+        "190k": 2.23,
+        "125k": 2.23,
     }
 }
 image_sizes = {
@@ -57,24 +56,7 @@ image_sizes = {
     "125k": 160,
 }
 
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--dataset_mode",
-        type=str,
-        default="hardfake",
-        choices=("hardfake", "rvf10k", "140k", "190k", "200k", "330k", "125k"),
-        help="The type of dataset",
-    )
-    parser.add_argument(
-        "--sparsed_student_ckpt_path",
-        type=str,
-        default=None,
-        help="The path where to load the sparsed student ckpt",
-    )
-    return parser.parse_args()
-
-def get_flops_and_params(args):
+def get_flops_and_params(dataset_mode, sparsed_student_ckpt_path):
     # Map dataset_mode to dataset_type
     dataset_type = {
         "hardfake": "hardfakevsreal",
@@ -84,12 +66,25 @@ def get_flops_and_params(args):
         "200k": "200k",
         "330k": "330k",
         "125k": "125k"
-    }[args.dataset_mode]
+    }[dataset_mode]
 
-    # Load sparse student model to extract masks
-    student = ResNet_50_sparse_hardfakevsreal()
-    ckpt_student = torch.load(args.sparsed_student_ckpt_path, map_location="cpu", weights_only=True)
-    student.load_state_dict(ckpt_student["student"])
+    # Load checkpoint
+    ckpt_student = torch.load(sparsed_student_ckpt_path, map_location="cpu", weights_only=True)
+    state_dict = ckpt_student["student"]
+
+    # Determine model type based on state_dict keys
+    if any(key.startswith('features.') for key in state_dict):
+        model_type = "MobileNetV2"
+        student = MobileNetV2_sparse_deepfake()
+    else:
+        model_type = "ResNet_50"
+        student = ResNet_50_sparse_hardfakevsreal()
+
+    student.load_state_dict(state_dict)
+
+    # Adjust dataset_type for MobileNetV2 if necessary
+    if model_type == "MobileNetV2" and dataset_type == "hardfakevsreal":
+        dataset_type = "hardfakevsrealfaces"
 
     # Extract masks
     mask_weights = [m.mask_weight for m in student.mask_modules]
@@ -98,16 +93,19 @@ def get_flops_and_params(args):
         for mask_weight in mask_weights
     ]
 
-    # Load pruned model with masks (always use ResNet_50_pruned_hardfakevsreal)
-    pruned_model =ResNet_50_pruned_hardfakevsreal(masks=masks)
+    # Load pruned model with masks
+    if model_type == "ResNet_50":
+        pruned_model = ResNet_50_pruned_hardfakevsreal(masks=masks)
+    elif model_type == "MobileNetV2":
+        pruned_model = MobileNetV2_pruned(masks=masks)
     
     # Set input size based on dataset
     input = torch.rand([1, 3, image_sizes[dataset_type], image_sizes[dataset_type]])
     Flops, Params = profile(pruned_model, inputs=(input,), verbose=False)
 
     # Use dataset-specific baseline values
-    Flops_baseline = Flops_baselines["ResNet_50"][dataset_type]
-    Params_baseline = Params_baselines["ResNet_50"][dataset_type]
+    Flops_baseline = Flops_baselines[model_type][dataset_type]
+    Params_baseline = Params_baselines[model_type][dataset_type]
 
     Flops_reduction = (
         (Flops_baseline - Flops / (10**6)) / Flops_baseline * 100.0
@@ -125,12 +123,14 @@ def get_flops_and_params(args):
     )
 
 def main():
-    args = parse_args()
+    sparsed_student_ckpt_path = None  # Set your checkpoint path here, e.g., "path/to/your/ckpt.pth"
+
+    if sparsed_student_ckpt_path is None:
+        raise ValueError("Please set the sparsed_student_ckpt_path in the code.")
 
     # Run for all datasets
     for dataset_mode in ["hardfake", "rvf10k", "140k", "190k", "200k", "330k", "125k"]:
         print(f"\nEvaluating for dataset: {dataset_mode}")
-        args.dataset_mode = dataset_mode
         (
             Flops_baseline,
             Flops,
@@ -138,7 +138,7 @@ def main():
             Params_baseline,
             Params,
             Params_reduction,
-        ) = get_flops_and_params(args=args)
+        ) = get_flops_and_params(dataset_mode, sparsed_student_ckpt_path)
         print(
             "Params_baseline: %.2fM, Params: %.2fM, Params reduction: %.2f%%"
             % (Params_baseline, Params, Params_reduction)
