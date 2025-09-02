@@ -16,6 +16,9 @@ class BasicConv2d(nn.Module):
 
 # فقط این کلاس را در فایل model/teacher/GoogleNet.py جایگزین کنید
 
+# In file: model/teacher/GoogleNet.py
+# Replace ONLY this class definition
+
 class Inception(nn.Module):
     def __init__(self, in_planes, n1x1, n3x3red, n3x3, n5x5red, n5x5, pool_planes):
         super(Inception, self).__init__()
@@ -28,13 +31,14 @@ class Inception(nn.Module):
             BasicConv2d(n3x3red, n3x3, kernel_size=3, padding=1)
         )
 
-        # 1x1 conv -> 5x5 conv branch (شبیه‌سازی با دو لایه 3x3)
-        # --- این بخش اصلاح شده است ---
+        # 1x1 conv -> 5x5 conv branch (simulated with two 3x3 layers)
+        # --- THIS IS THE CORRECTED SECTION ---
         self.branch3 = nn.Sequential(
             BasicConv2d(in_planes, n5x5red, kernel_size=1),
             BasicConv2d(n5x5red, n5x5, kernel_size=3, padding=1),
-            BasicConv2d(n5x5, n5x5, kernel_size=3, padding=1) # <--- این لایه اضافه شد
+            BasicConv2d(n5x5, n5x5, kernel_size=3, padding=1) # <-- THIS is the missing layer
         )
+        # ------------------------------------
 
         # 3x3 pool -> 1x1 conv branch
         self.branch4 = nn.Sequential(
