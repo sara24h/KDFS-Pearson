@@ -20,11 +20,13 @@ matplotlib.use('Agg')
 from data.dataset import FaceDataset, Dataset_selector
 from model.teacher.ResNet import ResNet_50_hardfakevsreal
 from model.teacher.Mobilenetv2 import MobileNetV2_deepfake
+from model.teacher.GoogleNet import GoogLeNet_deepfake
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, ResNet_50_sparse_rvf10k
 from model.student.MobileNetV2_sparse import MobileNetV2_sparse_deepfake
+from model.student.GoogleNet_sparse import GoogLeNet_sparse_deepfake
 from utils import utils, loss, meter, scheduler
 from train import Train
-from test_10k import Test
+from test import Test
 from finetune import Finetune
 from train_ddp import TrainDDP
 from finetune_ddp import FinetuneDDP
@@ -156,7 +158,7 @@ def parse_args():
             "resnet_56",
             "resnet_110",
             "DenseNet_40",
-            "GoogLeNet",
+            "googlenet",
             "MobileNetV2",
         ),
         help="The architecture to prune",
@@ -428,6 +430,8 @@ def validate_args(args):
             raise ValueError(f"Teacher checkpoint path ({args.teacher_ckpt_path}) is not compatible with MobileNetV2 architecture")
         elif args.arch == "ResNet_50" and "mobilenet" in args.teacher_ckpt_path.lower():
             raise ValueError(f"Teacher checkpoint path ({args.teacher_ckpt_path}) is not compatible with ResNet_50 architecture")
+        elif args.arch == "googlenet" and "googlenet" in args.teacher_ckpt_path.lower():
+            raise ValueError(f"Teacher checkpoint path ({args.teacher_ckpt_path}) is not compatible with googlenet architecture")
 
     if args.phase == "finetune" and args.finetune_student_ckpt_path and not os.path.exists(args.finetune_student_ckpt_path):
         raise FileNotFoundError(f"Finetune student checkpoint not found: {args.finetune_student_ckpt_path}")
