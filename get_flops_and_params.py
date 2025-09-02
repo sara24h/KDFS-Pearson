@@ -29,11 +29,11 @@ Flops_baselines = {
     },
     "googlenet": {
         "hardfakevsrealfaces": 570.0,  # Approximate value for 300x300 input
-        "rvf10k": 416.68,
-        "140k": 416.68,
-        "200k": 416.68,
-        "330k": 416.68,
-        "190k": 416.68,
+        "rvf10k": 1900,
+        "140k": 1900,
+        "200k": 1900,
+        "330k": 1900,
+        "190k": 1900,
         "125k": 153.0,  # Approximate for 160x160 input
     }
 }
@@ -58,11 +58,11 @@ Params_baselines = {
     },
     "googlenet": {
         "hardfakevsrealfaces": 2.23,
-        "rvf10k": 2.23,
-        "140k": 2.23,
-        "200k": 2.23,
-        "330k": 2.23,
-        "190k": 2.23,
+        "rvf10k": 5.6,
+        "140k": 5.6,
+        "200k": 5.6,
+        "330k": 5.6,
+        "190k": 5.6,
         "125k": 2.23,
     }
 }
