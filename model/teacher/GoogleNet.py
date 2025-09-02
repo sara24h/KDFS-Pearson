@@ -70,157 +70,59 @@ class Inception(nn.Module):
 
 
 class GoogLeNet(nn.Module):
-    def __init__(self, block=Inception, filters=None, num_classes=1):
+    def __init__(self, block=Inception, num_classes=1):
         super().__init__()
-        self.pre_layers = nn.Sequential(
-            nn.Conv2d(3, 192, kernel_size=3, padding=1),
-            nn.BatchNorm2d(192),
-            nn.ReLU(True),
-        )
-        if filters is None:
-            filters = [
-                [64, 128, 32, 32],
-                [128, 192, 96, 64],
-                [192, 208, 48, 64],
-                [160, 224, 64, 64],
-                [128, 256, 64, 64],
-                [112, 288, 64, 64],
-                [256, 320, 128, 128],
-                [256, 320, 128, 128],
-                [384, 384, 128, 128],
-            ]
+        
+        # بخش اول: جایگزینی pre_layers با لایه‌های مشخص
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(True)
+        self.maxpool1 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
-        self.inception_a3 = block(
-            192,
-            filters[0][0],
-            96,
-            filters[0][1],
-            16,
-            filters[0][2],
-            filters[0][3],
-        )
-        self.inception_b3 = block(
-            sum(filters[0]),
-            filters[1][0],
-            128,
-            filters[1][1],
-            32,
-            filters[1][2],
-            filters[1][3],
-        )
-
-        self.maxpool1 = nn.MaxPool2d(3, stride=2, padding=1)
+        # بخش دوم: تغییر نام inception_a3 به inception3a و غیره
+        self.inception3a = block(64, 64, 96, 128, 16, 32, 32)
+        self.inception3b = block(256, 128, 128, 192, 32, 96, 64)
+        
         self.maxpool2 = nn.MaxPool2d(3, stride=2, padding=1)
 
-        self.inception_a4 = block(
-            sum(filters[1]),
-            filters[2][0],
-            96,
-            filters[2][1],
-            16,
-            filters[2][2],
-            filters[2][3],
-        )
-        self.inception_b4 = block(
-            sum(filters[2]),
-            filters[3][0],
-            112,
-            filters[3][1],
-            24,
-            filters[3][2],
-            filters[3][3],
-        )
-        self.inception_c4 = block(
-            sum(filters[3]),
-            filters[4][0],
-            128,
-            filters[4][1],
-            24,
-            filters[4][2],
-            filters[4][3],
-        )
-        self.inception_d4 = block(
-            sum(filters[4]),
-            filters[5][0],
-            144,
-            filters[5][1],
-            32,
-            filters[5][2],
-            filters[5][3],
-        )
-        self.inception_e4 = block(
-            sum(filters[5]),
-            filters[6][0],
-            160,
-            filters[6][1],
-            32,
-            filters[6][2],
-            filters[6][3],
-        )
+        self.inception4a = block(480, 192, 96, 208, 16, 48, 64)
+        self.inception4b = block(512, 160, 112, 224, 24, 64, 64)
+        self.inception4c = block(512, 128, 128, 256, 24, 64, 64)
+        self.inception4d = block(512, 112, 144, 288, 32, 64, 64)
+        self.inception4e = block(528, 256, 160, 320, 32, 128, 128)
+        
+        self.maxpool3 = nn.MaxPool2d(3, stride=2, padding=1)
 
-        self.inception_a5 = block(
-            sum(filters[6]),
-            filters[7][0],
-            160,
-            filters[7][1],
-            32,
-            filters[7][2],
-            filters[7][3],
-        )
-        self.inception_b5 = block(
-            sum(filters[7]),
-            filters[8][0],
-            192,
-            filters[8][1],
-            48,
-            filters[8][2],
-            filters[8][3],
-        )
+        self.inception5a = block(832, 256, 160, 320, 32, 128, 128)
+        self.inception5b = block(832, 384, 192, 384, 48, 128, 128)
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.linear = nn.Linear(sum(filters[-1]), num_classes)
+        
+        # بخش سوم: تغییر نام linear به fc
+        self.fc = nn.Linear(1024, num_classes)
 
     def forward(self, x):
-        feature_list = []
-
-        out = self.pre_layers(x)
-        # 192 x 32 x 32
-        out = self.inception_a3(out)
-        # 256 x 32 x 32
-        out = self.inception_b3(out)
-
-        feature_list.append(out)
-
-        # 480 x 32 x 32
+        out = self.relu(self.bn1(self.conv1(x)))
         out = self.maxpool1(out)
-        # 480 x 16 x 16
-        out = self.inception_a4(out)
-        # 512 x 16 x 16
-        out = self.inception_b4(out)
-        # 512 x 16 x 16
-        out = self.inception_c4(out)
-        # 512 x 16 x 16
-        out = self.inception_d4(out)
-        # 528 x 16 x 16
-        out = self.inception_e4(out)
-
-        feature_list.append(out)
-
-        # 823 x 16 x 16
+        
+        out = self.inception3a(out)
+        out = self.inception3b(out)
         out = self.maxpool2(out)
-        # 823 x 8 x 8
-        out = self.inception_a5(out)
-        # 823 x 8 x 8
-        out = self.inception_b5(out)
+        
+        out = self.inception4a(out)
+        out = self.inception4b(out)
+        out = self.inception4c(out)
+        out = self.inception4d(out)
+        out = self.inception4e(out)
+        out = self.maxpool3(out)
 
-        feature_list.append(out)
-
-        # 1024 x 8 x 8
+        out = self.inception5a(out)
+        out = self.inception5b(out)
+        
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
-        out = self.linear(out)
+        out = self.fc(out)
         return out, feature_list
-
 
 def GoogLeNet_deepfake():
     return GoogLeNet(block=Inception, num_classes=1)
