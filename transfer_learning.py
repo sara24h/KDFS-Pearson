@@ -25,7 +25,7 @@ def parse_args():
                         help='Path to the dataset directory containing images and CSV file(s)')
     parser.add_argument('--teacher_dir', type=str, default='teacher_dir',
                         help='Directory to save the trained model and outputs')
-    parser.add_argument('--model', type=str, default='resnet50', choices=['resnet50', 'mobilenetv2'],
+    parser.add_argument('--model', type=str, default='resnet50', choices=['resnet50', 'mobilenetv2','googlenet'],
                         help='Model to use: resnet50 or mobilenetv2')
     parser.add_argument('--img_height', type=int, default=300,
                         help='Height of input images (default: 300 for hardfake, 256 for others)')
@@ -62,6 +62,19 @@ def initialize_model(model_name, device):
         for param in model.features[14:].parameters():
             param.requires_grad = True
         for param in model.classifier.parameters():
+            param.requires_grad = True
+    elif model_name == 'googlenet':
+        model = models.googlenet(weights='IMAGENET1K_V1')
+        num_ftrs = model.fc.in_features
+        model.fc = nn.Linear(num_ftrs, 1)
+        for param in model.parameters():
+            param.requires_grad = False
+        # فعال کردن لایه‌های Inception آخر و لایه نهایی برای fine-tuning
+        for param in model.inception5a.parameters():
+            param.requires_grad = True
+        for param in model.inception5b.parameters():
+            param.requires_grad = True
+        for param in model.fc.parameters():
             param.requires_grad = True
     else:
         raise ValueError(f"Unsupported model: {model_name}")
