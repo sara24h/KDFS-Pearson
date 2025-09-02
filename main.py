@@ -430,8 +430,8 @@ def validate_args(args):
             raise ValueError(f"Teacher checkpoint path ({args.teacher_ckpt_path}) is not compatible with MobileNetV2 architecture")
         elif args.arch == "ResNet_50" and "mobilenet" in args.teacher_ckpt_path.lower():
             raise ValueError(f"Teacher checkpoint path ({args.teacher_ckpt_path}) is not compatible with ResNet_50 architecture")
-        elif args.arch == "googlenet" and "googlenet" in args.teacher_ckpt_path.lower():
-            raise ValueError(f"Teacher checkpoint path ({args.teacher_ckpt_path}) is not compatible with googlenet architecture")
+        #elif args.arch == "googlenet" and "googlenet" in args.teacher_ckpt_path.lower():
+         #   raise ValueError(f"Teacher checkpoint path ({args.teacher_ckpt_path}) is not compatible with googlenet architecture")
 
     if args.phase == "finetune" and args.finetune_student_ckpt_path and not os.path.exists(args.finetune_student_ckpt_path):
         raise FileNotFoundError(f"Finetune student checkpoint not found: {args.finetune_student_ckpt_path}")
