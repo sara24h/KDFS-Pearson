@@ -66,6 +66,9 @@ class GoogLeNet(nn.Module):
         self.fc = nn.Linear(1024, num_classes)
 
     def forward(self, x):
+        # تعریف لیست خالی برای ذخیره ویژگی‌ها
+        feature_list = []
+
         out = self.conv1(x)
         out = self.maxpool1(out)
         out = self.conv2(out)
@@ -73,19 +76,30 @@ class GoogLeNet(nn.Module):
         out = self.maxpool2(out)
         out = self.inception3a(out)
         out = self.inception3b(out)
+        # اضافه کردن اولین گروه از ویژگی‌ها به لیست
+        feature_list.append(out)
+
         out = self.maxpool3(out)
         out = self.inception4a(out)
         out = self.inception4b(out)
         out = self.inception4c(out)
         out = self.inception4d(out)
         out = self.inception4e(out)
+        # اضافه کردن دومین گروه از ویژگی‌ها به لیست
+        feature_list.append(out)
+
         out = self.maxpool4(out)
         out = self.inception5a(out)
         out = self.inception5b(out)
+        # اضافه کردن سومین گروه از ویژگی‌ها به لیست
+        feature_list.append(out)
+
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
         out = self.dropout(out)
         out = self.fc(out)
+        
+        # حالا این خط بدون خطا اجرا می‌شود
         return out, feature_list
 
 def GoogLeNet_deepfake():
