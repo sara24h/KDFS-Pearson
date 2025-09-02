@@ -293,8 +293,8 @@ class TrainDDP:
 
         elif self.arch == 'googlenet':
 
-            num_ftrs = self.student.linear.in_features
-            self.student.linear = nn.Linear(num_ftrs, 1)
+            num_ftrs = self.student.fc.in_features
+            self.student.fc = nn.Linear(num_ftrs, 1)
         else:
             num_ftrs = self.student.fc.in_features
             self.student.fc = nn.Linear(num_ftrs, 1)
