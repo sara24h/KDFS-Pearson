@@ -29,11 +29,11 @@ Flops_baselines = {
     },
     "googlenet": {
         "hardfakevsrealfaces": 570.0,  # Approximate value for 300x300 input
-        "rvf10k": 1900,
-        "140k": 1900,
-        "200k": 1900,
-        "330k": 1900,
-        "190k": 1900,
+        "rvf10k": 1980,
+        "140k": 1980,
+        "200k": 1980,
+        "330k": 1980,
+        "190k": 1980,
         "125k": 153.0,  # Approximate for 160x160 input
     }
 }
