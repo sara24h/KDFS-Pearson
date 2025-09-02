@@ -3,6 +3,8 @@ from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
 from model.pruned_model.ResNet_pruned import ResNet_50_pruned_hardfakevsreal
 from model.student.MobileNetV2_sparse import MobileNetV2_sparse_deepfake
 from model.pruned_model.MobileNetV2_pruned import MobileNetV2_pruned
+from model.student.GoogleNet_sparse import GoogLeNet_sparse_deepfake
+from model.pruned_model.GoogleNet_pruned import GoogLeNet_pruned_deepfake
 from thop import profile
 
 # Base FLOPs and parameters for each dataset
@@ -24,6 +26,15 @@ Flops_baselines = {
         "330k": 416.68,
         "190k": 416.68,
         "125k": 153.0,  # Approximate for 160x160 input
+    },
+    "googlenet": {
+        "hardfakevsrealfaces": 570.0,  # Approximate value for 300x300 input
+        "rvf10k": 416.68,
+        "140k": 416.68,
+        "200k": 416.68,
+        "330k": 416.68,
+        "190k": 416.68,
+        "125k": 153.0,  # Approximate for 160x160 input
     }
 }
 Params_baselines = {
@@ -37,6 +48,15 @@ Params_baselines = {
         "125k": 23.51,
     },
     "MobileNetV2": {
+        "hardfakevsrealfaces": 2.23,
+        "rvf10k": 2.23,
+        "140k": 2.23,
+        "200k": 2.23,
+        "330k": 2.23,
+        "190k": 2.23,
+        "125k": 2.23,
+    },
+    "googlenet": {
         "hardfakevsrealfaces": 2.23,
         "rvf10k": 2.23,
         "140k": 2.23,
