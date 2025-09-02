@@ -12,6 +12,7 @@ import glob
 from utils import meter
 from get_flops_and_params import get_flops_and_params
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal
+from model.student.MobileNetV2_sparse import MobileNetV2_sparse_deepfake
 from data.dataset import Dataset_selector
 
 class Test:
@@ -39,8 +40,8 @@ class Test:
                 if not os.path.exists(csv_path):
                     raise FileNotFoundError(f"CSV file not found: {csv_path}")
             elif self.dataset_mode == 'rvf10k':
-                train_csv = '/kaggle/input/rvf10k/train.csv'
-                valid_csv = '/kaggle/input/rvf10k/valid.csv'
+                train_csv = os.path.join(self.dataset_dir, 'train.csv')
+                valid_csv = os.path.join(self.dataset_dir, 'valid.csv')
                 if not os.path.exists(train_csv) or not os.path.exists(valid_csv):
                     raise FileNotFoundError(f"CSV files not found: {train_csv}, {valid_csv}")
             elif self.dataset_mode == '140k':
@@ -48,17 +49,11 @@ class Test:
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
             elif self.dataset_mode == '200k':
-                test_csv = os.path.join(self.dataset_dir, 'test.csv')
+                test_csv = os.path.join(self.dataset_dir, 'test_labels.csv')
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
-            elif self.dataset_mode == '190k':
-                if not os.path.exists(self.dataset_dir):
-                    raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
-            elif self.dataset_mode == '330k':
-                if not os.path.exists(self.dataset_dir):
-                    raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
+     
 
-            # Initialize dataset based on mode
             if self.dataset_mode == 'hardfake':
                 dataset = Dataset_selector(
                     dataset_mode='hardfake',
@@ -73,8 +68,8 @@ class Test:
             elif self.dataset_mode == 'rvf10k':
                 dataset = Dataset_selector(
                     dataset_mode='rvf10k',
-                    rvf10k_train_csv='/kaggle/input/rvf10k/train.csv',
-                    rvf10k_valid_csv='/kaggle/input/rvf10k/valid.csv',
+                    rvf10k_train_csv=os.path.join(self.dataset_dir, 'train.csv'),
+                    rvf10k_valid_csv=os.path.join(self.dataset_dir, 'valid.csv'),
                     rvf10k_root_dir=self.dataset_dir,
                     train_batch_size=self.test_batch_size,
                     eval_batch_size=self.test_batch_size,
@@ -111,27 +106,7 @@ class Test:
                 pin_memory=self.pin_memory,
                 ddp=False
             )
-            elif self.dataset_mode == '190k':
-                dataset = Dataset_selector(
-                    dataset_mode='190k',
-                    realfake190k_root_dir=self.dataset_dir,
-                    train_batch_size=self.test_batch_size,
-                    eval_batch_size=self.test_batch_size,
-                    num_workers=self.num_workers,
-                    pin_memory=self.pin_memory,
-                    ddp=False
-                )
-            elif self.dataset_mode == '330k':
-                dataset = Dataset_selector(
-                    dataset_mode='330k',
-                    realfake330k_root_dir=self.dataset_dir,
-                    train_batch_size=self.test_batch_size,
-                    eval_batch_size=self.test_batch_size,
-                    num_workers=self.num_workers,
-                    pin_memory=self.pin_memory,
-                    ddp=False
-                )
-
+         
             self.test_loader = dataset.loader_test
             print(f"{self.dataset_mode} test dataset loaded! Total batches: {len(self.test_loader)}")
         except Exception as e:
@@ -141,13 +116,23 @@ class Test:
     def build_model(self):
         print("==> Building student model..")
         try:
-            print(f"Loading sparse student model for dataset mode: {self.dataset_mode}")
-            self.student = ResNet_50_sparse_hardfakevsreal()
+            arch_name = self.args.arch.lower().replace('_', '')
+            print(f"Loading sparse student model for architecture: {self.args.arch}")
+
+            if arch_name == 'resnet50':
+                self.student = ResNet_50_sparse_hardfakevsreal()
+            elif arch_name == 'mobilenetv2':
+                self.student = MobileNetV2_sparse_deepfake()
+            else:
+                raise ValueError(f"Unsupported architecture: {self.args.arch}")
+
             # Load checkpoint
             if not os.path.exists(self.sparsed_student_ckpt_path):
                 raise FileNotFoundError(f"Checkpoint file not found: {self.sparsed_student_ckpt_path}")
-            ckpt_student = torch.load(self.sparsed_student_ckpt_path, map_location="cpu", weights_only=True)
-            state_dict = ckpt_student["student"] if "student" in ckpt_student else ckpt_student
+            
+            ckpt_student = torch.load(self.sparsed_student_ckpt_path, map_location="cpu")
+            state_dict = ckpt_student.get("student", ckpt_student) 
+
             try:
                 self.student.load_state_dict(state_dict, strict=True)
             except RuntimeError as e:
@@ -157,7 +142,8 @@ class Test:
                 print("Loaded with strict=False; check for missing or unexpected keys.")
 
             self.student.to(self.device)
-            print(f"Model loaded on {self.device}")
+            print(f"Model '{self.args.arch}' loaded successfully on {self.device}")
+            
         except Exception as e:
             print(f"Error building model: {str(e)}")
             raise
