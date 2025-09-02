@@ -195,9 +195,10 @@ class GoogLeNet_sparse(MaskedNet):
     ):
         super().__init__(gumbel_start_temperature, gumbel_end_temperature, num_epochs)
         self.pre_layers = nn.Sequential(
-            nn.Conv2d(3, 192, kernel_size=3, padding=1),
-            nn.BatchNorm2d(192),
+            nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False),
+            nn.BatchNorm2d(64),
             nn.ReLU(True),
+            nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         )
         if filters is None:
             filters = [
@@ -213,7 +214,7 @@ class GoogLeNet_sparse(MaskedNet):
             ]
 
         self.inception_a3 = block(
-            192,
+            64,
             filters[0][0],
             96,
             filters[0][1],
