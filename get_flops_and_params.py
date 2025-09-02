@@ -96,14 +96,20 @@ def get_flops_and_params(dataset_mode, sparsed_student_ckpt_path):
     if any(key.startswith('features.') for key in state_dict):
         model_type = "MobileNetV2"
         student = MobileNetV2_sparse_deepfake()
+        
+    elif any(key.startswith('conv1.') for key in state_dict): 
+        model_type = "googlenet"
+        student = GoogLeNet_sparse_deepfake()
+ 
     else:
         model_type = "ResNet_50"
         student = ResNet_50_sparse_hardfakevsreal()
+        
 
     student.load_state_dict(state_dict)
 
     # Adjust dataset_type for MobileNetV2 if necessary
-    if model_type == "MobileNetV2" and dataset_type == "hardfakevsreal":
+    if model_type in ["MobileNetV2", "googlenet"] and dataset_type == "hardfakevsreal":
         dataset_type = "hardfakevsrealfaces"
 
     # Extract masks
@@ -118,6 +124,8 @@ def get_flops_and_params(dataset_mode, sparsed_student_ckpt_path):
         pruned_model = ResNet_50_pruned_hardfakevsreal(masks=masks)
     elif model_type == "MobileNetV2":
         pruned_model = MobileNetV2_pruned(masks=masks)
+    elif model_type == "googlenet":
+        pruned_model = GoogLeNet_pruned_deepfake(masks=masks)
     
     # Set input size based on dataset
     input = torch.rand([1, 3, image_sizes[dataset_type], image_sizes[dataset_type]])
