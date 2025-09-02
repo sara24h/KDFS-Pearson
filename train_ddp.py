@@ -13,11 +13,13 @@ from tqdm import tqdm
 from torch.cuda.amp import autocast, GradScaler
 from data.dataset import Dataset_selector
 from model.student.ResNet_sparse import ResNet_50_sparse_hardfakevsreal, ResNet_50_sparse_rvf10k, SoftMaskedConv2d
-from model.student.MobileNetV2_sparse import MobileNetV2_sparse_deepfake
+from model.student.MobileNetV2_sparse import MobileNetV2_sparse_deepfake,SoftMaskedConv2d
+from model.student.GoogleNet_sparse import GoogleNet_sparse_deepfake,SoftMaskedConv2d
 from utils import utils, loss, meter, scheduler
 from thop import profile
 from model.teacher.ResNet import ResNet_50_hardfakevsreal
 from model.teacher.Mobilenetv2 import MobileNetV2_deepfake
+from model.teacher.GoogleNet import GoogleNet_deepfake
 from torch import amp
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
@@ -49,7 +51,6 @@ class TrainDDP:
         self.coef_rcloss = args.coef_rcloss
         self.coef_maskloss = args.coef_maskloss
         self.resume = args.resume
-
         self.start_epoch = 0
         self.best_prec1 = 0
         self.world_size = 0
@@ -82,7 +83,7 @@ class TrainDDP:
 
         self.arch = args.arch.lower().replace('_', '')
 
-        if self.arch not in ['resnet50', 'mobilenetv2']:
+        if self.arch not in ['resnet50', 'mobilenetv2','googlenet]:
             raise ValueError(f"Unsupported architecture: '{args.arch}'. It must be 'resnet50' or 'MobileNetV2'.")
 
     def dist_init(self):
@@ -225,6 +226,10 @@ class TrainDDP:
         elif self.arch == 'mobilenetv2':
             # Use the standard MobileNetV2 architecture for the teacher
             teacher_model = MobileNetV2_deepfake()
+
+        elif self.arch == 'googlenet':
+            # Use the standard MobileNetV2 architecture for the teacher
+            teacher_model = GoogleNet_deepfake()
         else:
             raise ValueError(f"Unsupported architecture: {self.arch}")
 
@@ -268,6 +273,8 @@ class TrainDDP:
             StudentModelClass = ResNet_50_sparse_rvf10k if self.dataset_mode != "hardfake" else ResNet_50_sparse_hardfakevsreal
         elif self.arch == 'mobilenetv2':
             StudentModelClass = MobileNetV2_sparse_deepfake
+        elif self.arch == 'googlenet':
+            StudentModelClass =GoogleNet_sparse_deepfake
         else:
             raise ValueError(f"Unsupported architecture for student: {self.arch}")
 
@@ -281,9 +288,13 @@ class TrainDDP:
         self.student.dataset_type = self.args.dataset_type
 
         if self.arch == 'mobilenetv2':
-
             num_ftrs = self.student.classifier.in_features
             self.student.classifier = nn.Linear(num_ftrs, 1)
+
+        elif self.arch == 'googlenet':
+
+            num_ftrs = self.student.linear.in_features
+            self.student.linear = nn.Linear(num_ftrs, 1)
         else:
             num_ftrs = self.student.fc.in_features
             self.student.fc = nn.Linear(num_ftrs, 1)
