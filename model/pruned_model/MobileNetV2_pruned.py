@@ -154,7 +154,7 @@ class InvertedResidual_pruned(nn.Module):
 
 
 class MobileNetV2_pruned(nn.Module):
-    def __init__(self, num_classes=1000, width_mult=1.0, masks=[]):
+    def __init__(self, num_classes=1, width_mult=1.0, masks=[]):
         super().__init__()
         assert len(masks) == 34, "len of masks should be 34"
 
@@ -247,4 +247,4 @@ class MobileNetV2_pruned(nn.Module):
 
 
 def MobileNetV2_pruned_imagenet(masks):
-    return MobileNetV2_pruned(num_classes=1000, width_mult=1.0, masks=masks)
+    return MobileNetV2_pruned(num_classes=1, width_mult=1.0, masks=masks)
