@@ -21,11 +21,10 @@ class Inception(nn.Module):
             BasicConv2d(in_planes, n3x3red, kernel_size=1),
             BasicConv2d(n3x3red, n3x3, kernel_size=3, padding=1)
         )
-        # این بخش اصلاح شده است تا لایه گمشده را اضافه کند
+        # Modified: Use single 5x5 conv instead of two 3x3
         self.branch3 = nn.Sequential(
             BasicConv2d(in_planes, n5x5red, kernel_size=1),
-            BasicConv2d(n5x5red, n5x5, kernel_size=3, padding=1),
-            BasicConv2d(n5x5, n5x5, kernel_size=3, padding=1) # <-- این لایه مشکل‌ساز بود
+            BasicConv2d(n5x5red, n5x5, kernel_size=5, padding=2)
         )
         self.branch4 = nn.Sequential(
             nn.MaxPool2d(kernel_size=3, stride=1, padding=1, ceil_mode=True),
