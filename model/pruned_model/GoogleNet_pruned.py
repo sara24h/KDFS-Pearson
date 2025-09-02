@@ -104,204 +104,88 @@ class GoogLeNet_pruned(nn.Module):
         )
         if filters is None:
             filters = [
-                [64, 128, 32, 32],
-                [128, 192, 96, 64],
-                [192, 208, 48, 64],
-                [160, 224, 64, 64],
-                [128, 256, 64, 64],
-                [112, 288, 64, 64],
-                [256, 320, 128, 128],
-                [256, 320, 128, 128],
-                [384, 384, 128, 128],
+                [64, 128, 32, 32], [128, 192, 96, 64], [192, 208, 48, 64],
+                [160, 224, 64, 64], [128, 256, 64, 64], [112, 288, 64, 64],
+                [256, 320, 128, 128], [256, 320, 128, 128], [384, 384, 128, 128],
             ]
 
-        self.inception_a3 = block(
-            64,
-            filters[0][0],
-            96,
-            filters[0][1],
-            16,
-            filters[0][2],
-            filters[0][3],
-            masks=masks[0:7],
-        )
-        self.inception_b3 = block(
-            sum(
-                [
-                    get_preserved_filter_num(mask)
-                    for mask in [masks[0], masks[2], masks[5], masks[6]]
-                ]
-            ),
-            filters[1][0],
-            128,
-            filters[1][1],
-            32,
-            filters[1][2],
-            filters[1][3],
-            masks=masks[7:14],
+        # RENAMED layers to match teacher model (e.g., inception3a)
+        self.inception3a = block(64, filters[0][0], 96, filters[0][1], 16, filters[0][2], filters[0][3], masks=masks[0:7])
+        self.inception3b = block(
+            sum([get_preserved_filter_num(mask) for mask in [masks[0], masks[2], masks[5], masks[6]]]),
+            filters[1][0], 128, filters[1][1], 32, filters[1][2], filters[1][3], masks=masks[7:14]
         )
 
         self.maxpool1 = nn.MaxPool2d(3, stride=2, padding=1)
+
+        self.inception4a = block(
+            sum([get_preserved_filter_num(mask) for mask in [masks[7], masks[9], masks[12], masks[13]]]),
+            filters[2][0], 96, filters[2][1], 16, filters[2][2], filters[2][3], masks=masks[14:21]
+        )
+        self.inception4b = block(
+            sum([get_preserved_filter_num(mask) for mask in [masks[14], masks[16], masks[19], masks[20]]]),
+            filters[3][0], 112, filters[3][1], 24, filters[3][2], filters[3][3], masks=masks[21:28]
+        )
+        self.inception4c = block(
+            sum([get_preserved_filter_num(mask) for mask in [masks[21], masks[23], masks[26], masks[27]]]),
+            filters[4][0], 128, filters[4][1], 24, filters[4][2], filters[4][3], masks=masks[28:35]
+        )
+        self.inception4d = block(
+            sum([get_preserved_filter_num(mask) for mask in [masks[28], masks[30], masks[33], masks[34]]]),
+            filters[5][0], 144, filters[5][1], 32, filters[5][2], filters[5][3], masks=masks[35:42]
+        )
+        self.inception4e = block(
+            sum([get_preserved_filter_num(mask) for mask in [masks[35], masks[37], masks[40], masks[41]]]),
+            filters[6][0], 160, filters[6][1], 32, filters[6][2], filters[6][3], masks=masks[42:49]
+        )
+
         self.maxpool2 = nn.MaxPool2d(3, stride=2, padding=1)
 
-        self.inception_a4 = block(
-            sum(
-                [
-                    get_preserved_filter_num(mask)
-                    for mask in [masks[7], masks[9], masks[12], masks[13]]
-                ]
-            ),
-            filters[2][0],
-            96,
-            filters[2][1],
-            16,
-            filters[2][2],
-            filters[2][3],
-            masks=masks[14:21],
+        self.inception5a = block(
+            sum([get_preserved_filter_num(mask) for mask in [masks[42], masks[44], masks[47], masks[48]]]),
+            filters[7][0], 160, filters[7][1], 32, filters[7][2], filters[7][3], masks=masks[49:56]
         )
-        self.inception_b4 = block(
-            sum(
-                [
-                    get_preserved_filter_num(mask)
-                    for mask in [masks[14], masks[16], masks[19], masks[20]]
-                ]
-            ),
-            filters[3][0],
-            112,
-            filters[3][1],
-            24,
-            filters[3][2],
-            filters[3][3],
-            masks=masks[21:28],
-        )
-        self.inception_c4 = block(
-            sum(
-                [
-                    get_preserved_filter_num(mask)
-                    for mask in [masks[21], masks[23], masks[26], masks[27]]
-                ]
-            ),
-            filters[4][0],
-            128,
-            filters[4][1],
-            24,
-            filters[4][2],
-            filters[4][3],
-            masks=masks[28:35],
-        )
-        self.inception_d4 = block(
-            sum(
-                [
-                    get_preserved_filter_num(mask)
-                    for mask in [masks[28], masks[30], masks[33], masks[34]]
-                ]
-            ),
-            filters[5][0],
-            144,
-            filters[5][1],
-            32,
-            filters[5][2],
-            filters[5][3],
-            masks=masks[35:42],
-        )
-        self.inception_e4 = block(
-            sum(
-                [
-                    get_preserved_filter_num(mask)
-                    for mask in [masks[35], masks[37], masks[40], masks[41]]
-                ]
-            ),
-            filters[6][0],
-            160,
-            filters[6][1],
-            32,
-            filters[6][2],
-            filters[6][3],
-            masks=masks[42:49],
+        self.inception5b = block(
+            sum([get_preserved_filter_num(mask) for mask in [masks[49], masks[51], masks[54], masks[55]]]),
+            filters[8][0], 192, filters[8][1], 48, filters[8][2], filters[8][3], masks=masks[56:63]
         )
 
-        self.inception_a5 = block(
-            sum(
-                [
-                    get_preserved_filter_num(mask)
-                    for mask in [masks[42], masks[44], masks[47], masks[48]]
-                ]
-            ),
-            filters[7][0],
-            160,
-            filters[7][1],
-            32,
-            filters[7][2],
-            filters[7][3],
-            masks=masks[49:56],
-        )
-        self.inception_b5 = block(
-            sum(
-                [
-                    get_preserved_filter_num(mask)
-                    for mask in [masks[49], masks[51], masks[54], masks[55]]
-                ]
-            ),
-            filters[8][0],
-            192,
-            filters[8][1],
-            48,
-            filters[8][2],
-            filters[8][3],
-            masks=masks[56:63],
-        )
-
-        self.avgpool = nn.AvgPool2d(8, stride=1)
-        self.linear = nn.Linear(
-            sum(
-                [
-                    get_preserved_filter_num(mask)
-                    for mask in [masks[56], masks[58], masks[61], masks[62]]
-                ]
-            ),
+        # FIXED: Changed from AvgPool2d(8) to AdaptiveAvgPool2d((1, 1))
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        # RENAMED: from linear to fc
+        self.fc = nn.Linear(
+            sum([get_preserved_filter_num(mask) for mask in [masks[56], masks[58], masks[61], masks[62]]]),
             num_classes,
         )
 
     def forward(self, x):
         feature_list = []
-
         out = self.pre_layers(x)
-        # 192 x 32 x 32
-        out = self.inception_a3(out)
-        # 256 x 32 x 32
-        out = self.inception_b3(out)
-
+        
+        # RENAMED layers in forward pass
+        out = self.inception3a(out)
+        out = self.inception3b(out)
         feature_list.append(out)
 
-        # 480 x 32 x 32
         out = self.maxpool1(out)
-        # 480 x 16 x 16
-        out = self.inception_a4(out)
-        # 512 x 16 x 16
-        out = self.inception_b4(out)
-        # 512 x 16 x 16
-        out = self.inception_c4(out)
-        # 512 x 16 x 16
-        out = self.inception_d4(out)
-        # 528 x 16 x 16
-        out = self.inception_e4(out)
-
+        out = self.inception4a(out)
+        out = self.inception4b(out)
+        out = self.inception4c(out)
+        out = self.inception4d(out)
+        out = self.inception4e(out)
         feature_list.append(out)
 
-        # 823 x 16 x 16
         out = self.maxpool2(out)
-        # 823 x 8 x 8
-        out = self.inception_a5(out)
-        # 823 x 8 x 8
-        out = self.inception_b5(out)
-
+        out = self.inception5a(out)
+        out = self.inception5b(out)
         feature_list.append(out)
 
-        # 1024 x 8 x 8
         out = self.avgpool(out)
         out = out.view(out.size(0), -1)
-        out = self.linear(out)
+        # RENAMED: from linear to fc
+        out = self.fc(out)
         return out, feature_list
+
 
 
 def GoogLeNet_pruned_deepfake(masks):
