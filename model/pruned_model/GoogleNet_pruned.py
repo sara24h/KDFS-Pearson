@@ -94,7 +94,7 @@ class GoogLeNet_pruned(nn.Module):
     def __init__(self, block=Inception_pruned, filters=None, num_classes=1, masks=[]):
         super().__init__()
 
-        assert len(masks) == 63,
+        assert len(masks) == 63
 
         self.pre_layers = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False),
