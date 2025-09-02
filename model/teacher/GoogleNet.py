@@ -86,7 +86,7 @@ class GoogLeNet(nn.Module):
         out = out.view(out.size(0), -1)
         out = self.dropout(out)
         out = self.fc(out)
-        return out, []
+        return out, feature_list
 
 def GoogLeNet_deepfake():
     return GoogLeNet(block=Inception, num_classes=1)
