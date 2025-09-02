@@ -97,7 +97,7 @@ def get_flops_and_params(dataset_mode, sparsed_student_ckpt_path):
         model_type = "MobileNetV2"
         student = MobileNetV2_sparse_deepfake()
         
-    elif any(key.startswith('inception_a3.') for key in state_dict): 
+    elif any(key.startswith('inception3a.') for key in state_dict): 
         model_type = "googlenet"
         student = GoogLeNet_sparse_deepfake()
  
