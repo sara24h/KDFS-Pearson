@@ -57,7 +57,7 @@ class SoftMaskedConv2d(nn.Module):
         if ticket:
             mask = torch.argmax(self.mask_weight, dim=1).unsqueeze(1).float()
             self.continuous_mask = None  # در حالت ticket=True مقادیر پیوسته وجود ندارن
-        return mask, self.continuous_mask
+            return mask, self.continuous_mask
         else:
         # ذخیره seed تصادفی فعلی
             current_state = torch.get_rng_state()
@@ -71,7 +71,7 @@ class SoftMaskedConv2d(nn.Module):
             mask = F.gumbel_softmax(
                 logits=self.mask_weight, tau=self.gumbel_temperature, hard=True, dim=1
             )[:, 1, :, :].unsqueeze(1)
-        return mask, self.continuous_mask  # بازگشت هر دو مقدار
+            return mask, self.continuous_mask  # بازگشت هر دو مقدار
 
     def update_gumbel_temperature(self, gumbel_temperature):
         self.gumbel_temperature = gumbel_temperature
