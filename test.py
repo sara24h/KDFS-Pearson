@@ -197,7 +197,7 @@ class Test:
                 Params,
                 Params_reduction,
                 
-            ) = get_flops_and_params()
+            ) = get_flops_and_params(args=self.args)
             print(
                 f"Params_baseline: {Params_baseline:.2f}M, Params: {Params:.2f}M, "
                 f"Params reduction: {Params_reduction:.2f}%"
