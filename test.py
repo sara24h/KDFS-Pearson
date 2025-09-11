@@ -39,8 +39,8 @@ class Test:
                 if not os.path.exists(csv_path):
                     raise FileNotFoundError(f"CSV file not found: {csv_path}")
             elif self.dataset_mode == 'rvf10k':
-                train_csv = os.path.join(self.dataset_dir, 'train.csv')
-                valid_csv = os.path.join(self.dataset_dir, 'valid.csv')
+                train_csv = '/kaggle/input/rvf10k/train.csv'
+                valid_csv = '/kaggle/input/rvf10k/valid.csv'
                 if not os.path.exists(train_csv) or not os.path.exists(valid_csv):
                     raise FileNotFoundError(f"CSV files not found: {train_csv}, {valid_csv}")
             elif self.dataset_mode == '140k':
@@ -48,10 +48,12 @@ class Test:
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
             elif self.dataset_mode == '200k':
-                test_csv = os.path.join(self.dataset_dir, 'test_labels.csv')
+                test_csv = os.path.join(self.dataset_dir, 'test.csv')
                 if not os.path.exists(test_csv):
                     raise FileNotFoundError(f"CSV file not found: {test_csv}")
-
+            elif self.dataset_mode == '190k':
+                if not os.path.exists(self.dataset_dir):
+                    raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
             elif self.dataset_mode == '330k':
                 if not os.path.exists(self.dataset_dir):
                     raise FileNotFoundError(f"Dataset directory not found: {self.dataset_dir}")
@@ -71,8 +73,8 @@ class Test:
             elif self.dataset_mode == 'rvf10k':
                 dataset = Dataset_selector(
                     dataset_mode='rvf10k',
-                    rvf10k_train_csv=os.path.join(self.dataset_dir, 'train.csv'),
-                    rvf10k_valid_csv=os.path.join(self.dataset_dir, 'valid.csv'),
+                    rvf10k_train_csv='/kaggle/input/rvf10k/train.csv',
+                    rvf10k_valid_csv='/kaggle/input/rvf10k/valid.csv',
                     rvf10k_root_dir=self.dataset_dir,
                     train_batch_size=self.test_batch_size,
                     eval_batch_size=self.test_batch_size,
@@ -109,7 +111,16 @@ class Test:
                 pin_memory=self.pin_memory,
                 ddp=False
             )
-
+            elif self.dataset_mode == '190k':
+                dataset = Dataset_selector(
+                    dataset_mode='190k',
+                    realfake190k_root_dir=self.dataset_dir,
+                    train_batch_size=self.test_batch_size,
+                    eval_batch_size=self.test_batch_size,
+                    num_workers=self.num_workers,
+                    pin_memory=self.pin_memory,
+                    ddp=False
+                )
             elif self.dataset_mode == '330k':
                 dataset = Dataset_selector(
                     dataset_mode='330k',
@@ -120,7 +131,7 @@ class Test:
                     pin_memory=self.pin_memory,
                     ddp=False
                 )
-         
+
             self.test_loader = dataset.loader_test
             print(f"{self.dataset_mode} test dataset loaded! Total batches: {len(self.test_loader)}")
         except Exception as e:
@@ -185,7 +196,7 @@ class Test:
                 Params_baseline,
                 Params,
                 Params_reduction,
-            ) = get_flops_and_params(dataset_mode=self.dataset_mode, sparsed_student_ckpt_path=self.sparsed_student_ckpt_path)
+            ) = get_flops_and_params(args=self.args)
             print(
                 f"Params_baseline: {Params_baseline:.2f}M, Params: {Params:.2f}M, "
                 f"Params reduction: {Params_reduction:.2f}%"
