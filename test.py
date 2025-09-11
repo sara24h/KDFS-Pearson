@@ -197,7 +197,7 @@ class Test:
                 Params,
                 Params_reduction,
                 
-            ) ) = get_flops_and_params(self.dataset_mode, self.sparsed_student_ckpt_path)
+            ) = get_flops_and_params(self.dataset_mode, self.sparsed_student_ckpt_path)
             print(
                 f"Params_baseline: {Params_baseline:.2f}M, Params: {Params:.2f}M, "
                 f"Params reduction: {Params_reduction:.2f}%"
