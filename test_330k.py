@@ -249,7 +249,7 @@ class Test:
             os.makedirs(self.result_dir)
         
         for name, param in self.student.named_parameters():
-            if 'fc'  in name:
+            if 'fc' in name or 'layer4' in name:
                 param.requires_grad = True
                 print(f"Unfreezing for training: {name}")
             else:
