@@ -252,7 +252,7 @@ class Test:
 
     def finetune(self):
         print("==> Fine-tuning using FEATURE EXTRACTOR strategy on 'fc' and 'layer4'...")
-        if not os.os.path.exists(self.result_dir):
+        if not os.path.exists(self.result_dir):
             os.makedirs(self.result_dir)
         
         for name, param in self.student.named_parameters():
