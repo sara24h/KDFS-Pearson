@@ -252,7 +252,7 @@ class Test:
 
     def finetune(self):
         print("==> Fine-tuning using FEATURE EXTRACTOR strategy on 'fc' and 'layer4'...")
-        if not os.path.exists(self.result_dir):
+        if not os.os.path.exists(self.result_dir):
             os.makedirs(self.result_dir)
         
         for name, param in self.student.named_parameters():
@@ -262,10 +262,13 @@ class Test:
             else:
                 param.requires_grad = False
 
+        weight_decay = getattr(self.args, 'weight_decay', 1e-3)  
+        print(f"Applied fine-tuning hyperparameters: f_lr={self.args.f_lr}, weight_decay={weight_decay}")
+        
         optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, self.student.parameters()),
             lr=self.args.f_lr,
-            weight_decay=1e-2
+            weight_decay=weight_decay 
         )
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
         criterion = torch.nn.BCEWithLogitsLoss()
