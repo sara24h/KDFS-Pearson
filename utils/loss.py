@@ -25,14 +25,6 @@ class RCLoss(nn.Module):
         return F.normalize(x.pow(2).mean(1).view(x.size(0), -1))
 
     def forward(self, x, y):
-        # --- START: BUG FIX ---
-        # قبل از محاسبه loss، ابعاد مکانی دانش‌آموز (x) را به اندازه معلم (y) در می‌آوریم
-        # این کار از بروز خطا به دلیل تفاوت در سایز (مثلا 16x16 در مقابل 14x14) جلوگیری می‌کند
-        if x.shape[2:] != y.shape[2:]:
-            x = F.interpolate(x, size=y.shape[2:], mode='bilinear', align_corners=False)
-        # --- END: BUG FIX ---
-        
-        # حالا منطق اصلی شما با ابعاد هماهنگ اجرا می‌شود
         return (self.rc(x) - self.rc(y)).pow(2).mean()
 
 import warnings
