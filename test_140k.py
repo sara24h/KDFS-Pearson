@@ -13,6 +13,16 @@ from utils import meter
 
 class Test:
     def __init__(self, args):
+        # تنظیم Seed تصادفی
+        seed = random.randint(0, 10000)
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = False  # غیرفعال برای فاین‌تیونینگ
+        torch.backends.cudnn.benchmark = True  # بهینه‌سازی عملکرد
+        print(f"Random seed set to: {seed}")
         self.args = args
         self.dataset_dir = args.dataset_dir
         self.num_workers = args.num_workers
