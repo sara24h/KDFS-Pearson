@@ -32,7 +32,7 @@ class Test:
         self.train_loader = None
         self.val_loader = None
         self.test_loader = None
-        self.new_test_loader = None  # Loader for new test dataset
+        self.new_test_loader = None 
         self.student = None
 
     def dataload(self):
